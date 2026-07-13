@@ -1,0 +1,384 @@
+<div align="center">
+
+# SinoutX
+
+**A private workspace with an assistant that does the work — not one that advises**
+
+*Notes, projects, health, money and passwords in one place. In the app and in your messenger. On your server, on your own AI keys (BYOK) — no markup on tokens.*
+
+[![License: FSL-1.1-MIT](https://img.shields.io/badge/License-FSL--1.1--MIT-purple.svg)](LICENSE)
+[![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](docker-compose.yml)
+[![Node.js](https://img.shields.io/badge/Node.js-20+-339933?logo=node.js&logoColor=white)](packages/backend)
+[![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](packages/frontend)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)](packages/backend/prisma)
+
+</div>
+
+---
+
+## What is SinoutX?
+
+> **Personal edition (`sinoutX-user`).** This is the single-user, self-hosted build: one person, no admin panel, no billing or cloud, no team/sharing. It ships with `SINOUT_EDITION=solo`. Same product core as the full SinoutX — updates flow from upstream.
+
+SinoutX is a **self-hosted** workspace built around an assistant that *acts*. Write to it in the app, in Telegram or in Viber — it captures notes and tasks, recognizes documents and receipts, tracks calories and balances, searches the web and files everything into the right place. It is proactive: it sends morning briefs, reminds you, reacts to events and sets up its own recurring skills.
+
+Underneath is a full workspace: a block editor, projects and tasks, a knowledge graph, semantic search, real-time collaboration — plus **pluggable modules** for verticals like a medical record, personal finance and a password vault.
+
+You bring your own AI keys. Requests go straight to the provider you chose, with no markup on tokens and no vendor lock-in. An external agent (Claude Desktop, for example) can use the workspace as long-term memory over MCP.
+
+### Why SinoutX?
+
+| | Notion | Obsidian | SinoutX |
+|---|---|---|---|
+| Self-hosted | ❌ | ✅ | ✅ |
+| Assistant that writes to your data | ❌ | ❌ | ✅ |
+| Assistant in a messenger | ❌ | ❌ | ✅ Telegram + Viber |
+| Web search + deep research | ❌ | ❌ | ✅ own SearXNG |
+| Pluggable vertical modules | ❌ | ❌ | ✅ |
+| Encrypted password vault | ❌ | ❌ | ✅ |
+| MCP server for external agents | ❌ | ❌ | ✅ |
+| Rich block editor | ✅ | ❌ | ✅ |
+| Project management | ✅ | ❌ | ✅ |
+| Knowledge graph | ❌ | ✅ | ✅ |
+| Real-time collaboration | ✅ | ❌ | ✅ |
+| Import from Notion / Obsidian | ❌ | partial | ✅ both |
+| Multilingual UI | partial | partial | ✅ RU / EN / BE |
+| Docker one-command | ❌ | ❌ | ✅ |
+
+---
+
+## Key Features
+
+### 🤖 The assistant
+
+- Lives in the **app, Telegram and Viber** — the same assistant, another channel
+- **75+ tools**: projects, pages, tasks, events, notes, budget, registries, memory, graph, export
+- **Proactive**: morning briefs, reminders, event triggers, and skills it schedules for itself
+- Recognizes **photos and PDFs** (lab results, receipts), transcribes **voice messages**
+- Long-term **memory** that survives a restarted conversation
+- **BYOK** — your provider key, your model, no token markup
+
+### 🌐 Web research
+
+- Searches the web through the instance's own **SearXNG** (aggregates Google, Bing, DuckDuckGo)
+- Reads the pages it finds and saves them as **linked sources**
+- `deep_research` spans the web, Wikipedia and academic papers on top of your own base
+- Project templates that *execute*: course work, dissertation, research, essay — structure, sources and pages included
+
+### 🧩 Modules & registries
+
+A module scaffolds a set of typed **registries** (Collections) with views and hints for the assistant. Install in one click.
+
+| Module | What it holds |
+|---|---|
+| **Medical Record** | Labs, indicators with reference ranges, vitals, nutrition with calories and macros, visits, medications. Document OCR, PDF export. |
+| **Finance** | Accounts, transactions, budget. Currency exchange at your own rate. Receipt OCR. |
+| **Vault** | Passwords, cards, secrets. Encrypted at rest, masked in the UI, hidden from search and from the assistant's memory. Bitwarden import. |
+| **Memory** | The assistant's long-term memory: core, facts, entities, episodes. |
+| **Personal Growth** | Habits, OKR goals, journal. |
+
+Field types: `text`, `longtext`, `number`, `date`, `datetime`, `select`, `multiselect`, `checkbox`, `relation`, `file`, `secret`.
+Views: `table`, `form`, `chart`, `board`, `calendar`, `gallery`. Custom modules load from a manifest.
+
+### 🛠️ Skills & custom tools
+
+- The assistant **schedules its own skills** — a morning brief, a weekly finance report
+- Any **HTTP API** becomes a tool it can call, usually assembled by the AI from your description
+- Secrets encrypted, requests guarded against SSRF, with a timeout
+
+### 🔒 Code sandbox
+
+`execute_code` runs Python or bash in a **separate container**, never inside the backend. Two of them: one on an isolated network, one with internet access for admins only.
+
+### 📄 Pages, tasks, search
+
+- Block editor: 30+ block types, nested pages, version history, `md` / `docx` / `pdf` / `zip` export
+- **Real-time collaboration** (Yjs) with live co-author cursors; share a project as Viewer or Editor
+- Tasks: kanban, Gantt, burndown, time tracker, subtasks, recurrence, reminders
+- Search in two layers: **Meilisearch** full-text plus a **semantic layer on embeddings**
+- Knowledge graph and an infinite idea canvas
+
+### ⚙️ Instance
+
+- **Monitoring**: who is online, CPU / memory / network / disks, history and alerts
+- **Backup**: user ZIP export and a scheduled full-instance backup
+- **Import**: Notion ZIP (Markdown or HTML), Obsidian vault ZIP
+- Themes: Dark, Light, Glass, HUD, Latte, Dawn · Languages: RU / EN / BE
+- 2FA (TOTP), brute-force lockout, per-key REST API, Pomodoro timer, meeting transcription
+
+---
+
+## Architecture
+
+```
+            Browser · Telegram · Viber · Claude Desktop (MCP)
+                                    │
+                                    ▼
+                    ┌───────────────────────────────┐
+                    │           Nginx  :8090         │
+                    │         reverse proxy          │
+                    └──┬───────┬────────┬────────┬───┘
+                       │       │        │        │
+          ┌────────────▼──┐ ┌──▼─────┐ ┌▼──────┐ │
+          │ REST API      │ │ Collab │ │ MCP   │ │
+          │ Fastify :3010 │ │ Yjs/WS │ │ :3011 │ │
+          │               │ │ :3012  │ │       │ │
+          └──┬────────────┘ └────────┘ └───────┘ │
+             │                                    ▼
+             │                            React SPA (nginx)
+  ┌──────────┼───────────┬──────────────┬──────────────┐
+  ▼          ▼           ▼              ▼              ▼
+PostgreSQL Redis    Meilisearch       MinIO         SearXNG
+ (data)  (cache,RT) (full-text)      (files)     (web search)
+
+        faster-whisper          executor · executor-net
+        (voice → text)     (code sandbox: isolated / online)
+```
+
+Only **nginx** publishes ports. Everything else talks over the internal Docker network, and `executor` sits on a network with no route out at all.
+
+### Monorepo structure
+
+```
+sinout/
+├── packages/
+│   ├── backend/          # Fastify 5 + Prisma + TypeScript
+│   │   ├── prisma/       # Schema & migrations
+│   │   └── src/
+│   │       ├── modules/  # auth, page, task, ai, collections, integration, admin, …
+│   │       ├── lib/      # plans & capabilities, modules engine, crypto, cron, search
+│   │       └── data/     # module manifests (medical-record, finance, vault, …)
+│   ├── frontend/         # React 18 + Vite + Tailwind + TipTap
+│   ├── collab-server/    # Yjs WebSocket server (Hocuspocus)
+│   └── mcp-server/       # Model Context Protocol server (61 sinout_* tools)
+├── executor/             # Sandbox container for execute_code
+├── searxng/              # Private metasearch config
+├── nginx/                # Reverse proxy config
+├── scripts/              # Deployment helpers
+└── docker-compose.yml
+```
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- Docker + Docker Compose
+- 4 GB RAM (8 GB recommended — Meilisearch, SearXNG and Whisper are hungry)
+
+### 1. Clone
+
+```bash
+git clone https://github.com/iezhik87/sinoutX-user.git
+cd sinoutX-user
+```
+
+### 2. Configure
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+Required variables:
+
+```env
+# Database
+DB_USER=sinout
+DB_PASSWORD=your_strong_password
+
+# Redis
+REDIS_PASSWORD=your_redis_password
+
+# Meilisearch
+MEILI_KEY=your_meili_key_min_16_chars
+
+# MinIO (file storage)
+MINIO_USER=sinout
+MINIO_PASSWORD=your_minio_password
+
+# JWT (min 32 chars)
+JWT_SECRET=your_very_long_random_jwt_secret
+
+# Encrypts Vault secrets at rest — required, and back it up separately
+ENCRYPTION_KEY=your_32_byte_random_key
+
+# MCP gateway key (per-user API keys work too)
+MCP_API_KEY=your_mcp_key
+
+# App URL (CORS and links)
+CORS_ORIGIN=http://localhost:8090
+APP_URL=http://localhost:8090
+```
+
+> ⚠️ **`ENCRYPTION_KEY` protects the Vault.** Lose it and the secrets are gone —
+> a backup restores the records but cannot decrypt the values. Keep it somewhere
+> other than the archives.
+
+Optional: `SMTP_*` (password reset, email verification), `NOWPAYMENTS_*` (crypto billing).
+
+### 3. Start
+
+```bash
+docker compose up -d
+```
+
+### 4. Open
+
+Navigate to **http://localhost:8090**.
+
+The first registered user becomes the **owner** — every capability unlocked. After that, registration is **closed** (this is a single-user edition), so no one else can sign up.
+
+Add your AI provider key in **Settings → AI** to switch the assistant on.
+
+---
+
+## AI Providers
+
+Bring your own key; the model is picked per user. Requests go straight to the provider.
+
+| Provider | |
+|---|---|
+| `anthropic` | Claude |
+| `openai` | GPT |
+| `google` | Gemini |
+| `deepseek` | DeepSeek |
+| `groq` | Groq |
+| `mistral` | Mistral |
+| `openrouter` | anything behind OpenRouter |
+| `ollama` | local models, no key needed |
+
+Every provider accepts a custom **Base URL**, so any OpenAI-compatible endpoint plugs in — a local LM Studio, your own proxy, a self-hosted gateway.
+
+### Capability gating
+
+Some tools sit behind a capability. As the sole owner you bypass all of them — they matter only on the multi-user / cloud edition.
+
+| Capability | Unlocks |
+|---|---|
+| `assistant_full` | Proactivity: scheduled skills, triggers |
+| `code_exec:python` | Python in the sandbox |
+| `code_exec:bash` | Bash — admins only on a cloud deployment |
+| `code_exec:net` | Sandbox with internet access — admins only |
+| `vault:reveal` | The assistant may fetch and show a secret value |
+
+---
+
+## MCP Integration with Claude
+
+SinoutX ships a built-in **MCP server** (Streamable HTTP transport) so an external agent can read and write your workspace as long-term memory. It is exposed at the `/mcp` path — e.g. `https://app.your-domain.tld/mcp`.
+
+### Setup in Claude Desktop
+
+Claude Desktop connects to remote HTTP MCP servers through the official [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) bridge:
+
+```json
+{
+  "mcpServers": {
+    "sinout": {
+      "command": "npx",
+      "args": [
+        "-y", "mcp-remote",
+        "https://app.your-domain.tld/mcp",
+        "--header", "x-api-key:sk_sinoutx_your_key_here"
+      ]
+    }
+  }
+}
+```
+
+Create the key under **Settings → API Keys**, paste it into the header, restart Claude Desktop. The endpoint **rejects requests without a valid key** (`401`), and a key can be scoped to specific workspaces.
+
+### Available MCP tools
+
+**61 tools** across workspaces, projects, pages, tasks, notes, calendar, budget, registries, memory, graph, search and file upload. A sample:
+
+| Tool | Description |
+|---|---|
+| `sinout_init_agent` | Pull instructions and registries so the agent knows where things belong |
+| `sinout_search` | Search everything — by keyword and by meaning |
+| `sinout_create_page` / `sinout_update_page` | Write pages |
+| `sinout_create_task` / `sinout_update_task` | Manage tasks |
+| `sinout_list_collections` / `sinout_query_records` | Read module registries |
+| `sinout_create_records` / `sinout_delete_records` | Batch writes (up to 200 / 500) |
+| `sinout_remember` / `sinout_recall` | Long-term memory |
+| `sinout_get_graph` | The knowledge graph |
+
+---
+
+## Development
+
+```bash
+npm install
+docker compose -f docker-compose.dev.yml up -d   # infra only
+npm run dev --workspace=backend
+npm run dev --workspace=frontend
+```
+
+Useful:
+
+```bash
+npm run build --workspace=frontend     # typecheck + build
+npx prisma migrate dev                 # new migration (from packages/backend)
+npx prisma studio                      # inspect the database
+```
+
+In production the frontend is **nginx serving a pre-built bundle**, not a dev server — any frontend change needs an image rebuild.
+
+---
+
+## Deployment
+
+See [DEPLOY.md](DEPLOY.md) for the full walkthrough (domain, TLS, reverse proxy).
+
+---
+
+## Roadmap
+
+- [x] Notion import (ZIP — HTML or Markdown) and Obsidian vault import
+- [x] Two-factor authentication (TOTP)
+- [x] Public REST API with scoped keys
+- [x] Per-project sharing (Viewer / Editor) + audit log
+- [x] Semantic search on embeddings
+- [x] Per-key auth enforced on the MCP endpoint
+- [x] Telegram assistant: photos, PDFs, voice, buttons, proactive briefs
+- [x] Pluggable modules: Medical Record, Finance, Vault, Memory, Personal Growth
+- [x] Sandboxed code execution + capability gating
+- [x] In-app crypto billing (NOWPayments)
+- [ ] Billing: self-hosted one-time license + cloud pay-as-you-go
+- [x] Viber as a second messenger channel
+- [ ] Combo skills, and external MCP servers as a skill source
+- [ ] Mobile app (React Native)
+- [ ] Offline-first mode (PWA)
+- [ ] SSO / LDAP / SAML
+- [ ] Google Calendar sync
+
+> WhatsApp was evaluated and **dropped**. Its Business API forbids free-form
+> outbound messages outside a 24-hour window, which kills the proactive briefs
+> and reminders the assistant is built on. It also blocks message deletion (no
+> Vault retrieval) and message editing (no live progress indicator).
+
+---
+
+## License
+
+SinoutX is **source-available** under the [Functional Source License (FSL-1.1-MIT)](LICENSE).
+
+**Free** for:
+- Personal use
+- Internal use within your organization
+- Non-commercial education and research
+- Self-hosting for your own team
+
+**Requires a commercial license** for:
+- Offering SinoutX (or a substantially similar product) to others as a
+  commercial product or hosted service
+- White-label / reselling
+- Managed hosting of SinoutX for third parties
+
+Each released version automatically converts to the **MIT License two
+years after its release date** (the FSL "Grant of Future License").
+
+For a commercial / Team license, managed hosting, or enterprise terms,
+contact **sinout@dasp.top**.

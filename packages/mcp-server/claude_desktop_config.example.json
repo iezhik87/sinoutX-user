@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "sinout": {
+      "command": "node",
+      "args": ["/absolute/path/to/sinout/packages/mcp-server/dist/index.js"],
+      "env": {
+        "BACKEND_URL": "http://localhost:3010"
+      }
+    }
+  }
+}

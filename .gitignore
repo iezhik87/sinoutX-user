@@ -1,0 +1,50 @@
+# Environment — никогда не коммитить
+.env
+.env.local
+.env.*.local
+packages/e2e/.env.test
+
+# Internal strategy / business docs — не публиковать
+COMMERCIAL.md
+sinout-project-plan.md
+
+# Dependencies
+node_modules/
+packages/*/node_modules/
+
+# Build artifacts
+packages/*/dist/
+packages/frontend/dist/
+
+# Playwright
+packages/e2e/playwright/.auth/
+packages/e2e/test-results/
+packages/e2e/playwright-report/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Claude Code local config
+.mcp.json
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes (если вдруг локально)
+postgres_data/
+redis_data/
+
+# deploy bookkeeping (per-server)
+.last-deploy
+
+# demo-video pipeline artifacts + downloaded tools
+.tools/
+scripts/demo-video/out/
+scripts/demo-video/final/
+
+# Landing media — не коммитим: одна перезаливка ролика = +5 МБ в историю навсегда.
+# Файлы живут локально и раскатываются на сервер скриптом scripts/sync-landing-videos.sh
+landing/videos/

@@ -1,0 +1,17 @@
+# core.autocrlf=true is set on Windows checkouts. Git only skips line-ending
+# conversion for files it *guesses* are binary (a NUL byte in the first 8 KiB).
+# Be explicit for the media we keep in the repo, or one day a clip without an
+# early NUL gets its bytes rewritten and silently corrupted.
+*.mp4  binary
+*.mp3  binary
+*.wav  binary
+*.jpg  binary
+*.jpeg binary
+*.png  binary
+*.webp binary
+*.ico  binary
+*.woff  binary
+*.woff2 binary
+*.onnx binary
+*.zip  binary
+*.pdf  binary

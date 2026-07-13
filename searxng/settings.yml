@@ -1,0 +1,74 @@
+# SearXNG settings for Sinout private instance
+# use_default_settings inherits all built-in engines + overrides below
+use_default_settings: true
+
+general:
+  instance_name: "Sinout Search"
+  privacypolicy_url: false
+  contact_url: false
+  enable_metrics: false
+
+server:
+  # Secret key — overridden by SEARXNG_SECRET env var at runtime
+  secret_key: "change_me_via_SEARXNG_SECRET_env"
+  limiter: false          # no rate-limiting in our private instance
+  image_proxy: false
+  port: 8080
+  bind_address: "0.0.0.0"
+
+ui:
+  static_use_hash: true
+  default_locale: "ru"
+  query_in_title: false
+  infinite_scroll: false
+  default_theme: simple
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "ru-RU"
+  # IMPORTANT: json format must be enabled for the API to work
+  formats:
+    - html
+    - json
+
+# Override specific engines — disable ones that need API keys or are unreliable
+engines:
+  - name: google
+    engine: google
+    shortcut: g
+    use_mobile_ui: false
+
+  - name: bing
+    engine: bing
+    shortcut: b
+
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: d
+
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
+    language: ru
+
+  - name: google news
+    engine: google_news
+    shortcut: gn
+    categories: news
+
+  - name: hackernews
+    engine: hackernews
+    shortcut: hn
+    categories: news, it
+
+  - name: github
+    engine: github
+    shortcut: gh
+    categories: it
+
+  # Disable engines that require API keys or are often blocked
+  - name: wolframalpha
+    disabled: true
+  - name: brave
+    disabled: true

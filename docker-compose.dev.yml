@@ -1,0 +1,56 @@
+version: '3.9'
+
+# Переопределения для dev-режима
+# Запуск: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  postgres:
+    ports:
+      - "5432:5432"
+
+  redis:
+    ports:
+      - "6379:6379"
+
+  meilisearch:
+    environment:
+      MEILI_ENV: development
+
+  backend:
+    build:
+      context: ./packages/backend
+      dockerfile: Dockerfile.dev
+    environment:
+      NODE_ENV: development
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - ./packages/backend/src:/app/src:ro
+      - uploads:/app/uploads
+    command: sh -c "npx prisma migrate deploy && npm run dev"
+
+  mcp-server:
+    build:
+      context: ./packages/mcp-server
+      dockerfile: Dockerfile.dev
+    environment:
+      NODE_ENV: development
+    volumes:
+      - ./packages/mcp-server/src:/app/src:ro
+    command: npm run dev
+
+  frontend:
+    build:
+      context: ./packages/frontend
+      dockerfile: Dockerfile.dev
+    environment:
+      NODE_ENV: development
+      VITE_API_URL: http://backend:3010
+    ports:
+      - "3013:3012"
+    volumes:
+      - ./packages/frontend/src:/app/src:ro
+    command: npm run dev -- --host
+
+  # Nginx не нужен в dev
+  nginx:
+    profiles: ["prod"]

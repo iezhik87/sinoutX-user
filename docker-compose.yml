@@ -1,0 +1,277 @@
+services:
+  # ═══ База данных ═══
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    volumes:
+      # По умолчанию — named volume (работает из коробки). Чтобы хранить данные
+      # на другом диске, задай POSTGRES_DATA_DIR=/abs/path в .env (см. .env.example).
+      - ${POSTGRES_DATA_DIR:-postgres_data}:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: sinout
+      POSTGRES_USER: ${DB_USER:-sinout}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    # порт закрыт снаружи — доступен только внутри Docker сети
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-sinout}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ═══ Кеш и pub/sub ═══
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      sh -c "if [ -n \"$$REDIS_PASSWORD\" ]; then redis-server --requirepass $$REDIS_PASSWORD; else redis-server; fi"
+    volumes:
+      - redis_data:/data
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ${REDIS_PASSWORD:+-a $REDIS_PASSWORD} ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ═══ Полнотекстовый поиск ═══
+  meilisearch:
+    image: getmeili/meilisearch:v1.10
+    restart: unless-stopped
+    volumes:
+      - ${MEILI_DATA_DIR:-meili_data}:/meili_data
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_KEY}
+      MEILI_ENV: production
+    # порт закрыт снаружи — доступен только внутри Docker сети
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7700/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ═══ Файловое хранилище ═══
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    volumes:
+      - ${MINIO_DATA_DIR:-minio_data}:/data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER:-sinout}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD}
+    # порты закрыты снаружи — доступны только внутри Docker сети
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ═══ Поиск (SearXNG metasearch) ═══
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-sinout_searxng_secret_key_2024}
+    # порт закрыт снаружи — доступен только внутри Docker сети
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+
+  # ═══ Локальная транскрипция (faster-whisper, OpenAI-совместимый API) ═══
+  whisper:
+    image: fedirz/faster-whisper-server:latest-cpu
+    restart: unless-stopped
+    environment:
+      WHISPER__MODEL: Systran/faster-whisper-base
+      WHISPER__INFERENCE_DEVICE: cpu
+      WHISPER__COMPUTE_TYPE: int8
+    volumes:
+      - whisper_models:/root/.cache/huggingface
+    # порт закрыт снаружи — обращаемся изнутри по http://whisper:8000
+
+  # ═══ Backend API ═══
+  backend:
+    build:
+      context: ./packages/backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      meilisearch:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3010
+      DATABASE_URL: postgresql://${DB_USER:-sinout}:${DB_PASSWORD}@postgres:5432/sinout
+      REDIS_URL: redis://:${REDIS_PASSWORD:-}@redis:6379
+      MEILI_URL: http://meilisearch:7700
+      MEILI_KEY: ${MEILI_KEY}
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: "9000"
+      MINIO_USER: ${MINIO_USER:-sinout}
+      MINIO_PASSWORD: ${MINIO_PASSWORD}
+      MINIO_USE_SSL: "false"
+      # Куда складывать админ-бэкапы (опц.): ';'-список "Метка=/abs/path".
+      # Каждый путь должен быть примонтирован в контейнер (volumes ниже).
+      BACKUP_DIRS: ${BACKUP_DIRS:-}
+      JWT_SECRET: ${JWT_SECRET}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3012}
+      APP_URL: ${APP_URL:-}
+      SEARXNG_URL: http://searxng:8080
+      WHISPER_URL: http://whisper:8000/v1
+      # Crypto billing (NOWPayments) — empty disables /billing/invoice (503)
+      NOWPAYMENTS_API_KEY: ${NOWPAYMENTS_API_KEY:-}
+      NOWPAYMENTS_IPN_SECRET: ${NOWPAYMENTS_IPN_SECRET:-}
+      PRICE_PRO_USD: ${PRICE_PRO_USD:-39}
+      PRICE_TEAM_USD: ${PRICE_TEAM_USD:-149}
+      APP_VERSION: ${APP_VERSION:-dev}
+      APP_BUILT_AT: ${APP_BUILT_AT:-}
+      # Семантическая память — ОПЦ. серверный фолбэк (платит за всех без своего
+      # ключа). Основной путь — BYOK в Настройки → ИИ → Эмбеддинги (на воркспейс).
+      EMBEDDINGS_API_KEY: ${EMBEDDINGS_API_KEY:-}
+      EMBEDDINGS_BASE_URL: ${EMBEDDINGS_BASE_URL:-}
+      EMBEDDINGS_MODEL: ${EMBEDDINGS_MODEL:-}
+      # Кастом-навыки: разрешить запросы во внутренние/локальные адреса (по умолч. блок)
+      ALLOW_CUSTOM_TOOL_INTERNAL: ${ALLOW_CUSTOM_TOOL_INTERNAL:-}
+      # Песочница исполнения кода (отдельный изолированный контейнер executor)
+      DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-self-hosted}
+      # Издание: пусто = обычный multi/cloud; solo = персональная self-hosted-версия.
+      SINOUT_EDITION: ${SINOUT_EDITION:-solo}
+      EXECUTOR_URL: ${EXECUTOR_URL:-http://executor:8088}
+      EXECUTOR_TOKEN: ${EXECUTOR_TOKEN:-}
+    networks: [default, sandbox, sandbox_net]
+    # порт закрыт снаружи — проксируется через nginx
+    volumes:
+      - ${UPLOADS_DIR:-uploads}:/app/uploads
+      # Опциональный отдельный диск под бэкапы. Задай BACKUP_MOUNT=/abs/path
+      # в .env (и BACKUP_DIRS=Метка=/backups). Иначе — локальная папка ./backups.
+      - ${BACKUP_MOUNT:-./backups}:/backups
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3010/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ═══ Code-execution sandbox ═══
+  # Runs untrusted agent code (Python/bash) in isolation: no secrets, no DB,
+  # on an `internal` network (no internet), resource-limited, read-only, non-root.
+  executor:
+    build:
+      context: ./executor
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: 8088
+      EXECUTOR_TOKEN: ${EXECUTOR_TOKEN:-}
+    networks: [sandbox]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 128
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  # Same sandbox but WITH internet — admin-only relaxation (still no DB/secrets;
+  # on its own network, not the app network). Gated by capability code_exec:net.
+  executor-net:
+    build:
+      context: ./executor
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: 8088
+      EXECUTOR_TOKEN: ${EXECUTOR_TOKEN:-}
+    networks: [sandbox_net]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 128
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  # ═══ MCP Server ═══
+  mcp-server:
+    build:
+      context: ./packages/mcp-server
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3011
+      BACKEND_URL: http://backend:3010
+      MCP_API_KEY: ${MCP_API_KEY}
+    # порт закрыт снаружи — доступен только внутри Docker сети
+
+  # ═══ Collab Server (Yjs / Hocuspocus) ═══
+  collab-server:
+    build:
+      context: ./packages/collab-server
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: 3012
+      DATABASE_URL: postgresql://${DB_USER:-sinout}:${DB_PASSWORD}@postgres:5432/sinout
+
+  # ═══ Frontend ═══
+  frontend:
+    build:
+      context: ./packages/frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    # порт закрыт снаружи — проксируется через nginx
+
+  # ═══ Reverse Proxy ═══
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "8090:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ssl_certs:/etc/nginx/ssl
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_started
+
+networks:
+  # Main app network (all services use it by default).
+  default: {}
+  # Sandbox: isolated, no internet (internal). Only the backend + executor join it.
+  sandbox:
+    internal: true
+  # Admin sandbox: has internet (NOT internal), but separate from app services
+  # (no DB/redis/minio). Only backend + executor-net join it.
+  sandbox_net: {}
+
+volumes:
+  # Используются по умолчанию (если *_DATA_DIR/UPLOADS_DIR в .env не заданы).
+  postgres_data:
+  meili_data:
+  minio_data:
+  uploads:
+  redis_data:
+  ssl_certs:
+  whisper_models:

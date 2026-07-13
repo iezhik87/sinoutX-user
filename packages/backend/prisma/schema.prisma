@@ -1,0 +1,1092 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ═══════════════════════════════════════════════════
+// WORKSPACE — корневой контейнер
+// ═══════════════════════════════════════════════════
+
+model Workspace {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  icon        String?
+  color       String?
+  settings    Json     @default("{}")
+  isPersonal  Boolean  @default(false) @map("is_personal") // the owner's canonical Personal space (one per user)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  projects    Project[]
+  notes       Note[]
+  attachments Attachment[]
+  tags        Tag[]
+  links       Link[]
+  aiConversations    AiConversation[]
+  aiProjectTemplates AiProjectTemplate[]
+  habits      Habit[]
+  objectives  Objective[]
+  canvases    Canvas[]
+  members     WorkspaceMember[]
+  auditLogs   AuditLog[]
+  aiUsage     AiUsage[]
+
+  @@map("workspaces")
+}
+
+model WorkspaceMember {
+  id          String              @id @default(cuid())
+  workspaceId String              @map("workspace_id")
+  userId      String              @map("user_id")
+  role        WorkspaceMemberRole @default(MEMBER)
+  createdAt   DateTime            @default(now()) @map("created_at")
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([workspaceId])
+  @@index([userId])
+  @@map("workspace_members")
+}
+
+enum WorkspaceMemberRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+// ═══════════════════════════════════════════════════
+// CANVAS — визуальная доска
+// ═══════════════════════════════════════════════════
+
+model Canvas {
+  id          String   @id @default(cuid())
+  workspaceId String   @map("workspace_id")
+  name        String   @default("Моя доска")
+  nodes       Json     @default("[]")
+  edges       Json     @default("[]")
+  viewport    Json     @default("{\"x\":0,\"y\":0,\"zoom\":1}")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("canvases")
+}
+
+// ═══════════════════════════════════════════════════
+// PROJECT — проект внутри workspace
+// ═══════════════════════════════════════════════════
+
+model Project {
+  id          String        @id @default(cuid())
+  workspaceId String        @map("workspace_id")
+  name        String
+  description String?
+  icon        String?
+  color       String?
+  status      ProjectStatus @default(ACTIVE)
+  settings    Json          @default("{}")
+  position    Int           @default(0)
+  // System projects (e.g. the Telegram assistant's home project) are excluded
+  // from the plan's project quota.
+  isSystem    Boolean       @default(false) @map("is_system")
+  // Module instance: this project is the home of an installed module's data.
+  isModule    Boolean       @default(false) @map("is_module")
+  moduleId    String?       @map("module_id")
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+
+  aiMemoryPageId String?       @map("ai_memory_page_id")
+
+  workspace      Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  pages          Page[]
+  tasks          Task[]
+  boards         Board[]
+  calendarEvents CalendarEvent[]
+  budgetEntries  BudgetEntry[]
+  notes          Note[]
+  attachments    Attachment[]
+  aiConversations AiConversation[]
+  customFields       CustomField[]
+  automationRules    AutomationRule[]
+  collections        Collection[]
+  members            ProjectMember[]
+
+  @@index([workspaceId])
+  @@map("projects")
+}
+
+enum ProjectStatus {
+  ACTIVE
+  ARCHIVED
+  TEMPLATE
+}
+
+// Project-level sharing: grant another user access to a single project (without
+// joining the owner's workspace). This is how collaboration works in the
+// single-workspace model.
+model ProjectMember {
+  id        String            @id @default(cuid())
+  projectId String            @map("project_id")
+  userId    String            @map("user_id")
+  role      ProjectMemberRole @default(EDITOR)
+  createdAt DateTime          @default(now()) @map("created_at")
+
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([userId])
+  @@index([projectId])
+  @@map("project_members")
+}
+
+enum ProjectMemberRole {
+  VIEWER
+  EDITOR
+}
+
+// ═══════════════════════════════════════════════════
+// MODULES — подключаемые вертикальные модули (Реестры)
+// ═══════════════════════════════════════════════════
+
+// Catalog of available modules (built-in synced from files + imported manifests).
+model Module {
+  id        String   @id @default(cuid())
+  moduleId  String   @unique @map("module_id") // manifest "id" slug
+  version   String
+  manifest  Json
+  source    String   @default("builtin") // "builtin" | "imported"
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("modules")
+}
+
+// A typed dataset (Реестр) inside a module-project. Fields live in `fields` JSON.
+model Collection {
+  id        String   @id @default(cuid())
+  projectId String   @map("project_id")
+  moduleId  String?  @map("module_id")
+  key       String // unique within the project
+  name      Json // i18n { ru, en, ... }
+  icon      String?
+  fields    Json     @default("[]") // Field[] schema
+  position  Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  project Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  records CollectionRecord[]
+  views   CollectionView[]
+
+  @@unique([projectId, key])
+  @@index([projectId])
+  @@map("collections")
+}
+
+model CollectionRecord {
+  id           String   @id @default(cuid())
+  collectionId String   @map("collection_id")
+  data         Json     @default("{}") // values keyed by field key
+  createdBy    String?  @map("created_by")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  collection Collection        @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  embedding  RecordEmbedding?
+
+  @@index([collectionId])
+  @@map("collection_records")
+}
+
+// Semantic index for a collection record (Phase 2 memory recall). Vector stored
+// as JSON (number[]); cosine similarity computed in app — no pgvector needed.
+model RecordEmbedding {
+  id           String   @id @default(cuid())
+  recordId     String   @unique @map("record_id")
+  collectionId String   @map("collection_id")
+  workspaceId  String   @map("workspace_id")
+  model        String
+  vector       Json
+  textHash     String   @map("text_hash")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  record CollectionRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([collectionId])
+  @@map("record_embeddings")
+}
+
+model CollectionView {
+  id           String   @id @default(cuid())
+  collectionId String   @map("collection_id")
+  key          String
+  type         String // "table" | "form" | "chart" | "board" | "calendar" | "gallery"
+  name         Json // i18n
+  config       Json     @default("{}")
+  position     Int      @default(0)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  collection Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+
+  @@unique([collectionId, key])
+  @@index([collectionId])
+  @@map("collection_views")
+}
+
+// ═══════════════════════════════════════════════════
+// PAGE — страница/документ
+// ═══════════════════════════════════════════════════
+
+model Page {
+  id           String   @id @default(cuid())
+  projectId    String   @map("project_id")
+  parentPageId String?  @map("parent_page_id")
+  title        String   @default("Без названия")
+  icon         String?
+  coverImage   String?  @map("cover_image")
+  content      Json     @default("{\"type\":\"doc\",\"content\":[]}")
+  yjsState     Bytes?   @map("yjs_state")
+  type         PageType @default(PAGE)
+  position     Int      @default(0)
+  isDeleted    Boolean  @default(false) @map("is_deleted")
+  isMemory     Boolean  @default(false) @map("is_memory")
+  isPublic     Boolean  @default(false) @map("is_public")
+  publicToken  String?  @unique @map("public_token")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  parentPage  Page?        @relation("PageChildren", fields: [parentPageId], references: [id])
+  children    Page[]       @relation("PageChildren")
+  tasks       Task[]
+  versions    PageVersion[]
+  attachments Attachment[]
+  comments    Comment[]
+
+  @@index([projectId])
+  @@index([parentPageId])
+  @@map("pages")
+}
+
+enum PageType {
+  PAGE
+  FOLDER
+  TEMPLATE
+}
+
+// ═══════════════════════════════════════════════════
+// TASK — задача
+// ═══════════════════════════════════════════════════
+
+model Task {
+  id             String      @id @default(cuid())
+  projectId      String      @map("project_id")
+  pageId         String?     @map("page_id")
+  parentTaskId   String?     @map("parent_task_id")
+  boardId        String?     @map("board_id")
+  boardColumnId  String?     @map("board_column_id")
+  title          String
+  description    Json?
+  status         TaskStatus  @default(TODO)
+  priority       TaskPriority @default(MEDIUM)
+  dueDate        DateTime?   @map("due_date")
+  startDate      DateTime?   @map("start_date")
+  isRecurring    Boolean     @default(false) @map("is_recurring")
+  recurrenceRule String?     @map("recurrence_rule")
+  reminderAt     DateTime[]  @map("reminder_at")
+  assignee       String?
+  position       Int         @default(0)
+  isDeleted      Boolean     @default(false) @map("is_deleted")
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  page       Page?    @relation(fields: [pageId], references: [id])
+  board      Board?   @relation(fields: [boardId], references: [id])
+  parentTask Task?    @relation("TaskChildren", fields: [parentTaskId], references: [id])
+  subtasks          Task[]             @relation("TaskChildren")
+  tags              TaskTag[]
+  comments          Comment[]
+  activities        TaskActivity[]
+  customFieldValues CustomFieldValue[]
+  timeEntries       TimeEntry[]
+
+
+  @@index([projectId])
+  @@index([boardId, boardColumnId])
+  @@map("tasks")
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  REVIEW
+  DONE
+  CANCELLED
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+// ═══════════════════════════════════════════════════
+// BOARD — канбан-доска
+// ═══════════════════════════════════════════════════
+
+model Board {
+  id        String   @id @default(cuid())
+  projectId String   @map("project_id")
+  name      String
+  columns   Json     @default("[]")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  tasks   Task[]
+
+  @@index([projectId])
+  @@map("boards")
+}
+
+// ═══════════════════════════════════════════════════
+// CALENDAR EVENT — событие календаря
+// ═══════════════════════════════════════════════════
+
+model CalendarEvent {
+  id             String   @id @default(cuid())
+  projectId      String   @map("project_id")
+  title          String
+  description    String?
+  startAt        DateTime @map("start_at")
+  endAt          DateTime? @map("end_at")
+  allDay         Boolean  @default(false) @map("all_day")
+  isRecurring    Boolean  @default(false) @map("is_recurring")
+  recurrenceRule String?  @map("recurrence_rule")
+  reminderAt     DateTime[] @map("reminder_at")
+  linkedDocuments Json    @default("[]") @map("linked_documents")
+  color          String?
+  location       String?
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([startAt])
+  @@map("calendar_events")
+}
+
+// ═══════════════════════════════════════════════════
+// BUDGET ENTRY — запись бюджета
+// ═══════════════════════════════════════════════════
+
+model BudgetEntry {
+  id             String      @id @default(cuid())
+  projectId      String      @map("project_id")
+  type           BudgetType
+  category       String
+  amount         Decimal     @db.Decimal(15, 2)
+  currency       String      @default("RUB")
+  account        String      @default("Наличные")
+  date           DateTime
+  description    String?
+  isRecurring    Boolean     @default(false) @map("is_recurring")
+  recurrenceRule String?     @map("recurrence_rule")
+  tags           String[]
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([date])
+  @@map("budget_entries")
+}
+
+enum BudgetType {
+  INCOME
+  EXPENSE
+}
+
+// ═══════════════════════════════════════════════════
+// NOTE — быстрая заметка
+// ═══════════════════════════════════════════════════
+
+model Note {
+  id          String   @id @default(cuid())
+  workspaceId String   @map("workspace_id")
+  projectId   String?  @map("project_id")
+  content     Json
+  tags        String[]
+  pinned      Boolean  @default(false)
+  color       String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("notes")
+}
+
+// ═══════════════════════════════════════════════════
+// ATTACHMENT — файл/вложение
+// ═══════════════════════════════════════════════════
+
+model Attachment {
+  id            String   @id @default(cuid())
+  workspaceId   String   @map("workspace_id")
+  projectId     String?  @map("project_id")
+  pageId        String?  @map("page_id")
+  filename      String
+  description   String?
+  mimeType      String   @map("mime_type")
+  size          Int
+  storagePath   String   @map("storage_path")
+  thumbnailPath String?  @map("thumbnail_path")
+  isImportant   Boolean  @default(false) @map("is_important")
+  metadata      Json     @default("{}")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  page      Page?     @relation(fields: [pageId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId])
+  @@index([projectId])
+  @@index([pageId])
+  @@map("attachments")
+}
+
+// ═══════════════════════════════════════════════════
+// LINK — граф связей между сущностями
+// ═══════════════════════════════════════════════════
+
+model Link {
+  id          String   @id @default(cuid())
+  workspaceId String   @map("workspace_id")
+  sourceType  String   @map("source_type")
+  sourceId    String   @map("source_id")
+  targetType  String   @map("target_type")
+  targetId    String   @map("target_id")
+  linkType    LinkType @map("link_type")
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([sourceType, sourceId])
+  @@index([targetType, targetId])
+  @@map("links")
+}
+
+enum LinkType {
+  REFERENCE
+  EMBED
+  DEPENDS_ON
+  BLOCKS
+  RELATED
+}
+
+// ═══════════════════════════════════════════════════
+// TAG — теги (polymorphic)
+// ═══════════════════════════════════════════════════
+
+model Tag {
+  id          String @id @default(cuid())
+  workspaceId String @map("workspace_id")
+  name        String
+  color       String @default("#6366f1")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  tasks     TaskTag[]
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId])
+  @@map("tags")
+}
+
+model TaskTag {
+  taskId String @map("task_id")
+  tagId  String @map("tag_id")
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  tag  Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([taskId, tagId])
+  @@map("task_tags")
+}
+
+// ═══════════════════════════════════════════════════
+// INTEGRATION — подключения к внешним сервисам
+// ═══════════════════════════════════════════════════
+
+model Integration {
+  id          String            @id @default(cuid())
+  workspaceId String            @map("workspace_id")
+  type        IntegrationType
+  config      Json              @default("{}")
+  status      IntegrationStatus @default(ACTIVE)
+  createdAt   DateTime          @default(now()) @map("created_at")
+  updatedAt   DateTime          @updatedAt @map("updated_at")
+
+  @@unique([workspaceId, type])
+  @@index([workspaceId])
+  @@map("integrations")
+}
+
+enum IntegrationType {
+  TELEGRAM
+  VIBER
+  SLACK
+  DISCORD
+  TWITTER
+  EMAIL
+  WEBHOOK
+}
+
+enum IntegrationStatus {
+  ACTIVE
+  PAUSED
+  ERROR
+}
+
+// ═══════════════════════════════════════════════════
+// AUTH — пользователи и API-ключи
+// ═══════════════════════════════════════════════════
+
+model User {
+  id               String    @id @default(cuid())
+  email            String    @unique
+  name             String
+  passwordHash     String    @map("password_hash")
+  role             UserRole  @default(MEMBER)
+  isActive         Boolean   @default(true) @map("is_active")
+  isVerified       Boolean   @default(false) @map("is_verified")
+  lastLoginAt      DateTime? @map("last_login_at")
+  plan             String    @default("free") @map("plan")
+  licenseKey       String?   @map("license_key")
+  licenseExpiresAt DateTime? @map("license_expires_at")
+  storageLimitMb   Int?      @map("storage_limit_mb") // per-user override; null = use plan limit
+  // Wallet, in micro-dollars (1e-6 USD). Only managed-model tokens draw on it;
+  // a BYOK user never touches this number.
+  balanceMicroUsd  Int       @default(0) @map("balance_micro_usd")
+  /// Set when a cloud subscription charge could not be covered. The account stays
+  /// readable and exportable — only writes are blocked. Cleared on top-up.
+  frozenAt         DateTime? @map("frozen_at")
+  /// Storage packs of 200 MB bought on top of the free allowance. Charged every
+  /// month while they are held, like the disk they occupy.
+  storagePacks     Int       @default(0) @map("storage_packs")
+  /// Per-user monthly spend cap on the built-in model, micro-USD. null = the
+  /// instance default. The user may raise or lower it himself.
+  monthlyCapMicroUsd Int?    @map("monthly_cap_micro_usd")
+  /// When the next subscription charge is due. The cycle is anchored to the
+  /// user's first top-up, not the calendar 1st — bill the month he paid for.
+  nextChargeAt     DateTime? @map("next_charge_at")
+  twoFactorEnabled Boolean   @default(false) @map("two_factor_enabled")
+  twoFactorSecret  String?   @map("two_factor_secret")
+  notificationPrefs Json     @default("{}") @map("notification_prefs")
+  aiSettings       Json?     @map("ai_settings") // per-user AI config (models/keys/embeddings) — shared across all the user's workspaces
+  personalWorkspaceId String? @map("personal_workspace_id") // the user's canonical Personal space (memory + personal modules)
+  capabilities     Json?     @map("capabilities") // per-user capability override: { grant: string[], revoke: string[] } — admin grants
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  apiKeys           ApiKey[]
+  journalEntries    JournalEntry[]
+  workspaceMemberships WorkspaceMember[]
+  projectMemberships   ProjectMember[]
+
+  @@map("users")
+  walletTx         WalletTransaction[]
+}
+
+model ApiKey {
+  id          String    @id @default(cuid())
+  userId      String    @map("user_id")
+  name        String
+  keyHash     String    @unique @map("key_hash")
+  prefix      String
+  lastUsedAt  DateTime? @map("last_used_at")
+  expiresAt   DateTime? @map("expires_at")
+  scopes      String[]
+  workspaceIds String[] @default([]) @map("workspace_ids") // empty = all workspaces of the user
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("api_keys")
+}
+
+enum UserRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+// ═══════════════════════════════════════════════════
+// APP SETTINGS — глобальные настройки приложения
+// ═══════════════════════════════════════════════════
+
+model LicenseKey {
+  id          String    @id @default(cuid())
+  key         String    @unique
+  plan        String    // "team" | "business"
+  email       String?
+  note        String?
+  expiresAt   DateTime? @map("expires_at")
+  activatedAt DateTime? @map("activated_at")
+  activatedBy String?   @map("activated_by")
+  isActive    Boolean   @default(true) @map("is_active")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@map("license_keys")
+}
+
+model AppSettings {
+  id              String  @id @default("singleton")
+  registrationMode String @default("invite") @map("registration_mode") // "open" | "invite" | "closed"
+  inviteCode      String? @map("invite_code")
+  planLimits      Json    @default("{}") @map("plan_limits")
+  /// Keys WE pay for: the built-in model, image generation, embeddings.
+  /// Shape: { ai|image|embeddings: { provider, apiKey (encrypted), model, baseUrl } }
+  /// Never leaves the server; the admin API reports `hasKey`, never the key.
+  managed         Json    @default("{}")
+
+  /// Admin-editable prices: { models: {…}, images: {…}, marginPercent }.
+  /// Merged over the code defaults, so an empty table behaves as no table.
+  pricing         Json    @default("{}")
+
+  /// null = follow DEPLOYMENT_MODE from the environment. true/false overrides it
+  /// from the admin panel, so turning billing on does not require a redeploy.
+  billingEnabled  Boolean? @map("billing_enabled")
+
+  smtpHost        String? @map("smtp_host")
+  smtpPort        Int?    @map("smtp_port")
+  smtpUser        String? @map("smtp_user")
+  smtpPass        String? @map("smtp_pass")
+  smtpFrom        String? @map("smtp_from")
+  appUrl          String? @map("app_url")
+
+  // Scheduled full-instance backup
+  backupSchedule  String   @default("off") @map("backup_schedule") // "off" | "daily" | "weekly"
+  backupDir       String?  @map("backup_dir")       // label of a configured server destination
+  backupRetention Int      @default(7) @map("backup_retention")
+  backupHour      Int      @default(3) @map("backup_hour")    // hour of day (0-23, server time)
+  backupWeekday   Int      @default(1) @map("backup_weekday") // for weekly: 0=Sun..6=Sat
+  backupLastRunAt DateTime? @map("backup_last_run_at")
+
+  // Monitoring alert thresholds (percent, 0-100). NULL = disabled.
+  alertCpuPct  Int? @map("alert_cpu_pct")
+  alertMemPct  Int? @map("alert_mem_pct")
+  alertDiskPct Int? @map("alert_disk_pct")
+
+  @@map("app_settings")
+}
+
+// ═══════════════════════════════════════════════════
+// AI CONVERSATION HISTORY
+// ═══════════════════════════════════════════════════
+
+model AiProjectTemplate {
+  id           String   @id @default(cuid())
+  workspaceId  String   @map("workspace_id")
+  name         String
+  description  String   @default("")
+  icon         String   @default("lucide:FolderKanban")
+  instructions String
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("ai_project_templates")
+}
+
+model AiConversation {
+  id          String      @id @default(cuid())
+  workspaceId String      @map("workspace_id")
+  projectId   String?     @map("project_id")
+  title       String      @default("Новый чат")
+  summarizedAt DateTime?  @map("summarized_at") // episodic memory: when this chat was last distilled into an episode
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  workspace Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  messages  AiMessage[]
+
+  @@index([workspaceId])
+  @@index([projectId])
+  @@map("ai_conversations")
+}
+
+model AiMessage {
+  id             String   @id @default(cuid())
+  conversationId String   @map("conversation_id")
+  role           String
+  content        String
+  toolCalls      Json?    @map("tool_calls")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  conversation AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@map("ai_messages")
+}
+
+// ═══════════════════════════════════════════════════
+// PAGE VERSION HISTORY
+// ═══════════════════════════════════════════════════
+
+model PageVersion {
+  id        String   @id @default(cuid())
+  pageId    String   @map("page_id")
+  title     String
+  content   Json
+  version   Int
+  savedBy   String?  @map("saved_by")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  page Page @relation(fields: [pageId], references: [id], onDelete: Cascade)
+
+  @@index([pageId])
+  @@map("page_versions")
+}
+
+// ═══════════════════════════════════════════════════
+// NOTIFICATIONS
+// ═══════════════════════════════════════════════════
+
+model Notification {
+  id          String   @id @default(cuid())
+  userId      String?  @map("user_id")       // null = broadcast to all workspace members
+  workspaceId String?  @map("workspace_id")
+  type        String   @default("info")       // info | task | page | system
+  title       String
+  body        String?
+  link        String?
+  isRead      Boolean  @default(false) @map("is_read")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([userId, isRead])
+  @@index([workspaceId, createdAt])
+  @@map("notifications")
+}
+
+
+
+// ═══════════════════════════════════════════════════
+// COMMENTS
+// ═══════════════════════════════════════════════════
+
+model Comment {
+  id        String   @id @default(cuid())
+  taskId    String?  @map("task_id")
+  pageId    String?  @map("page_id")
+  parentId  String?  @map("parent_id")
+  author    String?
+  text      String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  task     Task?    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  page     Page?    @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  parent   Comment? @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies  Comment[] @relation("CommentReplies")
+
+  @@index([taskId])
+  @@index([pageId])
+  @@map("comments")
+}
+
+// ═══════════════════════════════════════════════════
+// TASK ACTIVITY LOG
+// ═══════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════
+// CUSTOM FIELDS
+// ═══════════════════════════════════════════════════
+
+model CustomField {
+  id          String   @id @default(cuid())
+  projectId   String   @map("project_id")
+  name        String
+  fieldType   String   @map("field_type") // text | number | date | select | checkbox
+  options     Json?    // for select: ["opt1","opt2"]
+  position    Int      @default(0)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  project  Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  values   CustomFieldValue[]
+
+  @@index([projectId])
+  @@map("custom_fields")
+}
+
+model CustomFieldValue {
+  id            String   @id @default(cuid())
+  customFieldId String   @map("custom_field_id")
+  taskId        String   @map("task_id")
+  value         String?
+
+  customField CustomField @relation(fields: [customFieldId], references: [id], onDelete: Cascade)
+  task        Task        @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@unique([customFieldId, taskId])
+  @@index([taskId])
+  @@map("custom_field_values")
+}
+
+model TaskActivity {
+  id        String   @id @default(cuid())
+  taskId    String   @map("task_id")
+  actor     String?
+  action    String   // e.g. "status_changed", "title_changed", "assignee_changed"
+  oldValue  String?  @map("old_value")
+  newValue  String?  @map("new_value")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+  @@map("task_activities")
+}
+
+// ═══════════════════════════════════════════════════
+// TIME TRACKING
+// ═══════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════
+// KANBAN AUTOMATION
+// ═══════════════════════════════════════════════════
+
+model AutomationRule {
+  id           String   @id @default(cuid())
+  projectId    String   @map("project_id")
+  name         String
+  enabled      Boolean  @default(true)
+  trigger      String   // status_changed_to | priority_changed_to | task_created | task_assigned
+  triggerValue String?  @map("trigger_value")
+  action       String   // set_status | set_priority | set_due_today | add_tag | send_notification
+  actionValue  String?  @map("action_value")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@map("automation_rules")
+}
+
+// ═══════════════════════════════════════════════════
+// OKR — Objectives & Key Results
+// ═══════════════════════════════════════════════════
+
+model Objective {
+  id             String    @id @default(cuid())
+  workspaceId    String    @map("workspace_id")
+  title          String
+  description    String?
+  quarter        String    @default("") // e.g. "2026-Q2", empty for timeless goals
+  status         String    @default("active") // active | completed | cancelled
+  deadline       DateTime?
+  progressMode   String    @default("kr") @map("progress_mode") // "kr" | "time" | "manual"
+  manualProgress Float     @default(0)   @map("manual_progress")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  workspace  Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  keyResults KeyResult[]
+
+  @@index([workspaceId])
+  @@map("objectives")
+}
+
+model KeyResult {
+  id          String  @id @default(cuid())
+  objectiveId String  @map("objective_id")
+  title       String
+  target      Float   @default(100)
+  current     Float   @default(0)
+  unit        String? // %, users, $, tasks, etc.
+  status      String  @default("active") // active | completed | cancelled
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  objective Objective @relation(fields: [objectiveId], references: [id], onDelete: Cascade)
+
+  @@index([objectiveId])
+  @@map("key_results")
+}
+
+// ═══════════════════════════════════════════════════
+// JOURNAL
+// ═══════════════════════════════════════════════════
+
+model JournalEntry {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  date      String   // YYYY-MM-DD
+  content   Json     @default("{}")
+  mood      String?  // emoji or keyword
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+  @@index([userId])
+  @@map("journal_entries")
+}
+
+// ═══════════════════════════════════════════════════
+// HABIT TRACKER
+// ═══════════════════════════════════════════════════
+
+model Habit {
+  id          String   @id @default(cuid())
+  workspaceId String   @map("workspace_id")
+  name        String
+  description String?
+  icon        String?
+  color       String?
+  archived    Boolean  @default(false)
+  period      String   @default("forever") // "forever" | "week" | "month" | "year"
+  startDate   String?  @map("start_date")  // YYYY-MM-DD, period start
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  workspace Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  entries   HabitEntry[]
+
+  @@index([workspaceId])
+  @@map("habits")
+}
+
+model HabitEntry {
+  id        String  @id @default(cuid())
+  habitId   String  @map("habit_id")
+  date      String  // YYYY-MM-DD
+  note      String?
+
+  habit Habit @relation(fields: [habitId], references: [id], onDelete: Cascade)
+
+  @@unique([habitId, date])
+  @@index([habitId])
+  @@map("habit_entries")
+}
+
+model TimeEntry {
+  id          String    @id @default(cuid())
+  taskId      String    @map("task_id")
+  startedAt   DateTime  @map("started_at")
+  stoppedAt   DateTime? @map("stopped_at")
+  durationSec Int?      @map("duration_sec")
+  note        String?
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+  @@map("time_entries")
+}
+
+// ═══════════════════════════════════════════════════
+// AUDIT LOG
+// ═══════════════════════════════════════════════════
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  workspaceId String?  @map("workspace_id")
+  userId      String?  @map("user_id")
+  userEmail   String?  @map("user_email")
+  action      String   // e.g. "member.added", "project.deleted", "ai_settings.updated"
+  resourceType String? @map("resource_type") // "project" | "page" | "task" | "member" | "workspace" | "ai_settings" | "backup"
+  resourceId  String?  @map("resource_id")
+  resourceName String? @map("resource_name")
+  meta        Json     @default("{}")
+  ip          String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt(sort: Desc)])
+  @@index([userId])
+  @@map("audit_logs")
+}
+
+// One row per agent answer, not per API call: a single answer runs the model
+// several times in the tool loop, and the wallet must charge for the answer.
+// `cachedInputTokens` is billed separately by providers — DeepSeek charges 120x
+// less for a cache hit, so ignoring it would overstate cost by an order of
+// magnitude.
+model AiUsage {
+  id                String   @id @default(cuid())
+  workspaceId       String   @map("workspace_id")
+  userId            String?  @map("user_id")
+  provider          String
+  model             String
+  inputTokens       Int      @default(0) @map("input_tokens")
+  cachedInputTokens Int      @default(0) @map("cached_input_tokens")
+  outputTokens      Int      @default(0) @map("output_tokens")
+  calls             Int      @default(0)   // model round-trips inside one answer
+  // Frozen at write time: provider prices change, an old row keeps its price.
+  costMicroUsd      Int      @default(0) @map("cost_micro_usd")     // provider price, 1e-6 USD
+  chargedMicroUsd   Int      @default(0) @map("charged_micro_usd")  // cost x MARGIN; 0 for BYOK
+  managed           Boolean  @default(false) // false = BYOK, we bill nothing
+  source            String   @default("chat") // chat | telegram | viber | skill | trigger
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt(sort: Desc)])
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("ai_usage")
+}
+
+// The CREDIT ledger: top-ups, grants, manual adjustments, refunds. Spending is
+// not duplicated here — every debit already has a row in ai_usage with the
+// amount charged, so the two ledgers reconcile against User.balanceMicroUsd.
+//
+// A top-up is written BEFORE the user pays (status = pending) and settled by the
+// payment webhook. Keeping the intent in Redis, as the license flow does, loses
+// the money when a slow crypto confirmation outlives the TTL.
+model WalletTransaction {
+  id            String   @id @default(cuid())
+  userId        String   @map("user_id")
+  kind          String   // topup | grant | adjust | refund
+  /// Signed: positive credits, negative claws back. An admin correction of -$5
+  /// reads as one story; a topup next to a refund reads as a puzzle.
+  amountMicroUsd Int     @map("amount_micro_usd")
+  status        String   @default("completed") // pending | completed | failed
+  /// NOWPayments payment_id — unique so a replayed webhook cannot credit twice.
+  paymentId     String?  @unique @map("payment_id")
+  orderId       String?  @unique @map("order_id")
+  note          String?
+  createdAt     DateTime @default(now()) @map("created_at")
+  settledAt     DateTime? @map("settled_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([status])
+  @@map("wallet_transactions")
+}
