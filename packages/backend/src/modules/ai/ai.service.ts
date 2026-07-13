@@ -3015,24 +3015,36 @@ async function executeTool(
       const region = context?.searchRegion
       try {
         // ── SearXNG (self-hosted, preferred) ───────────────────────
+        // A datacenter IP gets blocked by Google/Bing often, so SearXNG can
+        // answer 200 with an EMPTY result set and a list of unresponsive engines.
+        // We must treat "empty" the same as "failed" and fall through to the
+        // fallback — otherwise the agent reports "search doesn't work" on a
+        // perfectly reachable SearXNG.
+        let unresponsive: string[] | undefined
         if (config.SEARXNG_URL) {
-          const url = new URL('/search', config.SEARXNG_URL)
-          url.searchParams.set('q', query)
-          url.searchParams.set('format', 'json')
-          url.searchParams.set('language', lang)
-          if (region) url.searchParams.set('region', region)
-          url.searchParams.set('categories', 'general')
-          url.searchParams.set('pageno', '1')
-          const res = await fetch(url.toString(), { signal: AbortSignal.timeout(15_000) })
-          if (res.ok) {
-            const data = await res.json() as { results?: Array<{ title: string; url: string; content?: string; engine?: string }> }
-            const results = (data.results ?? []).slice(0, limit).map(r => ({
-              title: r.title,
-              url: r.url,
-              snippet: r.content ?? '',
-              engine: r.engine,
-            }))
-            return { query, results, count: results.length, source: 'searxng' }
+          try {
+            const url = new URL('/search', config.SEARXNG_URL)
+            url.searchParams.set('q', query)
+            url.searchParams.set('format', 'json')
+            url.searchParams.set('language', lang)
+            if (region) url.searchParams.set('region', region)
+            url.searchParams.set('categories', 'general')
+            url.searchParams.set('pageno', '1')
+            const res = await fetch(url.toString(), { signal: AbortSignal.timeout(15_000) })
+            if (res.ok) {
+              const data = await res.json() as { results?: Array<{ title: string; url: string; content?: string; engine?: string }>; unresponsive_engines?: unknown[] }
+              unresponsive = (data.unresponsive_engines ?? []).map((e) => Array.isArray(e) ? String(e[0]) : String(e))
+              const results = (data.results ?? []).slice(0, limit).map(r => ({
+                title: r.title, url: r.url, snippet: r.content ?? '', engine: r.engine,
+              }))
+              if (results.length) return { query, results, count: results.length, source: 'searxng' }
+              // else: empty — fall through to the DuckDuckGo fallback below.
+            } else {
+              console.error('[web_search] searxng', res.status, (await res.text()).slice(0, 200))
+            }
+          } catch (e) {
+            console.error('[web_search] searxng error', e instanceof Error ? e.message : e)
+            // fall through to fallback
           }
         }
 
@@ -3048,7 +3060,18 @@ async function executeTool(
         for (const r of related.slice(0, limit - results.length)) {
           if (r.Text && r.FirstURL) results.push({ title: (r.Text as string).slice(0, 80), url: r.FirstURL as string, snippet: r.Text as string })
         }
-        return { query, results, count: results.length, source: 'duckduckgo_fallback' }
+        if (results.length) return { query, results, count: results.length, source: 'duckduckgo_fallback' }
+
+        // Genuinely nothing — say so plainly, and surface engine health so the
+        // agent tells the user "no results" instead of "search is broken". If
+        // SearXNG's engines were all blocked, that is the actionable signal.
+        return {
+          query, results: [], count: 0,
+          note: unresponsive?.length
+            ? `No results — the search engines did not respond (${unresponsive.join(', ')}). Try rephrasing or retry.`
+            : 'No results found for this query.',
+          ...(unresponsive?.length ? { unresponsiveEngines: unresponsive } : {}),
+        }
       } catch (err) {
         return { error: `Search failed: ${err instanceof Error ? err.message : String(err)}` }
       }
@@ -3162,8 +3185,8 @@ async function executeTool(
           url.searchParams.set('language', 'all')
           if (context?.searchRegion) url.searchParams.set('region', context.searchRegion)
           url.searchParams.set('pageno', '1')
-          const res = await fetch(url.toString(), { signal: AbortSignal.timeout(15_000) })
-          if (res.ok) {
+          const res = await fetch(url.toString(), { signal: AbortSignal.timeout(15_000) }).catch((e) => { console.error('[search_news] searxng error', e?.message); return null })
+          if (res?.ok) {
             const data = await res.json() as { results?: Array<{ title: string; url: string; content?: string; engine?: string; publishedDate?: string }> }
             const results = (data.results ?? []).slice(0, limit).map(r => ({
               title: r.title,
@@ -3172,7 +3195,8 @@ async function executeTool(
               engine: r.engine,
               date: r.publishedDate,
             }))
-            return { query, results, count: results.length, source: 'searxng_news' }
+            // Empty (engines blocked) → fall through to the HackerNews fallback.
+            if (results.length) return { query, results, count: results.length, source: 'searxng_news' }
           }
         }
 

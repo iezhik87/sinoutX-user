@@ -117,6 +117,69 @@ export async function getWorkspaceOwner(prisma: PrismaClient, workspaceId: strin
   return member?.user ?? null
 }
 
+// Everyone (besides the owner) who currently has access to ANY project the owner
+// holds — via a workspace membership OR a per-project share. This is the true head
+// count that the collaboration limit is measured against, so sharing the same
+// person on a second project never double-counts them.
+async function distinctCollaborators(prisma: PrismaClient, ownerUserId: string): Promise<Set<string>> {
+  const wsIds = (await prisma.workspaceMember.findMany({
+    where: { userId: ownerUserId, role: 'OWNER' }, select: { workspaceId: true },
+  })).map((m) => m.workspaceId)
+  const set = new Set<string>()
+  if (!wsIds.length) return set
+  const wm = await prisma.workspaceMember.findMany({
+    where: { workspaceId: { in: wsIds }, role: { not: 'OWNER' } }, select: { userId: true },
+  })
+  wm.forEach((m) => set.add(m.userId))
+  const projIds = (await prisma.project.findMany({
+    where: { workspaceId: { in: wsIds } }, select: { id: true },
+  })).map((p) => p.id)
+  if (projIds.length) {
+    const pm = await prisma.projectMember.findMany({
+      where: { projectId: { in: projIds } }, select: { userId: true },
+    })
+    pm.forEach((m) => set.add(m.userId))
+  }
+  set.delete(ownerUserId)
+  return set
+}
+
+/** How many distinct people (besides the owner) currently have access. */
+export async function collaboratorCount(prisma: PrismaClient, ownerUserId: string): Promise<number> {
+  return (await distinctCollaborators(prisma, ownerUserId)).size
+}
+
+/**
+ * The collaboration paywall — the one thing a Team licence unlocks. Free = solo
+ * (no external members); Team = up to `members` people total (owner + others).
+ *
+ * Two deliberate differences from every other limit:
+ *  - On a BILLING instance collaboration is free (each collaborator pays his own
+ *    subscription), so there is no cap.
+ *  - On self-hosted the instance OWNER is NOT exempt here, even though he bypasses
+ *    every other limit — unlocking collaboration is exactly what he pays Team for.
+ *    Admins (staff the owner added) still bypass.
+ */
+export async function canShareProject(
+  prisma: PrismaClient,
+  ownerUserId: string,
+  targetUserId: string,
+): Promise<{ ok: boolean; limit: number; current: number }> {
+  if (isBillingEnabled()) return { ok: true, limit: -1, current: 0 }
+  const owner = await prisma.user.findUnique({
+    where: { id: ownerUserId }, select: { plan: true, licenseExpiresAt: true, role: true },
+  })
+  if (!owner) return { ok: true, limit: -1, current: 0 }
+  if (owner.role === 'ADMIN') return { ok: true, limit: -1, current: 0 }
+  const limits = await getPlanLimits(prisma, effectivePlan(owner))
+  if (limits.members === -1) return { ok: true, limit: -1, current: 0 }
+  const collaborators = await distinctCollaborators(prisma, ownerUserId)
+  const total = 1 + collaborators.size // owner + everyone with access
+  // Re-sharing an existing collaborator adds no head count, so it stays allowed.
+  const ok = collaborators.has(targetUserId) || total < limits.members
+  return { ok, limit: limits.members, current: total }
+}
+
 // Check if user can create another workspace
 export async function canCreateWorkspace(prisma: PrismaClient, userId: string): Promise<{ ok: boolean; limit: number; current: number }> {
   const user = await prisma.user.findUnique({ where: { id: userId } })
@@ -131,21 +194,22 @@ export async function canCreateWorkspace(prisma: PrismaClient, userId: string): 
   return { ok: true, limit: 1, current: 0 }
 }
 
-// Check if workspace can add another member
+// Check if workspace can add another member. Same collaboration paywall as
+// canShareProject (they are two doors to the same thing): free = solo, Team lifts
+// it, cloud is free. The instance OWNER is gated here too — unlike other limits —
+// because that is precisely what Team sells; only ADMIN staff bypass.
 export async function canAddMember(prisma: PrismaClient, workspaceId: string): Promise<{ ok: boolean; limit: number; current: number }> {
   const owner = await getWorkspaceOwner(prisma, workspaceId)
   if (!owner) return { ok: true, limit: -1, current: 0 }
-  if (roleIsUnlimited(owner.role)) return { ok: true, limit: -1, current: 0 } // owner/admin: no limits
-
-  // On a billing instance collaboration is not paywalled: the invitee is a full
-  // account paying his own subscription, so inviting him is free. The member cap
-  // is a self-hosted concern only — there the Team licence unlocks it.
-  if (isBillingEnabled()) return { ok: true, limit: -1, current: 0 }
+  if (owner.role === 'ADMIN') return { ok: true, limit: -1, current: 0 } // staff, not a customer
+  if (isBillingEnabled()) return { ok: true, limit: -1, current: 0 }     // cloud: collaboration free
 
   const limits = await getPlanLimits(prisma, effectivePlan(owner))
   if (limits.members === -1) return { ok: true, limit: -1, current: 0 }
 
-  const current = await prisma.workspaceMember.count({ where: { workspaceId } })
+  // Head count across everything the owner shares (workspace + project shares),
+  // de-duplicated, plus the owner himself — matches canShareProject and the bar.
+  const current = 1 + await collaboratorCount(prisma, owner.id)
   return { ok: current < limits.members, limit: limits.members, current }
 }
 
@@ -208,7 +272,15 @@ export async function getUserPlanUsage(prisma: PrismaClient, userId: string) {
   const user = await prisma.user.findUnique({ where: { id: userId } })
   if (!user) return null
 
-  const planLimits = isBillingEnabled() ? await getPlanLimits(prisma, effectivePlan(user)) : UNLIMITED
+  const planLimitsRaw = await getPlanLimits(prisma, effectivePlan(user))
+  // Collaboration is the Team paywall on SELF-HOSTED only (free = solo). On the
+  // cloud collaboration is free (each collaborator pays his own subscription), so
+  // the members cap doesn't apply there; disk is rationed on the cloud, never
+  // self-hosted. Hence: cloud → storage from plan, members unlimited; self-hosted →
+  // storage unlimited, members from plan.
+  const planLimits = isBillingEnabled()
+    ? { ...planLimitsRaw, members: -1 }
+    : { ...UNLIMITED, members: planLimitsRaw.members }
   // The bought packs are part of the limit the user actually has, so the bar in
   // Settings must show them — otherwise he pays and sees no change.
   const limits: PlanLimits = { ...planLimits, storageMb: effectiveStorageMb(user, planLimits.storageMb) }
@@ -224,9 +296,9 @@ export async function getUserPlanUsage(prisma: PrismaClient, userId: string) {
   })
   const storageMb = Math.round(Number(storageResult._sum.size ?? 0) / 1024 / 1024)
 
-  const members = workspaceIds.length > 0
-    ? await prisma.workspaceMember.count({ where: { workspaceId: { in: workspaceIds } } })
-    : 0
+  // Head count against the collaboration cap = owner + everyone he shared with
+  // (workspace members and per-project shares, de-duplicated). Matches the gate.
+  const members = 1 + await collaboratorCount(prisma, userId)
 
   return {
     // Unlimited owners/admins read as the «Community» (self-host owner) tier;

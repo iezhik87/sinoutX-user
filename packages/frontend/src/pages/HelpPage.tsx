@@ -7,7 +7,7 @@ import {
   Keyboard, Settings, ChevronDown, ChevronRight, Zap, Target,
   Layers, StickyNote, Globe, Search, MessageSquare, Star,
   HelpCircle, Terminal, Image, Link,
-  BarChart2, Mic, Timer, Share2,
+  BarChart2, Timer, Share2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -310,7 +310,6 @@ const SECTIONS: HelpSection[] = [
                 <li>• Выдели текст → нажми AI кнопку на тулбаре</li>
                 <li>• Улучшить, сократить, расширить, перевести</li>
                 <li>• Генерация изображений и видео по тексту</li>
-                <li>• Транскрипция аудио через кнопку <Mic size={11} className="inline" /></li>
               </ul>
             </div>
           </div>
@@ -348,7 +347,6 @@ const SECTIONS: HelpSection[] = [
                 <li>• Select text → click AI button in the toolbar</li>
                 <li>• Improve, shorten, expand, translate</li>
                 <li>• Generate images and video from text</li>
-                <li>• Audio transcription via <Mic size={11} className="inline" /> button</li>
               </ul>
             </div>
           </div>
@@ -386,7 +384,6 @@ const SECTIONS: HelpSection[] = [
                 <li>• Выдзелі тэкст → націсні кнопку AI на тулбары</li>
                 <li>• Паляпшыць, скараціць, пашырыць, перакласці</li>
                 <li>• Генерацыя малюнкаў і відэа па тэксце</li>
-                <li>• Транскрыпцыя аўдыё праз кнопку <Mic size={11} className="inline" /></li>
               </ul>
             </div>
           </div>

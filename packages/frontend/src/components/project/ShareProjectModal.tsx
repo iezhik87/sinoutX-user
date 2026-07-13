@@ -38,6 +38,7 @@ export function ShareProjectModal({
       const code = e.response?.data?.error
       setError(code === 'no_such_user' ? L('No user with this email', 'Нет пользователя с таким email', 'Няма карыстальніка з гэтым email')
         : code === 'already_member' ? L('Already has access', 'Уже есть доступ', 'Ужо мае доступ')
+        : code === 'plan_limit' ? L('Collaboration needs a Team licence — the free edition is solo. Activate a Team key in Settings → Plan.', 'Совместная работа — по лицензии Team (бесплатная версия — соло). Активируйте ключ Team в Настройки → Тариф.', 'Сумесная праца — па ліцэнзіі Team (бясплатная версія — сола). Актывуйце ключ Team у Налады → Тарыф.')
         : (e.response?.data?.message ?? L('Failed to share', 'Не удалось поделиться', 'Не атрымалася')))
     },
   })

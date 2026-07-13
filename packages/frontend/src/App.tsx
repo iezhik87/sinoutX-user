@@ -14,7 +14,7 @@ import { useInstanceStore } from '@/stores/instanceStore'
 import { cn } from '@/lib/utils'
 import { useQuery } from '@tanstack/react-query'
 import { projectApi } from '@/api/client'
-import { Sparkles, Timer, Mic } from 'lucide-react'
+import { Sparkles, Timer } from 'lucide-react'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { ProjectPage } from '@/pages/ProjectPage'
 import { PageEditorPage } from '@/pages/PageEditorPage'
@@ -56,7 +56,6 @@ import { OfflineIndicator } from '@/components/common/OfflineIndicator'
 import { PomodoroTimer } from '@/components/common/PomodoroTimer'
 import { OnboardingModal } from '@/components/common/OnboardingModal'
 
-import { TranscribeModal } from '@/components/ai/TranscribeModal'
 import { initTheme } from '@/stores/themeStore'
 import { initAccent } from '@/stores/accentStore'
 import { useLanguageStore } from '@/stores/languageStore'
@@ -170,7 +169,6 @@ function AppShell() {
   const [aiOpen, setAiOpen] = useState(false)
   const [aiSidebarWidth, setAiSidebarWidth] = useState(0)
   const [pomodoroOpen, setPomodoroOpen] = useState(false)
-  const [transcribeOpen, setTranscribeOpen] = useState(false)
   const [aiInitialTemplate, setAiInitialTemplate] = useState<ProjectTemplate | undefined>()
   const [aiInitialPrompt, setAiInitialPrompt] = useState<string | undefined>()
   const [aiInitialInstructions, setAiInitialInstructions] = useState<string | undefined>()
@@ -312,18 +310,8 @@ function AppShell() {
       {/* Pomodoro timer */}
       {pomodoroOpen && <PomodoroTimer onClose={() => setPomodoroOpen(false)} />}
 
-      {/* Meeting transcription */}
-      {transcribeOpen && <TranscribeModal onClose={() => setTranscribeOpen(false)} />}
-
       {/* AI toggle button — hidden in the mobile app (the bottom nav owns chat). */}
       <div className={cn('fixed bottom-6 z-50 flex items-center gap-2 transition-[right] duration-300', mobileApp && 'hidden')} style={{ right: `${aiSidebarWidth + 24}px` }}>
-        <button
-          onClick={() => setTranscribeOpen(true)}
-          title="Meeting Transcription"
-          className="flex items-center gap-1.5 px-3 py-2.5 text-teal-300 rounded-full shadow-xl transition-all hover:scale-105 bg-teal-900/40 hover:bg-teal-800/40"
-        >
-          <Mic size={16} />
-        </button>
         <button
           onClick={() => setPomodoroOpen((v) => !v)}
           title="Pomodoro Timer"

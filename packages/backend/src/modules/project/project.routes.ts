@@ -9,6 +9,7 @@ import {
 import { z } from 'zod'
 import { denyIfNotMember, denyIfNoProjectAccess } from '../../lib/requireAccess.js'
 import { writeAuditLog } from '../../lib/audit.js'
+import { canShareProject, getWorkspaceOwner } from '../../lib/plans.js'
 
 export async function projectRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
   const service = new ProjectService(prisma)
@@ -189,6 +190,13 @@ export async function projectRoutes(fastify: FastifyInstance, prisma: PrismaClie
     // Don't create a redundant grant for someone already in the owning workspace.
     const alreadyWs = await prisma.workspaceMember.findUnique({ where: { workspaceId_userId: { workspaceId: project!.workspaceId, userId: target.id } }, select: { userId: true } })
     if (alreadyWs) return reply.status(409).send({ error: 'already_member', message: 'User already has access via the workspace' })
+    // Collaboration paywall: on self-hosted, sharing beyond the plan's head count
+    // needs a Team licence (free = solo). Free on a billing instance.
+    const owner = await getWorkspaceOwner(prisma, project!.workspaceId)
+    if (owner) {
+      const gate = await canShareProject(prisma, owner.id, target.id)
+      if (!gate.ok) return reply.status(402).send({ error: 'plan_limit', resource: 'members', limit: gate.limit, current: gate.current })
+    }
     const member = await prisma.projectMember.upsert({
       where: { projectId_userId: { projectId: id, userId: target.id } },
       create: { projectId: id, userId: target.id, role },
