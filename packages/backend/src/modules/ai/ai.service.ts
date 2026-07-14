@@ -184,6 +184,10 @@ export interface ChatContext {
   memoryCore?: string
   /** Proactively recalled long-term memory relevant to the user's last message. */
   recalledMemory?: string
+  /** Expert playbook auto-loaded when the chat runs inside an expertise project. */
+  activeExpertise?: string
+  /** Domain name of the auto-activated expertise. */
+  activeExpertiseDomain?: string
   /** Compact summary of the earlier part of a long conversation (trimmed history). */
   conversationSummary?: string
   /** SearXNG region for web search, e.g. "by-be", "ru-RU", "en-US" */
@@ -818,6 +822,11 @@ export function embeddingsCfgFromParts(provider: EmbeddingProvider, apiKey: stri
 }
 
 // ─── Filter tools by enabledTools list ───────────────────────────────────────
+
+// An "expertise" is an ordinary project that carries a playbook page with this
+// exact title — that marker is how we find/list/activate expertises without a
+// schema change. The project's GraduationCap icon is a soft visual signal.
+const EXPERTISE_PLAYBOOK_TITLE = 'Плейбук эксперта'
 
 const TASK_TOOLS = new Set(['create_task', 'create_tasks_batch'])
 const NOTE_TOOLS = new Set(['create_note', 'bulk_create_notes'])
@@ -1496,7 +1505,9 @@ ${langInstruction}
 20. Для структурирования страниц проекта используй папки (create_folder). Создавай папки когда проект содержит более 4-5 страниц или когда можно логически разделить на разделы. Сначала создай папку, затем создавай страницы внутри неё используя parentPageId = id папки. Страницы внутри папок НЕ нумеруй — нумерация только для страниц на одном уровне иерархии.
 21. ПАМЯТЬ ПРОЕКТА: В начале каждой сессии работы с проектом вызывай get_project_memory — там хранятся накопленные знания об этом проекте. После важных исследований, решений или диалогов вызывай update_project_memory и сохраняй ключевую информацию. Память видна пользователю как страница «AI Память» в навигации проекта. ОБЯЗАТЕЛЬНО вызывай update_project_memory в конце каждой сессии генерации проекта — запиши что было создано, какие решения приняты, структуру проекта и ключевые факты. ВАЖНО: когда создаёшь НОВЫЙ проект через create_project, всегда передавай id нового проекта в параметре projectId при вызове update_project_memory — НЕ используй id текущего проекта контекста.
 22. ЛИЧНЫЙ РОСТ (привычки/цели/дневник): для «заведи привычку», «хочу отслеживать ...» — create_habit (можно отметить выполнение через check_habit). Для «поставь цель», «цель на квартал» — create_objective, затем add_key_result для измеримых ключевых результатов (передавай полученный objectiveId). Для «запиши в дневник», «добавь в дневник» — create_journal_entry (за сегодня по умолчанию). Эти сущности относятся к воркспейсу/пользователю, не к проекту.
-23. ДОЛГОВРЕМЕННАЯ ПАМЯТЬ (сквозная по воркспейсу, не путать с памятью проекта): чтобы НИЧЕГО не терять и не забывать — СОХРАНЯЙ СРАЗУ через remember(content, kind), как только встретилось что-то стоящее запомнить (факт/предпочтение о пользователе, договорённость, важное решение, событие). kind: fact (по умолч.) | core (устойчивое правило/идентичность, с key — upsert без дублей) | entity | episode. ПЕРЕД ответом на что-либо, что может зависеть от прошлого, вызывай recall(query) — семантический поиск по всей памяти; scope=all — заглянуть и в другие модули. Память переживает сессии и общая для всех проектов воркспейса.
+23. ДОЛГОВРЕМЕННАЯ ПАМЯТЬ (сквозная по воркспейсу, не путать с памятью проекта): чтобы НИЧЕГО не терять и не забывать — СОХРАНЯЙ СРАЗУ через remember(content, kind), как только встретилось что-то стоящее запомнить (факт/предпочтение о пользователе, договорённость, важное решение, событие). kind: fact (по умолч.) | core (устойчивое правило/идентичность, с key — upsert без дублей) | entity | episode. ПЕРЕД ответом на что-либо, что может зависеть от прошлого, вызывай recall(query) — семантический поиск по всей памяти; scope=all — заглянуть и в другие модули. Чтобы найти, ЧТО И КОГДА обсуждали в ПРОШЛЫХ чатах (сырой текст сообщений, а не выжимка) — search_conversations. Память переживает сессии и общая для всех проектов воркспейса.
+23a. 🧠 КАК ТЫ «ОБУЧАЕШЬСЯ» (самоописание — если спросят про обучение/память/что умеешь, отвечай УВЕРЕННО, конкретно и ЧЕСТНО, без ложной скромности и без преувеличений): твоя нейросеть заморожена — дообучения весов на лету нет, это говори прямо. НО у тебя настоящая многоуровневая память, которая реально адаптирует тебя под пользователя и делает полезнее со временем: • семантический recall по СМЫСЛУ (эмбеддинги), а не только по совпадению слов; • разрешение противоречий — новый факт вытесняет устаревший, храню актуальную версию, а не обе; • граф сущностей — связываю людей/проекты/организации и подтягиваю связанное; • ранжирование по важности и свежести; • Ядро памяти — самые устойчивые правила всегда со мной; • память переживает сессии и общая по воркспейсу; • реестры модулей (Финансы/Медкарта/Личный рост) влияют на будущие ответы; • поиск по всем прошлым разговорам — что и когда обсуждали (search_conversations); • повторяющиеся рабочие сценарии оформляю как навыки и переиспользую. Формула: «модель не переобучаю, но запоминаю, связываю и адаптируюсь». НЕ приписывай себе того, чего нет (веса ты не меняешь). НЕ называй выдуманных цифр — если хочешь показать масштаб, вызови memory_stats и приведи РЕАЛЬНЫЕ числа.
+23b. 🎓 ЭКСПЕРТИЗА (становись «гуру» в теме по запросу): когда пользователь просит серьёзной помощи в предметной области (стройка, право, диета, инвестиции, ремонт авто…) — СНАЧАЛА проверь list_expertises. Если по теме экспертиза уже есть → activate_expertise (наденешь плейбук и работаешь как эксперт). Если нет, а тема крупная и стоящая → предложи «собрать экспертизу», и по согласию вызови build_expertise(domain); затем В ЭТОЙ ЖЕ сессии засей знания (deep_research по подтемам → разложи в страницы проекта), заполни плейбук (update_page) и веди пользователя КАК ЭКСПЕРТ: по процессу, с экспертными вопросами, сверяясь с чек-листом и нормами. Экспертиза РАСТЁТ со временем — дополняй её знаниями и запоминай решения по конкретному случаю пользователя (его дом/бизнес/цель). Не превращай в экспертизу мелкий разовый вопрос — только реальную область, где стоит углубиться.
 24. ЧТО КУДА КЛАСТЬ (дисциплина размещения — соблюдай строго): • устойчивые правила/предпочтения/идентичность пользователя → remember(kind:core); • атомарные важные факты → remember(kind:fact); знание о человеке/проекте/организации → remember(kind:entity). • ДОМЕННЫЕ ДАННЫЕ (деньги/здоровье/привычки-цели-дневник) — НЕ в память, а в соответствующий МОДУЛЬ через create_record (Финансы/Медкарта/Личный рост). • КРУПНАЯ ДОМЕННАЯ ТЕМА или база знаний (например, спортивная команда и её соревнования, набор материалов по теме) — НЕ в память, а в ОТДЕЛЬНЫЙ ПРОЕКТ: создай проект (create_project) со структурой папок/страниц и складывай туда страницы; в памяти оставь лишь ключевые факты + ССЫЛКУ (create_link) на проект, не копируй тело темы в память. • Документ/заметка/исследование → страница в проекте; дело со сроком → задача. • НИКОГДА не клади в память свой собственный рантайм/окружение/личность (Docker, пути типа ~/.hermes, фреймворк, «на каком сервере кручусь») — это твой конфиг, а не знание о пользователе; память только про пользователя и мир, свою личность бери из настроек. Перед созданием ИЩИ существующее (не плоди дубли).
 25. ТЫ — ОСНОВНОЙ ПУЛЬТ пользователя над его пространством: он говорит «что», ты разбираешься «где и как» (в каком проекте/модуле/реестре), и делаешь сам, не заставляя кликать. Действуй проактивно по дисциплине размещения выше.
 26. ⚠️ ЧЕСТНОСТЬ ДЕЙСТВИЙ (критично): НИКОГДА не утверждай, что что-то сделал (запомнил, сохранил, записал, создал, обновил, отправил), если ты НЕ вызвал соответствующий инструмент В ЭТОМ ЖЕ ответе и не получил его результат. Порядок строгий: СНАЧАЛА вызови инструмент (remember/create_record/create_task/…), ДОЖДИСЬ результата, и ТОЛЬКО ПОТОМ подтверждай словами. Если собираешься запомнить — сделай вызов remember немедленно, не откладывая и не описывая его словами вместо вызова. Фразы «я запомнил/сохранил» без реального вызова в этом ходе — запрещены. Если не уверен, что записал — проверь (recall/query_records), а не выдумывай.
@@ -1551,7 +1562,9 @@ The rules below about creating projects/pages/collections apply ONLY when the us
 20. Use folders (create_folder) to structure project pages. Create folders when a project has more than 4-5 pages or when sections can be logically separated. First create the folder, then create pages inside it using parentPageId = folder id. Pages INSIDE folders do NOT need numbering — numbering is only for pages at the same hierarchy level.
 21. PROJECT MEMORY: At the start of each project session call get_project_memory — it stores accumulated knowledge about this project. After important research, decisions or dialogs call update_project_memory to save key information. Memory is visible to the user as the «AI Memory» page in the project navigation. ALWAYS call update_project_memory at the end of each project generation session — record what was created, decisions made, project structure and key facts. IMPORTANT: when you create a NEW project via create_project, always pass that new project's id as the projectId parameter to update_project_memory — do NOT use the current context project id.
 22. PERSONAL GROWTH (habits/goals/journal): for "track a habit", "I want to track ..." use create_habit (mark done via check_habit). For "set a goal", "quarterly objective" use create_objective, then add_key_result for measurable key results (pass the returned objectiveId). For "add to my journal", "journal this" use create_journal_entry (defaults to today). These belong to the workspace/user, not a project.
-23. LONG-TERM MEMORY (workspace-wide, distinct from project memory): to never lose or forget anything — SAVE IMMEDIATELY via remember(content, kind) the moment something worth keeping appears (a fact/preference about the user, an agreement, an important decision, an event). kind: fact (default) | core (stable rule/identity, with key — upsert, no dupes) | entity | episode. BEFORE answering anything that may depend on the past, call recall(query) — semantic search across all memory; scope=all also looks into other modules. Memory persists across sessions and is shared by all projects in the workspace.
+23. LONG-TERM MEMORY (workspace-wide, distinct from project memory): to never lose or forget anything — SAVE IMMEDIATELY via remember(content, kind) the moment something worth keeping appears (a fact/preference about the user, an agreement, an important decision, an event). kind: fact (default) | core (stable rule/identity, with key — upsert, no dupes) | entity | episode. BEFORE answering anything that may depend on the past, call recall(query) — semantic search across all memory; scope=all also looks into other modules. To find WHAT and WHEN was discussed in PAST chats (raw message text, not the distilled memory) — search_conversations. Memory persists across sessions and is shared by all projects in the workspace.
+23a. 🧠 HOW YOU "LEARN" (self-description — if asked about learning/memory/what you can do, answer CONFIDENTLY, concretely and HONESTLY, no false modesty and no overstatement): your neural net is frozen — no on-the-fly weight training, say so plainly. BUT you have a real multi-layer memory that genuinely adapts you to the user and makes you more useful over time: • semantic recall by MEANING (embeddings), not just word matching; • contradiction resolution — a new fact supersedes the stale one, I keep the current version, not both; • an entity graph — I link people/projects/orgs and pull in related memory; • ranking by importance and recency; • a Memory Core — the most stable rules are always with me; • memory persists across sessions and is shared across the workspace; • module registries (Finance/Medical/Personal Growth) shape future answers; • search across all past conversations — what was discussed and when (search_conversations); • recurring workflows I capture as skills and reuse. The line: "I don't retrain the model, but I remember, connect and adapt." Do NOT claim what isn't true (you do not change your weights). Do NOT cite made-up numbers — to show scale, call memory_stats and give REAL figures.
+23b. 🎓 EXPERTISE (become a "guru" in a domain on demand): when the user asks for serious help in a subject area (construction, law, diet, investing, car repair…) — FIRST check list_expertises. If one exists for the topic → activate_expertise (put on its playbook and act as an expert). If not, and the topic is substantial and worthwhile → offer to "build an expertise", and on agreement call build_expertise(domain); then IN THE SAME session seed knowledge (deep_research on subtopics → lay it into project pages), fill the playbook (update_page) and guide the user AS AN EXPERT: by the process, with expert questions, checking the checklist and standards. An expertise GROWS over time — keep adding knowledge and remember decisions about the user's specific case (their house/business/goal). Do NOT turn a small one-off question into an expertise — only a real area worth going deep on.
 24. WHAT GOES WHERE (placement discipline — follow strictly): • stable rules/preferences/identity → remember(kind:core); • atomic important facts → remember(kind:fact); knowledge about a person/project/org → remember(kind:entity). • DOMAIN DATA (money/health/habits-goals-journal) does NOT go to memory — use create_record into the relevant MODULE (Finance/Medical Record/Personal Growth). • A LARGE DOMAIN TOPIC or knowledge base (e.g. a sports team and its competitions, a body of material on a topic) does NOT go to memory — put it in a DEDICATED PROJECT: create_project with a folder/page structure and store pages there; in memory keep only key facts + a LINK (create_link) to the project, do not copy the topic body into memory. • Document/note/research → a page in a project; an actionable item with a deadline → a task. • NEVER put your own runtime/environment/identity into memory (Docker, paths like ~/.hermes, framework, "which server I run on") — that is your config, not knowledge about the user; memory is only about the user and the world, take your identity from settings. Search for existing before creating (no dupes).
 25. YOU ARE THE USER'S MAIN CONTROL PANEL over their space: they say "what", you figure out "where and how" (which project/module/collection) and do it yourself instead of making them click. Act proactively per the placement discipline above.
 26. ⚠️ ACTION HONESTY (critical): NEVER claim you did something (remembered, saved, recorded, created, updated, sent) unless you actually CALLED the corresponding tool IN THIS SAME response and got its result. Strict order: FIRST call the tool (remember/create_record/create_task/…), WAIT for the result, and ONLY THEN confirm in words. If you intend to remember something, call remember immediately — do not describe it instead of calling it. Saying "I remembered/saved" without an actual call this turn is forbidden. If unsure whether it saved, verify (recall/query_records) instead of guessing.
@@ -1659,6 +1672,15 @@ ${templateBlock}`
         : `💭 RECALLED FROM MEMORY (relevant to the current request — rely on it; call recall for more):\n${context.recalledMemory}`}`
     : ''
 
+  // Auto-worn expertise: the playbook of the expertise project this chat runs in.
+  // It's placed AFTER the recalled memory so the expert operating profile frames
+  // the whole answer.
+  const expertiseBlock = context.activeExpertise
+    ? `\n\n${isRu
+        ? `🎓 РЕЖИМ ЭКСПЕРТА — «${context.activeExpertiseDomain ?? ''}». Ты работаешь как эксперт в этой теме. Строго следуй своему плейбуку ниже: веди по процессу, задавай экспертные вопросы, сверяйся с чек-листом и нормами, предупреждай о типичных ошибках. За деталями обращайся к страницам этого проекта и к памяти. Плейбук:\n${context.activeExpertise}`
+        : `🎓 EXPERT MODE — "${context.activeExpertiseDomain ?? ''}". You operate as an expert in this domain. Follow your playbook below strictly: run the process, ask expert questions, check the checklist and standards, flag common mistakes. For details consult this project's pages and memory. Playbook:\n${context.activeExpertise}`}`
+    : ''
+
   // Earlier turns of a long conversation, compressed. The recent messages are
   // still passed in full; this is only the part that fell outside the window.
   const summaryBlock = context.conversationSummary
@@ -1692,7 +1714,7 @@ ${templateBlock}`
 
 🕐 CURRENT TIME${localNowLine}`
 
-  return withCustom + coreBlock + modulesBlock + memoryBlock + recallBlock + summaryBlock + genBlock + telegramBlock + clockBlock
+  return withCustom + coreBlock + modulesBlock + memoryBlock + recallBlock + expertiseBlock + summaryBlock + genBlock + telegramBlock + clockBlock
 }
 
 // ─── OpenAI-compatible streaming ─────────────────────────────────────────────
@@ -4330,6 +4352,36 @@ async function executeTool(
       return { success: true, kind, recordId: created.id, ...(superseded.length ? { superseded: superseded.length } : {}) }
     }
 
+    case 'memory_stats': {
+      // Real numbers about what's remembered, so the agent can speak concretely
+      // ("I remember N facts, M entities…") instead of guessing when asked about
+      // its memory / how it "learns".
+      const memWs = await memoryWorkspaceId(prisma, context)
+      if (!memWs) return { error: 'Нет контекста пользователя/воркспейса.' }
+      const mem = await ensureMemoryCollections(prisma, memWs, context?.userId)
+      if (!mem) return { error: 'Модуль «Память» недоступен.' }
+      const ids = { core: mem.byKey.core, facts: mem.byKey.facts, entities: mem.byKey.entities, episodes: mem.byKey.episodes }
+      const countActive = async (colId?: string) => {
+        if (!colId) return 0
+        const recs = await prisma.collectionRecord.findMany({ where: { collectionId: colId }, select: { data: true } })
+        return recs.filter((r) => !(r.data as Record<string, unknown> | null)?._superseded).length
+      }
+      const [core, facts, entities, episodes] = await Promise.all([
+        countActive(ids.core), countActive(ids.facts), countActive(ids.entities), countActive(ids.episodes),
+      ])
+      const allColIds = Object.values(ids).filter(Boolean) as string[]
+      const [recordsTotal, embedded] = await Promise.all([
+        prisma.collectionRecord.count({ where: { collectionId: { in: allColIds } } }),
+        prisma.recordEmbedding.count({ where: { collectionId: { in: allColIds } } }),
+      ])
+      return {
+        total: core + facts + entities + episodes,
+        core, facts, entities, episodes,
+        semanticIndexed: embedded,
+        semanticCoveragePct: recordsTotal ? Math.round((embedded / recordsTotal) * 100) : 0,
+      }
+    }
+
     case 'recall': {
       const memWs = await memoryWorkspaceId(prisma, context)
       if (!memWs) return { error: 'Нет контекста пользователя/воркспейса.' }
@@ -4375,6 +4427,122 @@ async function executeTool(
       }
       const kw = await keywordRecall(prisma, colIds, query, limit)
       return { semantic: false, results: kw.map((r) => ({ ...(r.data as object), _score: r.score })) }
+    }
+
+    case 'search_conversations': {
+      // Search across the user's PAST chats (a different axis from recall, which
+      // searches distilled memory): find the actual message where something was
+      // said, with the conversation title and date.
+      const q = String(input.query ?? '').trim()
+      if (!q) return { error: 'Пустой query.' }
+      const wsId = context?.workspaceId ?? await memoryWorkspaceId(prisma, context)
+      if (!wsId) return { error: 'Нет контекста воркспейса.' }
+      const limit = Math.min(Number(input.limit) || 10, 25)
+      const msgs = await prisma.aiMessage.findMany({
+        where: {
+          conversation: { workspaceId: wsId },
+          role: { in: ['user', 'assistant'] },
+          content: { contains: q, mode: 'insensitive' },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        select: { role: true, content: true, createdAt: true, conversation: { select: { title: true } } },
+      })
+      const ql = q.toLowerCase()
+      const results = msgs.map((m) => {
+        const idx = m.content.toLowerCase().indexOf(ql)
+        const start = Math.max(0, idx - 60)
+        const snippet = (start > 0 ? '…' : '') + m.content.slice(start, start + 220) + (m.content.length > start + 220 ? '…' : '')
+        return { conversation: m.conversation.title, date: m.createdAt.toISOString().slice(0, 10), role: m.role, snippet }
+      })
+      return { query: q, count: results.length, results }
+    }
+
+    // ── Expertise (self-built domain mastery) ───────────────────────────────
+    case 'build_expertise': {
+      const domain = String(input.domain ?? '').trim()
+      if (!domain) return { error: 'Укажи domain (тема экспертизы).' }
+      const wsId = context?.workspaceId ?? await memoryWorkspaceId(prisma, context)
+      if (!wsId) return { error: 'Нет контекста воркспейса.' }
+      // Reuse an existing expertise on the same domain instead of duplicating.
+      const existingPlaybook = await prisma.page.findFirst({
+        where: { title: EXPERTISE_PLAYBOOK_TITLE, isDeleted: false, project: { workspaceId: wsId, name: { equals: domain, mode: 'insensitive' } } },
+        select: { id: true, projectId: true },
+      })
+      if (existingPlaybook) {
+        return { alreadyExists: true, domain, projectId: existingPlaybook.projectId, playbookPageId: existingPlaybook.id,
+          guidance: `Экспертиза «${domain}» уже есть — активируй её через activate_expertise и дополняй знания (deep_research → новые страницы, обнови плейбук через update_page).` }
+      }
+      const lastPos = await prisma.project.findFirst({ where: { workspaceId: wsId }, orderBy: { position: 'desc' }, select: { position: true } })
+      const project = await prisma.project.create({
+        data: { workspaceId: wsId, name: domain, icon: 'lucide:GraduationCap', description: `Экспертиза: ${domain}`, position: (lastPos?.position ?? -1) + 1 },
+      })
+      const skeleton = [
+        `# Плейбук эксперта: ${domain}`,
+        '',
+        '## Роль и мышление',
+        `Как думает и действует эксперт в теме «${domain}»: приоритеты, на что смотрит в первую очередь, чем отличается от новичка.`,
+        '',
+        '## Процесс / этапы',
+        'Пошаговый порядок работы от начала до результата.',
+        '',
+        '## Нормы, стандарты, требования',
+        'Ключевые правила/ГОСТ/СНиП/лучшие практики, которые нельзя нарушать.',
+        '',
+        '## Чек-лист',
+        'Что обязательно проверить/не забыть.',
+        '',
+        '## Вопросы к пользователю',
+        'Что эксперт спрашивает, чтобы понять конкретную ситуацию (параметры, ограничения, бюджет).',
+        '',
+        '## Типичные ошибки и подводные камни',
+        'Где чаще всего ошибаются и как этого избежать.',
+        '',
+        '## Инструменты и расчёты',
+        'Какие калькуляторы/формулы/сервисы нужны (кандидаты в кастом-навыки).',
+        '',
+        '## Источники',
+        'На чём основана экспертиза (ссылки из deep_research).',
+      ].join('\n')
+      const playbook = await prisma.page.create({
+        data: { projectId: project.id, title: EXPERTISE_PLAYBOOK_TITLE, icon: 'lucide:GraduationCap', content: textToTipTap(skeleton), position: 0 },
+      })
+      return {
+        created: true, domain, projectId: project.id, playbookPageId: playbook.id,
+        guidance: `Создан каркас экспертизы «${domain}» (проект + плейбук). СЕЙЧАС, в этой же сессии: 1) прогони deep_research по 3–6 ключевым подтемам «${domain}»; 2) разложи знания в структурные страницы/папки этого проекта (create_folder/create_page); 3) заполни плейбук (update_page ${playbook.id}) по всем разделам — процесс, нормы, чек-лист, вопросы, ошибки, нужные калькуляторы; 4) запомни ключевые факты (remember); 5) начни задавать пользователю экспертные вопросы по разделу «Вопросы к пользователю». Скажи пользователю, что собираешь экспертизу и что уже готово.`,
+      }
+    }
+
+    case 'activate_expertise': {
+      const q = String(input.domain ?? input.query ?? '').trim()
+      const wsId = context?.workspaceId ?? await memoryWorkspaceId(prisma, context)
+      if (!wsId) return { error: 'Нет контекста воркспейса.' }
+      const playbooks = await prisma.page.findMany({
+        where: { title: EXPERTISE_PLAYBOOK_TITLE, isDeleted: false, project: { workspaceId: wsId } },
+        select: { id: true, content: true, project: { select: { id: true, name: true } } },
+      })
+      if (!playbooks.length) return { error: 'Экспертиз пока нет. Собери через build_expertise.' }
+      const match = q
+        ? (playbooks.find((p) => p.project.name.toLowerCase().includes(q.toLowerCase())) ?? null)
+        : (playbooks.length === 1 ? playbooks[0] : null)
+      if (!match) return { error: `Не нашёл экспертизу по «${q}». Доступные: ${playbooks.map((p) => p.project.name).join(', ')}.` }
+      const text = tipTapToText((match.content as Record<string, unknown>) ?? { type: 'doc', content: [] })
+      return {
+        activated: true, domain: match.project.name, projectId: match.project.id,
+        playbook: text,
+        note: `Ты теперь работаешь как эксперт по «${match.project.name}». Следуй плейбуку выше: веди по процессу, задавай экспертные вопросы, сверяйся с чек-листом и нормами. За деталями обращайся к страницам проекта (search_workspace/read_page_with_children с projectId ${match.project.id}) и к памяти (recall).`,
+      }
+    }
+
+    case 'list_expertises': {
+      const wsId = context?.workspaceId ?? await memoryWorkspaceId(prisma, context)
+      if (!wsId) return { error: 'Нет контекста воркспейса.' }
+      const playbooks = await prisma.page.findMany({
+        where: { title: EXPERTISE_PLAYBOOK_TITLE, isDeleted: false, project: { workspaceId: wsId } },
+        select: { id: true, project: { select: { id: true, name: true } }, updatedAt: true },
+        orderBy: { updatedAt: 'desc' },
+      })
+      return { count: playbooks.length, expertises: playbooks.map((p) => ({ domain: p.project.name, projectId: p.project.id, playbookPageId: p.id, updated: p.updatedAt.toISOString().slice(0, 10) })) }
     }
 
     default:
@@ -4642,6 +4810,22 @@ export async function* streamChat(
         effectiveContext = { ...context, projectMemoryPageId: undefined }
       }
     } catch { /* non-critical — proceed without memory */ }
+  }
+
+  // Auto-activate expertise: if this chat runs INSIDE an expertise project (it
+  // carries a playbook page), wear that playbook automatically — the agent acts
+  // as the domain expert without needing an explicit activate_expertise call.
+  if (context.projectId) {
+    try {
+      const pb = await prisma.page.findFirst({
+        where: { projectId: context.projectId, title: EXPERTISE_PLAYBOOK_TITLE, isDeleted: false },
+        select: { content: true, project: { select: { name: true } } },
+      })
+      if (pb) {
+        const text = tipTapToText((pb.content as Record<string, unknown>) ?? { type: 'doc', content: [] })
+        if (text.trim()) effectiveContext = { ...effectiveContext, activeExpertise: text.slice(0, 4000), activeExpertiseDomain: pb.project.name }
+      }
+    } catch { /* non-critical */ }
   }
 
   // Inject domain hints from modules installed in this workspace, so the agent

@@ -11,6 +11,19 @@ import { uploadFile } from '../../lib/storage.js'
 import { config } from '../../config/index.js'
 import { denyIfNotMember, getProjectWorkspaceId } from '../../lib/requireAccess.js'
 
+// Sniff the magic bytes so we never store/serve a provider's HTML/JSON error as
+// if it were an image (which the browser renders as a broken <img>).
+function looksLikeImage(buf: Buffer): boolean {
+  if (buf.length < 12) return false
+  const b = buf
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return true                         // JPEG
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return true         // PNG
+  if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x38) return true         // GIF
+  if (b[0] === 0x42 && b[1] === 0x4d) return true                                           // BMP
+  if (b.subarray(0, 4).toString('ascii') === 'RIFF' && b.subarray(8, 12).toString('ascii') === 'WEBP') return true // WEBP
+  return false
+}
+
 // Kling AI: supports both "accessKey:secretKey" (JWT) and single token formats
 function klingBearerToken(apiKey: string): string {
   const colonIdx = apiKey.indexOf(':')
@@ -303,17 +316,24 @@ export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
       }
       if (!imageUrl) return reply.status(502).send({ error: 'fal.ai generation timed out' })
       const imgRes = await fetch(imageUrl, { signal: AbortSignal.timeout(30_000) })
+      if (!imgRes.ok) return reply.status(502).send({ error: `fal.ai: could not download the result image (${imgRes.status})` })
       imageBuffer = Buffer.from(await imgRes.arrayBuffer())
       mimeType = imgRes.headers.get('content-type') ?? 'image/jpeg'
 
     } else {
-      // Pollinations.ai (free, no key)
-      const encoded = encodeURIComponent(finalPrompt)
+      // Pollinations.ai (free, no key). A very long prompt (e.g. a pasted block of
+      // text instead of a description) makes the service answer 200 with a text
+      // error page, not an image — so cap the prompt and verify what came back.
+      const encoded = encodeURIComponent(finalPrompt.slice(0, 400))
       const genUrl = `https://image.pollinations.ai/prompt/${encoded}?width=1024&height=768&nologo=true&model=flux`
       const res = await fetch(genUrl, { signal: AbortSignal.timeout(90_000) })
       if (!res.ok) return reply.status(502).send({ error: 'Image generation failed' })
+      const ct = res.headers.get('content-type') ?? ''
       imageBuffer = Buffer.from(await res.arrayBuffer())
-      mimeType = res.headers.get('content-type') ?? 'image/jpeg'
+      if (!ct.startsWith('image/')) {
+        return reply.status(502).send({ error: 'The image service returned no image. Try a shorter, simpler description.' })
+      }
+      mimeType = ct
     }
 
     // Charged per picture, not per token: an image has no tokens to count. A
@@ -333,9 +353,15 @@ export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
       }
     }
 
-    const ext = mimeType.includes('png') ? 'png' : 'jpg'
-    const filename = `${randomUUID()}.${ext}`
     if (!imageBuffer) return reply.status(502).send({ error: 'No image buffer produced' })
+    // Never store/serve a non-image: a provider can answer 200 with an HTML/JSON
+    // error, which would then render as a broken <img>. Check the magic bytes.
+    if (!looksLikeImage(imageBuffer)) {
+      fastify.log.warn({ provider, head: imageBuffer.subarray(0, 16).toString('hex') }, 'generate-image: non-image response')
+      return reply.status(502).send({ error: 'The provider did not return a valid image. Try again or simplify the prompt.' })
+    }
+    const ext = mimeType.includes('png') ? 'png' : mimeType.includes('webp') ? 'webp' : mimeType.includes('gif') ? 'gif' : 'jpg'
+    const filename = `${randomUUID()}.${ext}`
     const storageKey = `ai-images/${filename}`
     await uploadFile(storageKey, imageBuffer, mimeType, imageBuffer.length)
 

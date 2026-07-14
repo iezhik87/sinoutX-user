@@ -75,6 +75,11 @@ export const TOOL_CATALOG: ToolMeta[] = [
   { name: 'update_project_memory',  category: 'knowledge', description: 'Обновить память проекта — сохранить важные исследования, решения и контекст', description_en: 'Update project memory — save important research, decisions and context' },
   { name: 'remember',               category: 'knowledge', description: 'Запомнить надолго в сквозную память воркспейса (факт/ядро/сущность/эпизод)', description_en: 'Remember long-term into workspace-wide memory (fact/core/entity/episode)' },
   { name: 'recall',                 category: 'knowledge', description: 'Вспомнить из долговременной памяти по смыслу (семантически)', description_en: 'Recall from long-term memory by meaning (semantic)' },
+  { name: 'memory_stats',           category: 'knowledge', description: 'Статистика памяти о пользователе (сколько фактов/сущностей/эпизодов/ядра, покрытие семантическим индексом)', description_en: 'Memory stats about the user (counts of facts/entities/episodes/core, semantic index coverage)' },
+  { name: 'search_conversations',   category: 'knowledge', description: 'Поиск по ПРОШЛЫМ разговорам — найти, что и когда обсуждали (сообщение + название чата + дата)', description_en: 'Search PAST conversations — find what was discussed and when (message + chat title + date)' },
+  { name: 'build_expertise',        category: 'knowledge', description: 'Собрать себе ЭКСПЕРТИЗУ по теме: проект-база знаний + плейбук эксперта (дальше засеваешь deep_research и заполняешь)', description_en: 'Build yourself an EXPERTISE in a domain: a knowledge-base project + expert playbook (then seed via deep_research and fill it)' },
+  { name: 'activate_expertise',     category: 'knowledge', description: 'Надеть готовую экспертизу — загрузить её плейбук и работать как эксперт в этой теме', description_en: 'Put on a built expertise — load its playbook and act as an expert in that domain' },
+  { name: 'list_expertises',        category: 'knowledge', description: 'Список собранных экспертиз', description_en: 'List built expertises' },
   { name: 'create_skill',           category: 'knowledge', description: 'Завести себе навык по расписанию (скил) — повторяющееся действие', description_en: 'Set up a scheduled skill — a recurring action' },
   { name: 'list_skills',            category: 'knowledge', description: 'Список своих навыков по расписанию (скилов)', description_en: 'List own scheduled skills' },
   { name: 'delete_skill',           category: 'knowledge', description: 'Удалить навык по расписанию', description_en: 'Delete a scheduled skill' },
@@ -886,6 +891,51 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       },
       required: ['query'],
     },
+  },
+  {
+    name: 'memory_stats',
+    description: 'Реальная статистика твоей долговременной памяти о пользователе: сколько активных фактов, сущностей, эпизодов и правил Ядра, а также покрытие семантическим индексом (%). Вызывай, когда пользователь спрашивает про твою память/обучение/что ты знаешь — и приводи конкретные числа вместо выдуманных.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'search_conversations',
+    description: 'Поиск по ПРОШЛЫМ разговорам с пользователем (отличается от recall, который ищет по выжимке-памяти): находит конкретное сообщение, где что-то говорилось, с названием чата и датой. Вызывай на «когда мы обсуждали…», «что я говорил про…», «в прошлый раз мы решили…».',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Ключевые слова/фраза для поиска по тексту прошлых сообщений' },
+        limit: { type: 'number', description: 'Сколько сообщений вернуть (по умолч. 10, макс 25)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'build_expertise',
+    description: 'Собрать себе ЭКСПЕРТИЗУ по крупной теме, чтобы стать в ней «гуру». Создаёт проект-базу знаний + каркас «Плейбук эксперта». После вызова ты ДОЛЖЕН в этой же сессии засеять знания через deep_research, разложить их по страницам проекта, заполнить плейбук (процесс, нормы, чек-лист, вопросы к пользователю, ошибки, нужные калькуляторы) и начать работать как эксперт. Вызывай, когда пользователь просит серьёзной помощи в предметной области (стройка, юриспруденция, диета, инвестиции и т.п.), а готовой экспертизы ещё нет.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        domain: { type: 'string', description: 'Тема экспертизы, коротко (напр. «Строительство дома», «Налоги ИП», «Силовые тренировки»)' },
+        focus: { type: 'string', description: 'Необязательно: конкретный фокус/ситуация пользователя, чтобы сузить сбор знаний' },
+      },
+      required: ['domain'],
+    },
+  },
+  {
+    name: 'activate_expertise',
+    description: 'Надеть готовую экспертизу: загружает её плейбук в контекст, чтобы ты действовал как эксперт в этой теме. Вызывай в начале работы по теме, для которой экспертиза уже собрана (проверь list_expertises).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        domain: { type: 'string', description: 'Тема/название экспертизы (частичное совпадение ок). Если экспертиза одна — можно без параметра.' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'list_expertises',
+    description: 'Список собранных экспертиз (темы, когда обновлялись). Загляни сюда, прежде чем собирать новую — вдруг по теме уже есть.',
+    input_schema: { type: 'object', properties: {}, required: [] },
   },
   {
     name: 'create_skill',

@@ -39,8 +39,11 @@ export function AiImageModal({ onInsert, onClose, projectId }: AiImageModalProps
     try {
       const { url } = await aiApi.generateImage(prompt.trim(), currentWorkspaceId ?? undefined, projectId)
       setPreviewUrl(url)
-    } catch {
-      setError(t.editor.aiImage.errorGeneration)
+    } catch (e) {
+      // Surface the provider's actual complaint (bad model, auth, balance, params)
+      // instead of a generic "try again" that hides what fal.ai/OpenAI reported.
+      const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error
+      setError(msg ? String(msg) : t.editor.aiImage.errorGeneration)
     } finally {
       setLoading(false)
     }
@@ -113,7 +116,12 @@ export function AiImageModal({ onInsert, onClose, projectId }: AiImageModalProps
           {previewUrl && (
             <div className="space-y-3">
               <div className="rounded-xl overflow-hidden border border-slate-700">
-                <img src={previewUrl} alt="Generated" className="w-full object-cover" />
+                <img
+                  src={previewUrl}
+                  alt=""
+                  className="w-full object-cover"
+                  onError={() => { setPreviewUrl(null); setError(t.editor.aiImage.errorGeneration) }}
+                />
               </div>
               <div className="flex gap-2">
                 <button
