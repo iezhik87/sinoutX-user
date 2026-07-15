@@ -5,7 +5,7 @@
 // user's country (from Memory Core).
 export const auto = {
   id: 'auto',
-  version: '1.0.0',
+  version: '1.1.0',
   name: { ru: 'Авто', en: 'Vehicles', be: 'Аўто' },
   description: {
     ru: 'Всё по машинам: характеристики и VIN, журнал ТО и ремонтов, заправки, страховки и техосмотр со сроками, шины. Данные не покидают ваш сервер.',
@@ -113,6 +113,49 @@ export const auto = {
       ],
     },
     {
+      key: 'parts',
+      name: { ru: 'Запчасти', en: 'Parts', be: 'Запчасткі' },
+      icon: 'lucide:Cog',
+      fields: [
+        { key: 'name', label: { ru: 'Деталь', en: 'Part', be: 'Дэталь' }, type: 'text', required: true, help: { ru: 'Что за деталь, напр. «Масляный фильтр»', en: 'What part, e.g. "Oil filter"', be: 'Якая дэталь' } },
+        { key: 'car', label: { ru: 'Машина', en: 'Car', be: 'Машына' }, type: 'relation', relation: { collection: 'cars' } },
+        {
+          key: 'system', label: { ru: 'Система', en: 'System', be: 'Сістэма' }, type: 'select',
+          options: [
+            { value: 'oil', label: { ru: 'Масло', en: 'Oil', be: 'Алей' } },
+            { value: 'filters', label: { ru: 'Фильтры', en: 'Filters', be: 'Фільтры' } },
+            { value: 'ignition', label: { ru: 'Свечи/зажигание', en: 'Ignition', be: 'Свечкі/запальванне' } },
+            { value: 'timing', label: { ru: 'ГРМ', en: 'Timing', be: 'ГРМ' } },
+            { value: 'brakes', label: { ru: 'Тормоза', en: 'Brakes', be: 'Тармазы' } },
+            { value: 'transmission', label: { ru: 'КПП', en: 'Transmission', be: 'КПП' } },
+            { value: 'cooling', label: { ru: 'Охлаждение/антифриз', en: 'Cooling', be: 'Ахаладжэнне' } },
+            { value: 'suspension', label: { ru: 'Подвеска', en: 'Suspension', be: 'Падвеска' } },
+            { value: 'electrical', label: { ru: 'Электрика/АКБ', en: 'Electrical', be: 'Электрыка' } },
+            { value: 'fuel', label: { ru: 'Топливная', en: 'Fuel system', be: 'Паліўная' } },
+            { value: 'other', label: { ru: 'Другое', en: 'Other', be: 'Іншае' } },
+          ],
+        },
+        { key: 'brand', label: { ru: 'Бренд', en: 'Brand', be: 'Брэнд' }, type: 'text', help: { ru: 'Напр. MANN, NGK, Gates', en: 'e.g. MANN, NGK, Gates', be: 'Напр. MANN, NGK' } },
+        { key: 'partNumber', label: { ru: 'Артикул', en: 'Part number', be: 'Артыкул' }, type: 'text', help: { ru: 'Напр. 21080-1012005-08', en: 'e.g. 21080-1012005-08', be: 'Напр. 21080-1012005-08' } },
+        {
+          key: 'tier', label: { ru: 'Уровень', en: 'Tier', be: 'Узровень' }, type: 'select',
+          options: [
+            { value: 'budget', label: { ru: 'Эконом', en: 'Budget', be: 'Эканом' } },
+            { value: 'standard', label: { ru: 'Стандарт', en: 'Standard', be: 'Стандарт' } },
+            { value: 'premium', label: { ru: 'Премиум', en: 'Premium', be: 'Прэміум' } },
+          ],
+        },
+        { key: 'interval', label: { ru: 'Интервал замены', en: 'Replacement interval', be: 'Інтэрвал замены' }, type: 'text', help: { ru: 'Напр. 10 000 км / 1 год', en: 'e.g. 10,000 km / 1 year', be: 'Напр. 10 000 км' } },
+        { key: 'price', label: { ru: 'Цена', en: 'Price', be: 'Цана' }, type: 'number' },
+        { key: 'note', label: { ru: 'Заметка', en: 'Note', be: 'Нататка' }, type: 'longtext' },
+      ],
+      views: [
+        { key: 'all', type: 'table', name: { ru: 'Все', en: 'All', be: 'Усе' }, config: { columns: ['name', 'system', 'brand', 'partNumber', 'tier', 'price'] } },
+        { key: 'bySystem', type: 'board', name: { ru: 'По системам', en: 'By system', be: 'Па сістэмах' }, config: { groupBy: 'system' } },
+        { key: 'card', type: 'form', name: { ru: 'Карточка', en: 'Card', be: 'Картка' } },
+      ],
+    },
+    {
       key: 'insurance',
       name: { ru: 'Страховки и техосмотр', en: 'Insurance & inspection', be: 'Страхоўкі і тэхагляд' },
       icon: 'lucide:ShieldCheck',
@@ -171,7 +214,7 @@ export const auto = {
   ],
   ai: {
     systemHints: {
-      ru: 'Это модуль «Авто». Реестры: cars (машины; поля: name, make=марка, model, year, vin, plate=госномер, fuel [petrol|diesel|gas|hybrid|electric], transmission [manual|automatic|robot|cvt], engine, power=л.с., mileage=пробег км, color, note), service (ТО и ремонты; поля: date, car=relation, type [maintenance|repair|replacement|diagnostics|other], odometer=пробег, work=что сделано, parts=запчасти/артикулы, cost, station=СТО, nextDate/nextOdometer=следующее ТО, file=чек, note), fuel (заправки; поля: date, car, odometer, liters, pricePerL, cost, full=полный бак, station, note), insurance (страховки и техосмотр; поля: type, car, number, provider, start, end=действует до, cost, file, note), tires (шины; season, car, size, brand, bought, storage). ЗАПИСЫВАЙ данные по авто ТОЛЬКО через create_record в нужный реестр (НЕ таблицей на странице): «заправился» → fuel; «поменял масло/сделал ТО/починил» → service (укажи odometer и parts с артикулами); «оформил страховку/техосмотр» → insurance (обязательно end — по нему напомнишь продлить); характеристики машины → cars. Артикулы запчастей клади в parts. Пробег из свежей записи обновляй и в cars.mileage. РАСХОД ТОПЛИВА, средние, суммарные траты — считай через execute_code (по записям fuel/service), НЕ в уме. Дата = сейчас, если не указана. СТРАНА: типы документов/страховок зависят от страны пользователя (бери из Ядра памяти; для Беларуси — автогражданка (osgo), техосмотр, допуск к дорожному движению; для России — ОСАГО/КАСКО). Если страна неизвестна — спроси. Проактивно предлагай напомнить о сроке страховки/техосмотра (end) и о следующем ТО (nextDate/nextOdometer) — можешь завести скил или задачу с напоминанием.',
+      ru: 'Это модуль «Авто». Реестры: cars (машины; поля: name, make=марка, model, year, vin, plate=госномер, fuel [petrol|diesel|gas|hybrid|electric], transmission [manual|automatic|robot|cvt], engine, power=л.с., mileage=пробег км, color, note), service (ТО и ремонты; поля: date, car=relation, type [maintenance|repair|replacement|diagnostics|other], odometer=пробег, work=что сделано, parts=запчасти/артикулы, cost, station=СТО, nextDate/nextOdometer=следующее ТО, file=чек, note), fuel (заправки; поля: date, car, odometer, liters, pricePerL, cost, full=полный бак, station, note), insurance (страховки и техосмотр; поля: type, car, number, provider, start, end=действует до, cost, file, note), parts (запчасти; поля: name, car, system, brand, partNumber=артикул, tier [budget|standard|premium], interval, price, note), tires (шины; season, car, size, brand, bought, storage). ЗАПИСЫВАЙ данные по авто ТОЛЬКО через create_record в нужный реестр (НЕ таблицей и НЕ отдельной страницей): «заправился» → fuel; «поменял масло/сделал ТО/починил» → service (укажи odometer и parts с артикулами); «оформил страховку/техосмотр» → insurance (обязательно end — по нему напомнишь продлить); характеристики машины → cars; ПЕРЕЧЕНЬ/РЕКОМЕНДАЦИИ ЗАПЧАСТЕЙ (надёжные бренды, артикулы, эконом/стандарт/премиум) → реестр parts (create_record: name, car, system, brand, partNumber, tier [budget|standard|premium], interval, price) — по одной записи на вариант, а НЕ страница со сводной таблицей. Если пользователь всё же просит именно СТРАНИЦУ-справку по авто — создавай её ВНУТРИ проекта этого модуля «Авто» (используй его projectId из list_projects/list_collections), НЕ в домашнем проекте, и ОБЯЗАТЕЛЬНО скажи, где создал (проект → страница). Артикулы запчастей клади в parts. Пробег из свежей записи обновляй и в cars.mileage. РАСХОД ТОПЛИВА, средние, суммарные траты — считай через execute_code (по записям fuel/service), НЕ в уме. Дата = сейчас, если не указана. СТРАНА: типы документов/страховок зависят от страны пользователя (бери из Ядра памяти; для Беларуси — автогражданка (osgo), техосмотр, допуск к дорожному движению; для России — ОСАГО/КАСКО). Если страна неизвестна — спроси. Проактивно предлагай напомнить о сроке страховки/техосмотра (end) и о следующем ТО (nextDate/nextOdometer) — можешь завести скил или задачу с напоминанием.',
       en: 'This is the Vehicles module. Collections: cars (name, make, model, year, vin, plate, fuel [petrol|diesel|gas|hybrid|electric], transmission [manual|automatic|robot|cvt], engine, power=hp, mileage=km, color, note), service (date, car=relation, type [maintenance|repair|replacement|diagnostics|other], odometer, work, parts=part numbers, cost, station, nextDate/nextOdometer, file, note), fuel (date, car, odometer, liters, pricePerL, cost, full=full tank, station, note), insurance (type, car, number, provider, start, end=valid until, cost, file, note), tires (season, car, size, brand, bought, storage). RECORD vehicle data ONLY via create_record into the right collection (never a table on a page): "filled up" → fuel; "changed oil / did service / fixed" → service (set odometer and parts with part numbers); "got insurance/inspection" → insurance (always set end — you remind to renew by it); car specs → cars. Put part numbers in parts. Also update cars.mileage from the latest odometer. FUEL CONSUMPTION, averages, totals — compute via execute_code (from fuel/service records), not in your head. Date = now if not given. COUNTRY: document/insurance types depend on the user\'s country (take from Memory Core; Belarus — compulsory liability (osgo), inspection, road-use permit; Russia — OSAGO/KASKO). If the country is unknown, ask. Proactively offer to remind about insurance/inspection expiry (end) and next service (nextDate/nextOdometer) — set up a skill or a task.',
       be: 'Гэта модуль «Аўто». Рэестры: cars (машыны), service (ТА і рамонты), fuel (запраўкі), insurance (страхоўкі і тэхагляд; поле end=дзейнічае да — па ім нагадаю прадоўжыць), tires (шыны). Запісвай дадзеныя праз create_record у патрэбны рэестр (не табліцай на старонцы). Расход паліва і сумы лічы праз execute_code. КРАІНА: тыпы дакументаў залежаць ад краіны (бяры з Ядра памяці; для Беларусі — аўтагра­мадзянка, тэхагляд, допуск да дарожнага руху). Прапануй нагадаць пра тэрміны страхоўкі і наступнае ТА.',
     },

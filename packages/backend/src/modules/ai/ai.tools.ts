@@ -88,6 +88,7 @@ export const TOOL_CATALOG: ToolMeta[] = [
   { name: 'list_collections',       category: 'knowledge', description: 'Список реестров (типизированных наборов записей) установленных модулей в воркспейсе и их схема полей', description_en: 'List collections (typed datasets) of installed modules in the workspace and their field schema' },
   { name: 'install_module',         category: 'knowledge', description: 'Установить модуль с типизированными реестрами (auto/finance/medical-record/vault/personal-growth)', description_en: 'Install a module with typed registries (auto/finance/medical-record/vault/personal-growth)' },
   { name: 'query_records',          category: 'knowledge', description: 'Прочитать записи реестра', description_en: 'Read records from a collection' },
+  { name: 'create_registry',        category: 'knowledge', description: 'Создать СВОЙ типизированный реестр под новую сферу (сам задаёшь поля) — когда данные повторяются, а готового модуля нет', description_en: 'Create your OWN typed registry for a new domain (you define the fields) — when data recurs and no built-in module fits' },
   { name: 'finance_overview',       category: 'knowledge', description: 'Готовые балансы счетов и денежный поток (движок считает сам — не складывай в уме)', description_en: 'Computed account balances and cashflow (engine-computed — never sum by hand)' },
   { name: 'get_secret',             category: 'knowledge', description: 'Достать логин/пароль/секрет из Сейфа по запросу (право vault:reveal)', description_en: 'Fetch a login/password/secret from the Vault (requires vault:reveal)' },
   { name: 'create_record',          category: 'knowledge', description: 'Добавить запись в реестр модуля (например, анализ в Медкарту)', description_en: 'Add a record to a module collection (e.g. a lab result in Medical Record)' },
@@ -1002,6 +1003,33 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
         limit: { type: 'number', description: 'Максимум записей (по умолчанию 100)' },
       },
       required: ['collectionId'],
+    },
+  },
+  {
+    name: 'create_registry',
+    description: 'Создать СВОЙ типизированный реестр (мини-модуль) под новую сферу, когда данные будут ПОВТОРЯТЬСЯ и структуру удобнее вести таблицей, а готового модуля нет (например «учёт растений и полива», «коллекция вин», «мои клиенты»). Сам придумай осмысленные поля. После создания записывай через create_record (вернётся collectionId), читай через query_records. Реестр появится в «Модули» как пользовательский, его видно и можно удалить. НЕ используй для разового/справочного текста — тогда обычная страница. Проверь list_collections — вдруг подходящий реестр уже есть.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Название реестра, напр. «Растения», «Клиенты»' },
+        fields: {
+          type: 'array',
+          description: 'Поля реестра. Каждое: { label, type, required?, options? }. type ∈ text|longtext|number|date|datetime|select|multiselect|checkbox|file. Для select/multiselect передай options (массив строк). Задавай осмысленный набор полей под сферу.',
+          items: {
+            type: 'object',
+            properties: {
+              label: { type: 'string', description: 'Подпись поля (по-русски)' },
+              type: { type: 'string', enum: ['text', 'longtext', 'number', 'date', 'datetime', 'select', 'multiselect', 'checkbox', 'file'] },
+              required: { type: 'boolean' },
+              options: { type: 'array', items: { type: 'string' }, description: 'Варианты для select/multiselect' },
+            },
+            required: ['label', 'type'],
+          },
+        },
+        icon: { type: 'string', description: 'Иконка lucide:Имя (необязательно)' },
+        projectId: { type: 'string', description: 'Необязательно: добавить реестр в существующий проект-модуль; иначе создаётся новый' },
+      },
+      required: ['name', 'fields'],
     },
   },
   {
