@@ -4552,6 +4552,18 @@ async function executeTool(
       }
     }
 
+    case 'install_module': {
+      const moduleId = String(input.moduleId ?? '').trim()
+      if (!moduleId) return { error: 'Укажи moduleId (напр. auto, finance, medical-record).' }
+      const wsId = context?.workspaceId ?? await memoryWorkspaceId(prisma, context)
+      if (!wsId) return { error: 'Нет контекста воркспейса.' }
+      if (!context?.userId) return { error: 'Нет пользователя.' }
+      const r = await installModule(prisma, wsId, moduleId, context.userId)
+      return r.ok
+        ? { installed: true, moduleId, projectId: r.projectId, note: `Модуль «${moduleId}» установлен. Смотри его реестры через list_collections и клади данные через create_record.` }
+        : { error: r.error }
+    }
+
     case 'list_expertises': {
       const wsId = context?.workspaceId ?? await memoryWorkspaceId(prisma, context)
       if (!wsId) return { error: 'Нет контекста воркспейса.' }

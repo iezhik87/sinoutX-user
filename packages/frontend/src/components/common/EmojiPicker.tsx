@@ -8,6 +8,7 @@ import { Search,
   Key, Shield, Settings2, Wrench, Box, Package, Tag, Bookmark,
   ImagePlus, Sparkles, CheckSquare, StickyNote, DollarSign, Paperclip,
   GitBranch, QrCode, Barcode,
+  Car, Fuel, ShieldCheck, CircleDot, GraduationCap,
 } from 'lucide-react'
 import type { LucideProps } from 'lucide-react'
 import { useT } from '@/i18n'
@@ -26,6 +27,7 @@ export const LUCIDE_ICON_MAP: Record<string, IconComponent> = {
   Key, Shield, Settings2, Wrench, Box, Package, Tag, Bookmark,
   ImagePlus, Sparkles, CheckSquare, StickyNote, DollarSign, Paperclip, GitBranch,
   QrCode, Barcode,
+  Car, Fuel, ShieldCheck, CircleDot, GraduationCap,
 }
 
 const LUCIDE_CATEGORIES = [

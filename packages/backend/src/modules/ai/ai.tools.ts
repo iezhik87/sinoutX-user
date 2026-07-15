@@ -86,6 +86,7 @@ export const TOOL_CATALOG: ToolMeta[] = [
   { name: 'execute_code',           category: 'knowledge', description: 'Выполнить код в песочнице (Python/bash) — право code_exec', description_en: 'Run code in a sandbox — requires code_exec' },
   // ── Модули / Реестры (Collections) ─────────────────────────────
   { name: 'list_collections',       category: 'knowledge', description: 'Список реестров (типизированных наборов записей) установленных модулей в воркспейсе и их схема полей', description_en: 'List collections (typed datasets) of installed modules in the workspace and their field schema' },
+  { name: 'install_module',         category: 'knowledge', description: 'Установить модуль с типизированными реестрами (auto/finance/medical-record/vault/personal-growth)', description_en: 'Install a module with typed registries (auto/finance/medical-record/vault/personal-growth)' },
   { name: 'query_records',          category: 'knowledge', description: 'Прочитать записи реестра', description_en: 'Read records from a collection' },
   { name: 'finance_overview',       category: 'knowledge', description: 'Готовые балансы счетов и денежный поток (движок считает сам — не складывай в уме)', description_en: 'Computed account balances and cashflow (engine-computed — never sum by hand)' },
   { name: 'get_secret',             category: 'knowledge', description: 'Достать логин/пароль/секрет из Сейфа по запросу (право vault:reveal)', description_en: 'Fetch a login/password/secret from the Vault (requires vault:reveal)' },
@@ -936,6 +937,17 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     name: 'list_expertises',
     description: 'Список собранных экспертиз (темы, когда обновлялись). Загляни сюда, прежде чем собирать новую — вдруг по теме уже есть.',
     input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'install_module',
+    description: 'Установить в воркспейс встроенный модуль с типизированными реестрами. Доступные: auto (машины, ТО, заправки, страховки, шины), finance (счета, операции, бюджет), medical-record (анализы, показатели, измерения, приёмы, лекарства), vault (пароли/секреты), personal-growth (привычки/цели/дневник). Вызывай, когда пользователь просит завести структурированную область («заведи модуль авто», «хочу вести финансы»). После установки смотри реестры через list_collections и клади данные через create_record. Если уже установлен — просто используй.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        moduleId: { type: 'string', enum: ['auto', 'finance', 'medical-record', 'vault', 'personal-growth'], description: 'ID модуля' },
+      },
+      required: ['moduleId'],
+    },
   },
   {
     name: 'create_skill',
