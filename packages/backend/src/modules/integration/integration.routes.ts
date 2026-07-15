@@ -236,10 +236,27 @@ export async function runChannelAgent(
   }
 
   const histKey = agentHistKey(adapter.id, workspaceId, chatKey)
+  const convKey = `${adapter.id}_conv:${workspaceId}:${chatKey}`
   let history: ChatMessage[] = []
   try {
-    const raw = await redis.get(histKey)
-    if (raw) history = JSON.parse(raw) as ChatMessage[]
+    // Prefer the DURABLE conversation as the source of truth: the old Redis window
+    // kept only the last 10 messages for 1h, so anything said earlier (or after an
+    // hour's pause) was invisible — the agent literally could not "look above".
+    // Load a wider recent slice from the AiConversation; streamChat still trims/
+    // summarizes if it gets long.
+    const convId = await redis.get(convKey)
+    if (convId) {
+      const rows = await prisma.aiMessage.findMany({
+        where: { conversationId: convId, role: { in: ['user', 'assistant'] } },
+        orderBy: { createdAt: 'desc' }, take: 30,
+        select: { role: true, content: true },
+      })
+      history = rows.reverse().map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }))
+    }
+    if (!history.length) {
+      const raw = await redis.get(histKey)
+      if (raw) history = JSON.parse(raw) as ChatMessage[]
+    }
   } catch { /* ignore */ }
   const messages: ChatMessage[] = [...history, { role: 'user', content: text }]
 
@@ -858,7 +875,13 @@ export async function integrationRoutes(app: FastifyInstance, prisma: PrismaClie
         return reply.send({ ok: true })
       }
     } else if (text === '/new' || text === '/reset') {
-      if (msgChatId !== undefined) await redis.del(agentHistKey('telegram', workspaceId, String(msgChatId))).catch(() => null)
+      // Reset BOTH the short Redis window AND the durable-conversation pointer, so
+      // the agent starts a genuinely fresh dialog (history is now loaded from the
+      // AiConversation, so clearing only the window would leave the old context).
+      if (msgChatId !== undefined) {
+        await redis.del(agentHistKey('telegram', workspaceId, String(msgChatId))).catch(() => null)
+        await redis.del(`telegram_conv:${workspaceId}:${String(msgChatId)}`).catch(() => null)
+      }
       result = { reply: MEDIA_TXT[userLanguage].newDialog }
     } else if (isQuickCmd) {
       result = await svc.handleTelegramUpdate(workspaceId, update, projectId, userLanguage)
