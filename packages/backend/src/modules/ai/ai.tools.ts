@@ -80,6 +80,7 @@ export const TOOL_CATALOG: ToolMeta[] = [
   { name: 'build_expertise',        category: 'knowledge', description: 'Собрать себе ЭКСПЕРТИЗУ по теме: проект-база знаний + плейбук эксперта (дальше засеваешь deep_research и заполняешь)', description_en: 'Build yourself an EXPERTISE in a domain: a knowledge-base project + expert playbook (then seed via deep_research and fill it)' },
   { name: 'activate_expertise',     category: 'knowledge', description: 'Надеть готовую экспертизу — загрузить её плейбук и работать как эксперт в этой теме', description_en: 'Put on a built expertise — load its playbook and act as an expert in that domain' },
   { name: 'list_expertises',        category: 'knowledge', description: 'Список собранных экспертиз', description_en: 'List built expertises' },
+  { name: 'grow_expertise',         category: 'knowledge', description: 'Дописать в экспертизу новое усвоенное (решение/факт/грабли) — она доучивается с опытом', description_en: 'Append a new learning (decision/fact/pitfall) to an expertise — it keeps learning with use' },
   { name: 'create_skill',           category: 'knowledge', description: 'Завести себе навык по расписанию (скил) — повторяющееся действие', description_en: 'Set up a scheduled skill — a recurring action' },
   { name: 'list_skills',            category: 'knowledge', description: 'Список своих навыков по расписанию (скилов)', description_en: 'List own scheduled skills' },
   { name: 'delete_skill',           category: 'knowledge', description: 'Удалить навык по расписанию', description_en: 'Delete a scheduled skill' },
@@ -938,6 +939,19 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     name: 'list_expertises',
     description: 'Список собранных экспертиз (темы, когда обновлялись). Загляни сюда, прежде чем собирать новую — вдруг по теме уже есть.',
     input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'grow_expertise',
+    description: 'Экспертиза ДОУЧИВАЕТСЯ: допиши в её журнал «Знания и решения» новое, что усвоил по ходу работы — принятое решение, найденный факт/нюанс, грабли, предпочтение пользователя по этой теме. Вызывай в режиме эксперта, когда всплыло что-то стоящее сохранить надолго, чтобы в следующий раз ты был умнее именно в этой области. Устойчивый факт о конкретном случае пользователя дополнительно сохрани через remember.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        learning: { type: 'string', description: 'Что нового усвоил — коротко и конкретно' },
+        kind: { type: 'string', enum: ['decision', 'fact', 'pitfall', 'preference', 'resource', 'note'], description: 'Тип записи' },
+        domain: { type: 'string', description: 'Тема экспертизы (если не активна автоматически или их несколько)' },
+      },
+      required: ['learning'],
+    },
   },
   {
     name: 'install_module',

@@ -5,7 +5,7 @@ import { sendDeadlineReminderEmail, sendLicenseExpiryReminderEmail, isEmailConfi
 import { config } from '../config/index.js'
 import { buildBackupBuffer, dirByLabel, backupName, pruneDir } from './instanceBackup.js'
 import { NotificationService } from '../modules/notification/notification.service.js'
-import { completeOnce, getEmbeddingsConfig, getAISettings, appendEpisode } from '../modules/ai/ai.service.js'
+import { completeOnce, getEmbeddingsConfig, getAISettings, appendEpisode, tipTapToText, textToTipTap, EXPERTISE_PLAYBOOK_TITLE, EXPERTISE_LOG_TITLE } from '../modules/ai/ai.service.js'
 import { getCustomTools, saveCustomTools } from '../modules/ai/ai.customtools.js'
 import { runChannelAgent } from '../modules/integration/integration.routes.js'
 import { outboundChannels, notifyChannels } from '../modules/integration/channels/index.js'
@@ -647,6 +647,92 @@ export async function consolidateMemory(
   return out
 }
 
+// ─── Nightly "sleep": expertises keep learning + stale memory is pruned ────────
+
+const EXPERTISE_CONSOLIDATION_SYSTEM = `Ты — система обучения эксперта по теме «{DOMAIN}». Тебе дают фрагмент недавнего разговора и уже накопленный журнал знаний. Извлеки ТОЛЬКО НОВЫЕ устойчивые для этой темы уроки — принятые решения, найденные факты/нюансы, грабли, предпочтения пользователя, — которых ещё НЕТ в журнале. Верни СТРОГО JSON без markdown:
+{"learnings":[{"kind":"decision|fact|pitfall|preference|resource","text":"..."}]}
+Кратко, без дублей и без разового шума. Если нового нет — {"learnings":[]}. Только JSON.`
+
+const EXP_KIND_RU: Record<string, string> = { decision: 'решение', fact: 'факт', pitfall: 'грабли', preference: 'предпочтение', resource: 'источник', note: 'заметка' }
+
+// For each expertise, distil recent conversations in its project into new entries
+// of its "Знания и решения" log — so the expertise keeps deepening even when the
+// agent didn't call grow_expertise live. Bounded + idempotent via a per-conv Redis
+// marker; runs on the workspace's own chat model (BYOK).
+export async function consolidateExpertises(prisma: PrismaClient, opts?: { workspaceId?: string }): Promise<number> {
+  const playbooks = await prisma.page.findMany({
+    where: { title: EXPERTISE_PLAYBOOK_TITLE, isDeleted: false, ...(opts?.workspaceId ? { project: { workspaceId: opts.workspaceId } } : {}) },
+    select: { projectId: true, project: { select: { name: true, workspaceId: true } } },
+  })
+  let total = 0
+  for (const pb of playbooks) {
+    const { projectId } = pb
+    const domain = pb.project.name
+    const wsId = pb.project.workspaceId
+    const convs = await prisma.aiConversation.findMany({ where: { projectId }, select: { id: true, updatedAt: true }, orderBy: { updatedAt: 'desc' }, take: 15 })
+    for (const conv of convs) {
+      try {
+        const markKey = `expcons:${conv.id}`
+        const last = await redis.get(markKey).catch(() => null)
+        if (last && new Date(last) >= conv.updatedAt) continue // nothing new since last pass
+        const since = last ? new Date(last) : new Date(Date.now() - 26 * 3600 * 1000)
+        const msgs = await prisma.aiMessage.findMany({
+          where: { conversationId: conv.id, createdAt: { gt: since }, role: { in: ['user', 'assistant'] } },
+          orderBy: { createdAt: 'asc' }, take: 60, select: { role: true, content: true },
+        })
+        await redis.set(markKey, conv.updatedAt.toISOString(), 'EX', 60 * 60 * 24 * 90).catch(() => {})
+        if (msgs.length < 4) continue
+        const convText = msgs.map((m) => `${m.role === 'user' ? 'П' : 'А'}: ${m.content}`).join('\n').slice(0, 10000)
+        const logPage = await prisma.page.findFirst({ where: { projectId, title: EXPERTISE_LOG_TITLE, isDeleted: false }, select: { id: true, content: true } })
+        const logTail = logPage ? tipTapToText((logPage.content as Record<string, unknown>) ?? { type: 'doc', content: [] }).slice(-2000) : ''
+        let parsed: Record<string, unknown>
+        try {
+          parsed = parseAssembled(await completeOnce(wsId, EXPERTISE_CONSOLIDATION_SYSTEM.replace('{DOMAIN}', domain), `РАЗГОВОР:\n${convText}\n\nУЖЕ В ЖУРНАЛЕ:\n${logTail || '(пусто)'}`, prisma))
+        } catch { continue }
+        const learnings = (Array.isArray(parsed?.learnings) ? parsed.learnings : []) as Record<string, unknown>[]
+        const entries = learnings.filter((l) => l?.text).slice(0, 8)
+          .map((l) => `- [${new Date().toISOString().slice(0, 10)}] (${EXP_KIND_RU[String(l.kind)] ?? 'заметка'}) ${String(l.text)}`).join('\n')
+        if (!entries) continue
+        if (logPage) {
+          const existing = tipTapToText((logPage.content as Record<string, unknown>) ?? { type: 'doc', content: [] })
+          await prisma.page.update({ where: { id: logPage.id }, data: { content: textToTipTap(`${existing}\n${entries}`), yjsState: null } })
+        } else {
+          await prisma.page.create({ data: { projectId, title: EXPERTISE_LOG_TITLE, icon: 'lucide:GraduationCap', content: textToTipTap(`# ${EXPERTISE_LOG_TITLE}\n\n${entries}`), position: 1 } })
+        }
+        total += learnings.length
+        console.log(`[cron] expertise "${domain}": +${learnings.length} learnings from a recent chat (ws ${wsId})`)
+      } catch (e) { console.error('[cron] expertise consolidation', conv.id, e) }
+    }
+  }
+  return total
+}
+
+// Housekeeping: hard-delete memory records that were superseded (by a newer,
+// contradicting one) more than 30 days ago. They're already hidden from recall —
+// this just keeps the store tidy so old contradictions don't accumulate forever.
+export async function pruneStaleMemory(prisma: PrismaClient, opts?: { workspaceId?: string }): Promise<number> {
+  const cutoff = new Date(Date.now() - 30 * 24 * 3600 * 1000)
+  const memProjects = await prisma.project.findMany({
+    where: { isModule: true, moduleId: 'memory', ...(opts?.workspaceId ? { workspaceId: opts.workspaceId } : {}) }, select: { id: true },
+  })
+  let removed = 0
+  for (const p of memProjects) {
+    const cols = await prisma.collection.findMany({ where: { projectId: p.id }, select: { id: true } })
+    for (const c of cols) {
+      const recs = await prisma.collectionRecord.findMany({ where: { collectionId: c.id }, select: { id: true, data: true } })
+      for (const r of recs) {
+        const sup = (r.data as Record<string, unknown> | null)?._superseded
+        if (typeof sup === 'string' && new Date(sup) < cutoff) {
+          await prisma.collectionRecord.delete({ where: { id: r.id } }).catch(() => {})
+          removed++
+        }
+      }
+    }
+  }
+  if (removed) console.log(`[cron] pruned ${removed} long-superseded memories`)
+  return removed
+}
+
 // Daily guard: run once per calendar day at/after 04:00 — resilient to the
 // container not being up at exactly 04:00 (a missed top-of-hour-4 tick no longer
 // skips the whole day; the next hourly tick that day picks it up).
@@ -657,7 +743,11 @@ async function processMemoryConsolidation(prisma: PrismaClient) {
   const day = now.toDateString()
   if (day === lastConsolidationDay) return
   lastConsolidationDay = day
+  // The nightly "sleep": distil episodes → durable memory, let expertises keep
+  // learning from the day's chats, and tidy up long-superseded memories.
   await consolidateMemory(prisma)
+  await consolidateExpertises(prisma).catch((e) => console.error('[cron] expertise consolidation error:', e))
+  await pruneStaleMemory(prisma).catch((e) => console.error('[cron] memory prune error:', e))
 }
 
 // ─── Main cron runner ─────────────────────────────────────────────────────────
