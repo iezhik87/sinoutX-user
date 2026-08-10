@@ -254,7 +254,11 @@ export function TasksPage() {
       />
 
       <div className={cn('flex-1 min-h-0', viewMode === 'board' ? 'overflow-auto' : 'overflow-y-auto')} style={viewMode === 'gantt' ? { overflow: 'hidden' } : {}}>
-        <div className={cn(viewMode === 'gantt' ? 'p-5 h-full flex flex-col' : 'p-5')}>
+        {/* key={viewMode}: смена вида = чистый ремоунт всего блока одним узлом.
+            Иначе React диффит разнотипные виды в одной позиции и при размонтировании
+            DnD-дерева (@hello-pangea/dnd) ловит removeChild NotFoundError, который
+            роняет всё приложение. Ремоунт целиком обходит этот класс крашей. */}
+        <div key={viewMode} className={cn(viewMode === 'gantt' ? 'p-5 h-full flex flex-col' : 'p-5')}>
 
           {/* Analytics strip — list mode only */}
           {viewMode === 'list' && analytics && (

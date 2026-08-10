@@ -889,6 +889,10 @@ const ru = {
       colAction: 'Действие', colUser: 'Пользователь', colWorkspace: 'Пространство', colResource: 'Ресурс', colIp: 'IP', colTime: 'Время',
       none: 'Записей аудита нет',
       loadMore: 'Показать ещё',
+      rowHint: 'Клик по строке — полный отчёт',
+      details: 'Полный отчёт', resourceType: 'Тип ресурса', resourceId: 'ID ресурса',
+      userId: 'ID пользователя', workspaceId: 'ID пространства', exactTime: 'Точное время', eventId: 'ID события',
+      metaTitle: 'Данные события (meta)', noMeta: 'Дополнительных данных нет',
       actions: {
         'user.login': 'Вход', 'user.login_failed': 'Неудачный вход', 'user.login_locked': 'Блокировка входа',
         'user.register': 'Регистрация', 'user.password_changed': 'Смена пароля',
@@ -2915,6 +2919,10 @@ const en: typeof ru = {
       colAction: 'Action', colUser: 'User', colWorkspace: 'Workspace', colResource: 'Resource', colIp: 'IP', colTime: 'Time',
       none: 'No audit records found',
       loadMore: 'Load more',
+      rowHint: 'Click a row for the full report',
+      details: 'Full report', resourceType: 'Resource type', resourceId: 'Resource ID',
+      userId: 'User ID', workspaceId: 'Workspace ID', exactTime: 'Exact time', eventId: 'Event ID',
+      metaTitle: 'Event data (meta)', noMeta: 'No extra data',
       actions: {
         'user.login': 'Login', 'user.login_failed': 'Login failed', 'user.login_locked': 'Login locked',
         'user.register': 'Register', 'user.password_changed': 'Password changed',
@@ -4895,6 +4903,10 @@ const be: typeof ru = {
       colAction: 'Дзеянне', colUser: 'Карыстальнік', colWorkspace: 'Прастора', colResource: 'Рэсурс', colIp: 'IP', colTime: 'Час',
       none: 'Запісаў аўдыту няма',
       loadMore: 'Паказаць яшчэ',
+      rowHint: 'Клік па радку — поўная справаздача',
+      details: 'Поўная справаздача', resourceType: 'Тып рэсурсу', resourceId: 'ID рэсурсу',
+      userId: 'ID карыстальніка', workspaceId: 'ID прасторы', exactTime: 'Дакладны час', eventId: 'ID падзеі',
+      metaTitle: 'Даныя падзеі (meta)', noMeta: 'Няма дадатковых даных',
       actions: {
         'user.login': 'Уваход', 'user.login_failed': 'Няўдалы ўваход', 'user.login_locked': 'Блакіроўка ўваходу',
         'user.register': 'Рэгістрацыя', 'user.password_changed': 'Змена пароля',

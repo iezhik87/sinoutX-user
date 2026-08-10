@@ -27,6 +27,7 @@ export const TOOL_CATALOG: ToolMeta[] = [
   { name: 'update_page',            category: 'workspace', description: 'Обновить заголовок или содержимое страницы',                                   description_en: 'Update page title or content' },
   { name: 'create_task',            category: 'workspace', description: 'Создать задачу в проекте',                                                     description_en: 'Create a task in a project' },
   { name: 'create_event',           category: 'workspace', description: 'Создать событие календаря с напоминанием (день рождения, встреча, дедлайн)',     description_en: 'Create a calendar event with a reminder (birthday, meeting, deadline)' },
+  { name: 'list_events',            category: 'workspace', description: 'Найти события календаря (ДР/встречи) по имени или диапазону — перед «такого нет» вызови это', description_en: 'Find calendar events (birthdays/meetings) by name or date range — call before saying "no such event"' },
   { name: 'export_project',         category: 'workspace', description: 'Экспортировать проект в PDF или DOCX (в Telegram файл придёт прямо в чат)',     description_en: 'Export a project to PDF or DOCX (in Telegram the file is sent to the chat)' },
   { name: 'delete_item',            category: 'workspace', description: 'Удалить задачу/заметку/страницу/событие/проект (обратимо, в корзину на 30 дней)', description_en: 'Delete a task/note/page/event/project (reversible, kept in trash for 30 days)' },
   { name: 'list_trash',             category: 'workspace', description: 'Показать недавно удалённые объекты (корзина)',                                  description_en: 'List recently deleted items (trash)' },
@@ -67,6 +68,8 @@ export const TOOL_CATALOG: ToolMeta[] = [
   { name: 'read_document_url',      category: 'web',       description: 'Скачать и прочитать любой документ по URL: PDF, DOCX, XLSX, TXT, CSV, JSON и другие', description_en: 'Download and read any document by URL: PDF, DOCX, XLSX, TXT, CSV, JSON and more' },
   { name: 'read_attachment',        category: 'knowledge', description: 'Прочитать содержимое файла в проекте (по attachmentId): документы и изображения — фото/чеки распознаются vision-моделью', description_en: 'Read a file saved in a project (by attachmentId): documents and images — photos/receipts are read with a vision model' },
   // ── Media ─────────────────────────────────────────────────────
+  { name: 'generate_image',         category: 'research',  description: 'Сгенерировать изображение по описанию (провайдер из настроек: OpenAI/FLUX/Stability/fal.ai/OpenRouter, иначе бесплатный)', description_en: 'Generate an image from a description (provider from settings: OpenAI/FLUX/Stability/fal.ai/OpenRouter, else free)' },
+  { name: 'generate_audio',         category: 'research',  description: 'Озвучить текст (TTS: OpenAI/ElevenLabs/PlayHT, иначе бесплатный)', description_en: 'Speak text aloud (TTS: OpenAI/ElevenLabs/PlayHT, else free)' },
   { name: 'search_images',          category: 'research',  description: 'Поиск свободных изображений на Wikimedia Commons по теме (без API-ключа)',         description_en: 'Search free images on Wikimedia Commons by topic (no API key required)' },
   // ── Deep research ──────────────────────────────────────────────
   { name: 'deep_research',          category: 'deep',      description: 'Глубокое исследование темы: web + Wikipedia + академические статьи + база знаний', description_en: 'Deep research on a topic: web + Wikipedia + academic papers + knowledge base' },
@@ -76,11 +79,14 @@ export const TOOL_CATALOG: ToolMeta[] = [
   { name: 'remember',               category: 'knowledge', description: 'Запомнить надолго в сквозную память воркспейса (факт/ядро/сущность/эпизод)', description_en: 'Remember long-term into workspace-wide memory (fact/core/entity/episode)' },
   { name: 'recall',                 category: 'knowledge', description: 'Вспомнить из долговременной памяти по смыслу (семантически)', description_en: 'Recall from long-term memory by meaning (semantic)' },
   { name: 'memory_stats',           category: 'knowledge', description: 'Статистика памяти о пользователе (сколько фактов/сущностей/эпизодов/ядра, покрытие семантическим индексом)', description_en: 'Memory stats about the user (counts of facts/entities/episodes/core, semantic index coverage)' },
+  { name: 'memory_digest',          category: 'knowledge', description: 'Сводка «что я о тебе знаю» — Ядро/ключевые факты/люди-проекты, для показа и коррекции', description_en: 'Digest of "what I know about you" — core/key facts/people-projects, for review and correction' },
+  { name: 'forget_memory',          category: 'knowledge', description: 'Забыть из памяти конкретное (когда пользователь говорит «это неверно/забудь»)', description_en: 'Forget a specific memory (when the user says "that\'s wrong / forget it")' },
   { name: 'search_conversations',   category: 'knowledge', description: 'Поиск по ПРОШЛЫМ разговорам — найти, что и когда обсуждали (сообщение + название чата + дата)', description_en: 'Search PAST conversations — find what was discussed and when (message + chat title + date)' },
   { name: 'build_expertise',        category: 'knowledge', description: 'Собрать себе ЭКСПЕРТИЗУ по теме: проект-база знаний + плейбук эксперта (дальше засеваешь deep_research и заполняешь)', description_en: 'Build yourself an EXPERTISE in a domain: a knowledge-base project + expert playbook (then seed via deep_research and fill it)' },
   { name: 'activate_expertise',     category: 'knowledge', description: 'Надеть готовую экспертизу — загрузить её плейбук и работать как эксперт в этой теме', description_en: 'Put on a built expertise — load its playbook and act as an expert in that domain' },
   { name: 'list_expertises',        category: 'knowledge', description: 'Список собранных экспертиз', description_en: 'List built expertises' },
   { name: 'grow_expertise',         category: 'knowledge', description: 'Дописать в экспертизу новое усвоенное (решение/факт/грабли) — она доучивается с опытом', description_en: 'Append a new learning (decision/fact/pitfall) to an expertise — it keeps learning with use' },
+  { name: 'create_http_skill',      category: 'knowledge', description: 'Собрать навык к внешнему REST API (создаётся выключенным — пользователь одобряет и вставляет ключ)', description_en: 'Author a skill for an external REST API (created disabled — the user approves and pastes the key)' },
   { name: 'create_skill',           category: 'knowledge', description: 'Завести себе навык по расписанию (скил) — повторяющееся действие', description_en: 'Set up a scheduled skill — a recurring action' },
   { name: 'list_skills',            category: 'knowledge', description: 'Список своих навыков по расписанию (скилов)', description_en: 'List own scheduled skills' },
   { name: 'delete_skill',           category: 'knowledge', description: 'Удалить навык по расписанию', description_en: 'Delete a scheduled skill' },
@@ -90,10 +96,11 @@ export const TOOL_CATALOG: ToolMeta[] = [
   { name: 'install_module',         category: 'knowledge', description: 'Установить модуль с типизированными реестрами (auto/finance/medical-record/vault/personal-growth)', description_en: 'Install a module with typed registries (auto/finance/medical-record/vault/personal-growth)' },
   { name: 'query_records',          category: 'knowledge', description: 'Прочитать записи реестра', description_en: 'Read records from a collection' },
   { name: 'create_registry',        category: 'knowledge', description: 'Создать СВОЙ типизированный реестр под новую сферу (сам задаёшь поля) — когда данные повторяются, а готового модуля нет', description_en: 'Create your OWN typed registry for a new domain (you define the fields) — when data recurs and no built-in module fits' },
+  { name: 'delete_registry',        category: 'knowledge', description: 'Удалить КАСТОМНЫЙ реестр (ошибочный/пустой дубль) по collectionId. Встроенные модули не трогает', description_en: 'Delete a CUSTOM registry (a wrong/empty duplicate) by collectionId. Does not touch built-in modules' },
   { name: 'finance_overview',       category: 'knowledge', description: 'Готовые балансы счетов и денежный поток (движок считает сам — не складывай в уме)', description_en: 'Computed account balances and cashflow (engine-computed — never sum by hand)' },
   { name: 'get_secret',             category: 'knowledge', description: 'Достать логин/пароль/секрет из Сейфа по запросу (право vault:reveal)', description_en: 'Fetch a login/password/secret from the Vault (requires vault:reveal)' },
   { name: 'create_record',          category: 'knowledge', description: 'Добавить запись в реестр модуля (например, анализ в Медкарту)', description_en: 'Add a record to a module collection (e.g. a lab result in Medical Record)' },
-  { name: 'update_record',          category: 'knowledge', description: 'Изменить запись реестра', description_en: 'Update a collection record' },
+  { name: 'update_record',          category: 'knowledge', description: 'Изменить запись реестра (мерж: только изменяемые поля)', description_en: 'Update a collection record (merge: only the changed fields)' },
   { name: 'delete_record',          category: 'knowledge', description: 'Удалить запись реестра', description_en: 'Delete a collection record' },
   // ── Canvas (доска идей) ───────────────────────────────────────
   { name: 'list_canvases',          category: 'workspace', description: 'Список досок идей в воркспейсе',                                                  description_en: 'List idea canvases in the workspace' },
@@ -333,6 +340,19 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
         description: { type: 'string', description: 'Описание (необязательно).' },
       },
       required: ['projectId', 'title', 'startAt'],
+    },
+  },
+  {
+    name: 'list_events',
+    description: 'Найти события календаря воркспейса (дни рождения, встречи, дедлайны, годовщины). ОБЯЗАТЕЛЬНО вызывай перед тем, как сказать «такого события/ДР нет» — по памяти события не ищутся, только этим инструментом. Поиск по имени: query="Касьяник" вернёт его день рождения, если он заведён. Без query — весь список. Повторяющиеся события (ДР) возвращаются с полем recurring и показываются всегда, независимо от диапазона дат.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Подстрока названия (имя человека, тема). Регистр не важен. Пусто — вернуть все события.' },
+        from: { type: 'string', description: 'Начало диапазона дат (YYYY-MM-DD), необязательно. К повторяющимся событиям не применяется.' },
+        to: { type: 'string', description: 'Конец диапазона дат (YYYY-MM-DD), необязательно.' },
+      },
+      required: [],
     },
   },
   {
@@ -837,6 +857,28 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
 
   // ── Media ────────────────────────────────────────────────────
   {
+    name: 'generate_image',
+    description: 'СГЕНЕРИРОВАТЬ изображение по текстовому описанию (не поиск готовых — рисует новое). Провайдер берётся из настроек воркспейса (OpenAI/FLUX/Stability/fal.ai/OpenRouter), без ключа — бесплатный запасной. Промпт — КОРОТКОЕ ВИЗУАЛЬНОЕ описание («минималистичный логотип лаборатории данных, плоский стиль, фиолетовый акцент»), НЕ вставленный текст. Картинка сохраняется в Файлы воркспейса, возвращается URL. Если нужна реальная фотография/факт — используй search_images (Wikimedia), а не генерацию.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'Короткое визуальное описание того, что нарисовать' },
+      },
+      required: ['prompt'],
+    },
+  },
+  {
+    name: 'generate_audio',
+    description: 'Озвучить текст (TTS) — вернёт ссылку на аудио, сохранённое в Файлы воркспейса. Провайдер из настроек (OpenAI/ElevenLabs/PlayHT), без ключа — бесплатный запасной. Уместно, когда пользователь просит «озвучь / надиктуй / сделай аудиоверсию».',
+    input_schema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'Текст для озвучки' },
+      },
+      required: ['text'],
+    },
+  },
+  {
     name: 'search_images',
     description: 'Поиск свободных изображений на Wikimedia Commons. Возвращает прямые URL изображений для вставки на страницу через update_page с { type: "image", attrs: { src: url, alt: title } }.',
     input_schema: {
@@ -899,6 +941,22 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     name: 'memory_stats',
     description: 'Реальная статистика твоей долговременной памяти о пользователе: сколько активных фактов, сущностей, эпизодов и правил Ядра, а также покрытие семантическим индексом (%). Вызывай, когда пользователь спрашивает про твою память/обучение/что ты знаешь — и приводи конкретные числа вместо выдуманных.',
     input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'memory_digest',
+    description: 'Сводка «что я о тебе знаю»: Ядро (устойчивые правила), ключевые факты и люди/проекты. Вызывай на «что ты обо мне знаешь / что ты запомнил / покажи память», а также иногда предлагай сам показать и свериться. Покажи сгруппированно и по-человечески, затем предложи поправить (что забыть/уточнить). Это петля курирования — так память крепнет и чистится.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'forget_memory',
+    description: 'Забыть из памяти конкретную запись — когда пользователь говорит «это неверно», «забудь про X», «я больше не …». Находит самое похожее и убирает из активной памяти (в recall больше не всплывёт). Вернёт, что именно забыл, и близкие кандидаты. Если есть верная новая версия факта — дополнительно сохрани её через remember.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Что забыть — опиши устаревший/неверный факт словами пользователя' },
+      },
+      required: ['query'],
+    },
   },
   {
     name: 'search_conversations',
@@ -965,6 +1023,37 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'create_http_skill',
+    description: 'Собрать НАВЫК к внешнему REST API (банк, CRM, почта, любой сервис), чтобы дальше дёргать его самому. Вызывай, когда пользователь просит подключить API, а готового навыка нет (проверь свой список инструментов). Ты проектируешь навык: метод, URL с плейсхолдерами {param}, параметры, заголовки, тип авторизации и ИМЯ секрета (например token) — но НЕ его значение: ключ пользователь вставит сам при одобрении, диктовать его в чат нельзя. Навык создаётся ВЫКЛЮЧЕННЫМ: пока человек не одобрит в Настройки → ИИ → Навыки, звать его нельзя (это защита от того, чтобы через инъекцию со стороны меня заставили слить данные). Скажи пользователю, что и где одобрить.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Короткое имя навыка, напр. «Баланс банка»' },
+        description: { type: 'string', description: 'Когда и зачем его звать (контракт для тебя же в будущем)' },
+        url: { type: 'string', description: 'URL эндпоинта, можно с плейсхолдерами {param}' },
+        method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] },
+        params: {
+          type: 'array', description: 'Параметры навыка (подставляются в url/тело как {key})',
+          items: {
+            type: 'object',
+            properties: {
+              key: { type: 'string' }, type: { type: 'string', enum: ['string', 'number', 'boolean', 'enum'] },
+              required: { type: 'boolean' }, description: { type: 'string' }, enumValues: { type: 'array', items: { type: 'string' } },
+            },
+            required: ['key', 'type'],
+          },
+        },
+        headers: { type: 'array', description: 'Заголовки; значение может содержать {{secret.ИМЯ}} и {param}', items: { type: 'object', properties: { key: { type: 'string' }, value: { type: 'string' } }, required: ['key', 'value'] } },
+        authType: { type: 'string', enum: ['none', 'bearer', 'header', 'basic'], description: 'Тип авторизации' },
+        secretName: { type: 'string', description: 'Имя секрета для ключа (значение введёт пользователь), напр. token' },
+        headerName: { type: 'string', description: 'Для authType=header: имя заголовка (напр. X-Api-Key)' },
+        bodyTemplate: { type: 'string', description: 'Для POST/PUT/PATCH: JSON-шаблон тела с {param}' },
+        responseHint: { type: 'string', description: 'Dot-path к полезному полю ответа (необязательно)' },
+      },
+      required: ['name', 'description', 'url'],
+    },
+  },
+  {
     name: 'create_skill',
     description: 'Завести СЕБЕ навык-скил: повторяющееся действие, которое ты выполняешь сам и шлёшь результат в Telegram. Два типа: ПО РАСПИСАНИЮ (укажи hour — каждый день в этот час) ИЛИ ПО СОБЫТИЮ (укажи event — срабатывает, когда в воркспейсе происходит событие). Используй на «напоминай/бриф каждое утро» (hour) и «когда добавлю замер/задачу → проверь/предупреди» (event). В prompt опиши, что делать; при срабатывании ты выполнишь его со всеми инструментами, а если делать нечего — ответишь SKIP. Пользователь видит/редактирует скилы в Настройки → ИИ → Скилы.',
     input_schema: {
@@ -1004,8 +1093,14 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
   // ── Модули / Реестры (Collections) ─────────────────────────────
   {
     name: 'list_collections',
-    description: 'Список всех реестров (типизированных наборов записей) установленных модулей в текущем воркспейсе с их полями. Вызывай прежде чем создавать/читать записи, чтобы узнать collectionId и схему полей.',
-    input_schema: { type: 'object', properties: {}, required: [] },
+    description: 'Список реестров (типизированных наборов записей) установленных модулей в текущем воркспейсе с их полями. Вызывай прежде чем создавать/читать записи, чтобы узнать collectionId и точные english-ключи полей. Если реестров много, полный список может обрезаться — тогда СУЗЬ через module (например module="medical" для Медкарты, "finance" для Финансов), чтобы наверняка увидеть нужную коллекцию (например medications) и НЕ создавать дубль-реестр.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        module: { type: 'string', description: 'Необязательный фильтр: показать только коллекции этого модуля. Подстрока по id модуля / имени проекта / ключу коллекции (например "medical", "finance", "growth").' },
+      },
+      required: [],
+    },
   },
   {
     name: 'query_records',
@@ -1021,7 +1116,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
   },
   {
     name: 'create_registry',
-    description: 'Создать СВОЙ типизированный реестр (мини-модуль) под новую сферу, когда данные будут ПОВТОРЯТЬСЯ и структуру удобнее вести таблицей, а готового модуля нет (например «учёт растений и полива», «коллекция вин», «мои клиенты»). Сам придумай осмысленные поля. После создания записывай через create_record (вернётся collectionId), читай через query_records. Реестр появится в «Модули» как пользовательский, его видно и можно удалить. НЕ используй для разового/справочного текста — тогда обычная страница. Проверь list_collections — вдруг подходящий реестр уже есть.',
+    description: 'Создать СВОЙ типизированный реестр (мини-модуль) под новую сферу, когда данные будут ПОВТОРЯТЬСЯ и структуру удобнее вести таблицей, а готового модуля нет (например «учёт растений и полива», «коллекция вин», «мои клиенты»). Сам придумай осмысленные поля. После создания записывай через create_record (вернётся collectionId), читай через query_records. Реестр появится в «Модули» как пользовательский, его видно и можно удалить. НЕ используй для разового/справочного текста — тогда обычная страница. ⚠️ ОБЯЗАТЕЛЬНО сперва проверь list_collections (при многих реестрах сузь через module=, напр. "medical") — если подходящая коллекция уже есть в установленном модуле (например medications в Медкарте), пиши В НЕЁ через create_record, а НЕ плоди дубль-реестр. Поля именуй понятными подписями (label) — ключи сгенерируются автоматически (кириллица транслитерируется).',
     input_schema: {
       type: 'object',
       properties: {
@@ -1047,6 +1142,17 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'delete_registry',
+    description: 'Удалить КАСТОМНЫЙ реестр по collectionId (возьми из list_collections — у кастомных стоит custom:true). Нужен, когда надо снести ошибочный или пустой реестр-дубль, а пользователь не может удалить его в интерфейсе. Каскадом удалятся все записи реестра, а если проект-обёртка после этого опустеет — уберётся и он. ⚠️ ВСТРОЕННЫЕ модули (Медкарта, Финансы и т.п.) этим НЕ удаляются — только пользовательские реестры. Перед удалением убедись, что реестр правда лишний, и лучше переспроси пользователя.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        collectionId: { type: 'string', description: 'ID коллекции реестра из list_collections' },
+      },
+      required: ['collectionId'],
+    },
+  },
+  {
     name: 'finance_overview',
     description: 'Вернуть ПОСЧИТАННЫЕ движком балансы всех счетов/карт (startBalance + доходы − расходы ± переводы), доход/расход за текущий месяц и траты по категориям. ВСЕГДА используй это, когда спрашивают баланс/остаток/сколько на карте/итоги — НИКОГДА не складывай операции в уме. Данные точные и актуальные.',
     input_schema: { type: 'object', properties: {}, required: [] },
@@ -1062,7 +1168,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
   },
   {
     name: 'create_record',
-    description: 'Добавить запись в реестр модуля. data — объект со значениями по ключам полей реестра (узнай ключи через list_collections).',
+    description: 'Добавить запись в реестр модуля. data — объект со значениями по ключам полей реестра (узнай ключи через list_collections). Поля типа secret (Сейф) шифруются при сохранении — передавай значение обычным текстом, наружу оно больше не выйдет.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1074,12 +1180,12 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
   },
   {
     name: 'update_record',
-    description: 'Изменить запись реестра (перезаписывает её data целиком — передавай полный объект).',
+    description: 'Изменить запись реестра. Передавай ТОЛЬКО те поля, которые меняешь — остальные сохранятся (мерж). Секреты Сейфа сохраняются автоматически: не пытайся их пере-передать, ты их не видишь.',
     input_schema: {
       type: 'object',
       properties: {
         recordId: { type: 'string' },
-        data: { type: 'object', description: 'Полный объект значений полей' },
+        data: { type: 'object', description: 'Только изменяемые поля (по ключам полей реестра)' },
       },
       required: ['recordId', 'data'],
     },

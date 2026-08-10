@@ -2,7 +2,7 @@ import { FastifyInstance } from 'fastify'
 import { PrismaClient } from '@prisma/client'
 import { z } from 'zod'
 import { randomUUID, createHmac } from 'crypto'
-import { streamChat, getAISettings, saveAISettings, appendConversationToMemory, type ChatContext } from './ai.service.js'
+import { streamChat, getAISettings, saveAISettings, appendConversationToMemory, registerMediaGenerators, type ChatContext } from './ai.service.js'
 import { getManagedImage } from '../../lib/managed.js'
 import { canUseManaged } from '../../lib/managedAccess.js'
 import { costOfImage } from '../../lib/pricing.js'
@@ -62,12 +62,14 @@ const chatSchema = z.object({
     .optional(),
 })
 
-export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
-  // POST /ai/generate-image — multi-provider AI image generation
-  fastify.post('/ai/generate-image', async (req, reply) => {
-    const { prompt, workspaceId, projectId } = req.body as { prompt?: string; workspaceId?: string; projectId?: string }
-    if (!prompt?.trim()) return reply.status(400).send({ error: 'Prompt required' })
-    if (workspaceId && await denyIfNotMember(prisma, workspaceId, req.authUser!.id, reply)) return
+// Core image generation, shared by the HTTP route (UI) and the agent's
+// generate_image tool. Pure-ish: takes explicit params, returns a result instead
+// of touching `reply`, so it can be called from anywhere.
+export async function generateImageCore(
+  prisma: PrismaClient,
+  { prompt, workspaceId, userId }: { prompt?: string; workspaceId?: string; userId: string },
+): Promise<{ url: string } | { error: string; status: number }> {
+    if (!prompt?.trim()) return { error: 'Prompt required', status: 400 }
 
     // The user's own image key wins; otherwise ours, if the admin set one; and
     // pollinations needs no key at all, which is why it is the last resort
@@ -77,11 +79,11 @@ export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
       : undefined
     // Ours only for a paying, opted-in user. Everyone else keeps pollinations,
     // which costs nobody anything.
-    const mayUseOurs = (await canUseManaged(prisma, req.authUser!.id)).ok
+    const mayUseOurs = (await canUseManaged(prisma, userId)).ok
     const managedImg = mayUseOurs ? getManagedImage() : null
     const imgCfg = userImg?.apiKey ? userImg : (managedImg ?? userImg)
     const provider = (imgCfg?.provider ?? 'pollinations') as NonNullable<typeof userImg>['provider']
-    fastify.log.info({ workspaceId, provider, model: imgCfg?.model, hasKey: !!imgCfg?.apiKey }, 'generate-image: provider selected')
+    console.log({ workspaceId, provider, model: imgCfg?.model, hasKey: !!imgCfg?.apiKey }, 'generate-image: provider selected')
 
     // Auto-translate non-English prompts to English for better image quality
     const hasCyrillic = /[Ѐ-ӿ]/.test(prompt)
@@ -116,7 +118,7 @@ export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
             const transData = await transRes.json() as { content?: Array<{ text: string }>; choices?: Array<{ message: { content: string } }> }
             const translated = transData.content?.[0]?.text?.trim() ?? transData.choices?.[0]?.message?.content?.trim()
             if (translated) {
-              fastify.log.info({ original: finalPrompt, translated }, 'generate-image: prompt translated')
+              console.log({ original: finalPrompt, translated }, 'generate-image: prompt translated')
               finalPrompt = translated
             }
           }
@@ -130,7 +132,7 @@ export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
     if (provider === 'openrouter') {
       // OpenRouter image models — chat completions API, model outputs image
       const apiKey = imgCfg?.apiKey
-      if (!apiKey) return reply.status(400).send({ error: 'API key not configured for OpenRouter' })
+      if (!apiKey) return { error: 'API key not configured for OpenRouter', status: 400 }
       const model = imgCfg?.model ?? 'google/gemini-2.5-flash-image'
       const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
@@ -151,7 +153,7 @@ export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
         const errText = await res.text()
         const errJson = (() => { try { return JSON.parse(errText) } catch { return null } })()
         const errMsg = errJson?.error?.message ?? errJson?.message ?? errText.slice(0, 200)
-        return reply.status(502).send({ error: `OpenRouter image error: ${errMsg}` })
+        return { error: `OpenRouter image error: ${errMsg}`, status: 502 }
       }
       type ORImgPart = { type: string; image_url?: { url: string } }
       type ORMessage = { content?: string | null; images?: ORImgPart[] }
@@ -160,7 +162,7 @@ export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
       // OpenRouter returns images in message.images[], not message.content
       const imgPart = msg?.images?.[0] ?? (Array.isArray(msg?.content) ? (msg.content as ORImgPart[]).find((p) => p.type === 'image_url') : null)
       const imgUrl = imgPart?.image_url?.url ?? (typeof msg?.content === 'string' && msg.content.startsWith('data:image') ? msg.content : null)
-      if (!imgUrl) return reply.status(502).send({ error: 'OpenRouter: no image in response' })
+      if (!imgUrl) return { error: 'OpenRouter: no image in response', status: 502 }
       if (imgUrl.startsWith('data:')) {
         const [meta, b64] = imgUrl.split(',')
         mimeType = meta.replace('data:', '').replace(';base64', '')
@@ -174,7 +176,7 @@ export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
     } else if (provider === 'openai') {
       // OpenAI images/generations endpoint
       const apiKey = imgCfg?.apiKey
-      if (!apiKey) return reply.status(400).send({ error: 'API key not configured for image provider' })
+      if (!apiKey) return { error: 'API key not configured for image provider', status: 400 }
       const model = imgCfg?.model ?? 'dall-e-3'
       const res = await fetch('https://api.openai.com/v1/images/generations', {
         method: 'POST',
@@ -186,7 +188,7 @@ export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
         const errText = await res.text()
         const errJson = (() => { try { return JSON.parse(errText) } catch { return null } })()
         const errMsg = errJson?.error?.message ?? errJson?.message ?? errText.slice(0, 200)
-        return reply.status(502).send({ error: `Image generation failed: ${errMsg}` })
+        return { error: `Image generation failed: ${errMsg}`, status: 502 }
       }
       const data = await res.json() as { data: { url?: string; b64_json?: string }[] }
       const item = data.data?.[0]
@@ -198,13 +200,13 @@ export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
         imageBuffer = Buffer.from(await imgRes.arrayBuffer())
         mimeType = imgRes.headers.get('content-type') ?? 'image/png'
       } else {
-        return reply.status(502).send({ error: 'No image returned by provider' })
+        return { error: 'No image returned by provider', status: 502 }
       }
 
     } else if (provider === 'flux') {
       // Black Forest Labs direct FLUX API (polling)
       const apiKey = imgCfg?.apiKey
-      if (!apiKey) return reply.status(400).send({ error: 'API key not configured for FLUX provider' })
+      if (!apiKey) return { error: 'API key not configured for FLUX provider', status: 400 }
       const model = imgCfg?.model ?? 'flux-pro-1.1'
       const submitRes = await fetch(`https://api.us1.bfl.ai/v1/${model}`, {
         method: 'POST',
@@ -216,7 +218,7 @@ export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
         const errText = await submitRes.text()
         const errJson = (() => { try { return JSON.parse(errText) } catch { return null } })()
         const errMsg = errJson?.detail ?? errJson?.message ?? errText.slice(0, 200)
-        return reply.status(502).send({ error: `FLUX error: ${errMsg}` })
+        return { error: `FLUX error: ${errMsg}`, status: 502 }
       }
       const { id: taskId } = await submitRes.json() as { id: string }
       // Poll until ready (max 3 min)
@@ -233,9 +235,9 @@ export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
           imageUrl = data.result.sample
           break
         }
-        if (data.status === 'Error') return reply.status(502).send({ error: 'FLUX generation failed' })
+        if (data.status === 'Error') return { error: 'FLUX generation failed', status: 502 }
       }
-      if (!imageUrl) return reply.status(502).send({ error: 'FLUX generation timed out' })
+      if (!imageUrl) return { error: 'FLUX generation timed out', status: 502 }
       const imgRes = await fetch(imageUrl, { signal: AbortSignal.timeout(30_000) })
       imageBuffer = Buffer.from(await imgRes.arrayBuffer())
       mimeType = imgRes.headers.get('content-type') ?? 'image/jpeg'
@@ -243,7 +245,7 @@ export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
     } else if (provider === 'stability') {
       // Stability AI — Stable Image Core
       const apiKey = imgCfg?.apiKey
-      if (!apiKey) return reply.status(400).send({ error: 'API key not configured for image provider' })
+      if (!apiKey) return { error: 'API key not configured for image provider', status: 400 }
       const formData = new FormData()
       formData.append('prompt', finalPrompt)
       formData.append('output_format', 'jpeg')
@@ -256,14 +258,14 @@ export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
       })
       if (!res.ok) {
         const err = await res.text()
-        return reply.status(502).send({ error: `Stability AI error: ${err.slice(0, 200)}` })
+        return { error: `Stability AI error: ${err.slice(0, 200)}`, status: 502 }
       }
       imageBuffer = Buffer.from(await res.arrayBuffer())
       mimeType = 'image/jpeg'
 
     } else if (provider === 'fal') {
       const apiKey = imgCfg?.apiKey
-      if (!apiKey) return reply.status(400).send({ error: 'API key not configured for fal.ai' })
+      if (!apiKey) return { error: 'API key not configured for fal.ai', status: 400 }
       const model = imgCfg?.model ?? 'fal-ai/flux/schnell'
       // fal.ai queue API
       const submitRes = await fetch(`https://queue.fal.run/${model}`, {
@@ -279,7 +281,7 @@ export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
         const errMsg = Array.isArray(detail)
           ? detail.map((d: { msg?: string; loc?: string[] }) => `${d.loc?.join('.')}: ${d.msg}`).join('; ')
           : (typeof detail === 'string' ? detail : errJson?.message ?? errText.slice(0, 300))
-        return reply.status(502).send({ error: `fal.ai error: ${errMsg}` })
+        return { error: `fal.ai error: ${errMsg}`, status: 502 }
       }
       const submitData = await submitRes.json() as {
         request_id: string
@@ -288,7 +290,7 @@ export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
       }
       const statusUrl = submitData.status_url ?? `https://queue.fal.run/${model}/requests/${submitData.request_id}/status`
       const responseUrl = submitData.response_url ?? `https://queue.fal.run/${model}/requests/${submitData.request_id}`
-      fastify.log.info({ request_id: submitData.request_id, statusUrl }, 'fal.ai: job submitted')
+      console.log({ request_id: submitData.request_id, statusUrl }, 'fal.ai: job submitted')
 
       // Poll for result (max 3 min)
       let imageUrl: string | null = null
@@ -300,7 +302,7 @@ export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
         })
         if (!poll.ok) continue
         const statusData = await poll.json() as { status: string; logs?: unknown[] }
-        fastify.log.info({ status: statusData.status, attempt: i }, 'fal.ai: poll status')
+        console.log({ status: statusData.status, attempt: i }, 'fal.ai: poll status')
         if (statusData.status === 'COMPLETED') {
           const resultRes = await fetch(responseUrl, {
             headers: { 'Authorization': `Key ${apiKey}` },
@@ -312,11 +314,11 @@ export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
           }
           break
         }
-        if (statusData.status === 'FAILED') return reply.status(502).send({ error: 'fal.ai generation failed' })
+        if (statusData.status === 'FAILED') return { error: 'fal.ai generation failed', status: 502 }
       }
-      if (!imageUrl) return reply.status(502).send({ error: 'fal.ai generation timed out' })
+      if (!imageUrl) return { error: 'fal.ai generation timed out', status: 502 }
       const imgRes = await fetch(imageUrl, { signal: AbortSignal.timeout(30_000) })
-      if (!imgRes.ok) return reply.status(502).send({ error: `fal.ai: could not download the result image (${imgRes.status})` })
+      if (!imgRes.ok) return { error: `fal.ai: could not download the result image (${imgRes.status})`, status: 502 }
       imageBuffer = Buffer.from(await imgRes.arrayBuffer())
       mimeType = imgRes.headers.get('content-type') ?? 'image/jpeg'
 
@@ -327,11 +329,11 @@ export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
       const encoded = encodeURIComponent(finalPrompt.slice(0, 400))
       const genUrl = `https://image.pollinations.ai/prompt/${encoded}?width=1024&height=768&nologo=true&model=flux`
       const res = await fetch(genUrl, { signal: AbortSignal.timeout(90_000) })
-      if (!res.ok) return reply.status(502).send({ error: 'Image generation failed' })
+      if (!res.ok) return { error: 'Image generation failed', status: 502 }
       const ct = res.headers.get('content-type') ?? ''
       imageBuffer = Buffer.from(await res.arrayBuffer())
       if (!ct.startsWith('image/')) {
-        return reply.status(502).send({ error: 'The image service returned no image. Try a shorter, simpler description.' })
+        return { error: 'The image service returned no image. Try a shorter, simpler description.', status: 502 }
       }
       mimeType = ct
     }
@@ -343,7 +345,7 @@ export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
       if (fixedCost) {
         void recordUsage(prisma, {
           workspaceId,
-          userId: req.authUser!.id,
+          userId: userId,
           provider: `sinoutx:${provider}`,
           model: imgCfg?.model ?? provider,
           managed: true,
@@ -353,12 +355,12 @@ export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
       }
     }
 
-    if (!imageBuffer) return reply.status(502).send({ error: 'No image buffer produced' })
+    if (!imageBuffer) return { error: 'No image buffer produced', status: 502 }
     // Never store/serve a non-image: a provider can answer 200 with an HTML/JSON
     // error, which would then render as a broken <img>. Check the magic bytes.
     if (!looksLikeImage(imageBuffer)) {
-      fastify.log.warn({ provider, head: imageBuffer.subarray(0, 16).toString('hex') }, 'generate-image: non-image response')
-      return reply.status(502).send({ error: 'The provider did not return a valid image. Try again or simplify the prompt.' })
+      console.warn({ provider, head: imageBuffer.subarray(0, 16).toString('hex') }, 'generate-image: non-image response')
+      return { error: 'The provider did not return a valid image. Try again or simplify the prompt.', status: 502 }
     }
     const ext = mimeType.includes('png') ? 'png' : mimeType.includes('webp') ? 'webp' : mimeType.includes('gif') ? 'gif' : 'jpg'
     const filename = `${randomUUID()}.${ext}`
@@ -385,14 +387,15 @@ export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
       }).catch(() => null)
     }
 
-    return reply.send({ url: `/api/v1/ai/image/${filename}` })
-  })
+    return { url: `/api/v1/ai/image/${filename}` }
+}
 
-  // POST /ai/generate-audio — multi-provider AI audio/TTS generation
-  fastify.post('/ai/generate-audio', async (req, reply) => {
-    const { prompt, workspaceId } = req.body as { prompt?: string; workspaceId?: string }
-    if (!prompt?.trim()) return reply.status(400).send({ error: 'Prompt required' })
-    if (workspaceId && await denyIfNotMember(prisma, workspaceId, req.authUser!.id, reply)) return
+// Core TTS, shared by the HTTP route (UI) and the agent's generate_audio tool.
+export async function generateAudioCore(
+  prisma: PrismaClient,
+  { prompt, workspaceId }: { prompt?: string; workspaceId?: string; userId: string },
+): Promise<{ url: string } | { error: string; status: number }> {
+    if (!prompt?.trim()) return { error: 'Prompt required', status: 400 }
 
     const settings = workspaceId ? await getAISettings(workspaceId, prisma) : null
     const audioCfg = settings?.audioGeneration
@@ -410,12 +413,12 @@ export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
         const res = await fetch(url, { signal: AbortSignal.timeout(60_000) })
         if (!res.ok) {
           const err = await res.text()
-          return reply.status(502).send({ error: `StreamElements TTS ${res.status}: ${err.slice(0, 300)}` })
+          return { error: `StreamElements TTS ${res.status}: ${err.slice(0, 300)}`, status: 502 }
         }
         audioBuffer = Buffer.from(await res.arrayBuffer())
 
       } else if (provider === 'elevenlabs') {
-        if (!apiKey) return reply.status(400).send({ error: 'ElevenLabs API key required' })
+        if (!apiKey) return { error: 'ElevenLabs API key required', status: 400 }
         const voiceId = model || '21m00Tcm4TlvDq8ikWAM' // default: Rachel
         const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
           method: 'POST',
@@ -425,12 +428,12 @@ export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
         })
         if (!res.ok) {
           const err = await res.text()
-          return reply.status(502).send({ error: `ElevenLabs ${res.status}: ${err.slice(0, 300)}` })
+          return { error: `ElevenLabs ${res.status}: ${err.slice(0, 300)}`, status: 502 }
         }
         audioBuffer = Buffer.from(await res.arrayBuffer())
 
       } else if (provider === 'playht') {
-        if (!apiKey) return reply.status(400).send({ error: 'PlayHT API key required' })
+        if (!apiKey) return { error: 'PlayHT API key required', status: 400 }
         const [userId, secretKey] = apiKey.split(':')
         const res = await fetch('https://api.play.ht/api/v2/tts/stream', {
           method: 'POST',
@@ -438,29 +441,52 @@ export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
           body: JSON.stringify({ text: prompt.trim(), voice: model || 's3://voice-cloning-zero-shot/d9ff78ba-d016-47f6-b0ef-dd630f59414e/female-cs/manifest.json', output_format: 'mp3', voice_engine: 'PlayHT2.0' }),
           signal: AbortSignal.timeout(60_000),
         })
-        if (!res.ok) return reply.status(502).send({ error: `PlayHT error ${res.status}` })
+        if (!res.ok) return { error: `PlayHT error ${res.status}`, status: 502 }
         audioBuffer = Buffer.from(await res.arrayBuffer())
 
       } else {
         // OpenAI TTS (default)
-        if (!apiKey) return reply.status(400).send({ error: 'OpenAI API key required' })
+        if (!apiKey) return { error: 'OpenAI API key required', status: 400 }
         const res = await fetch('https://api.openai.com/v1/audio/speech', {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ model: 'tts-1', input: prompt.trim(), voice: model || 'alloy' }),
           signal: AbortSignal.timeout(60_000),
         })
-        if (!res.ok) return reply.status(502).send({ error: `OpenAI TTS error ${res.status}` })
+        if (!res.ok) return { error: `OpenAI TTS error ${res.status}`, status: 502 }
         audioBuffer = Buffer.from(await res.arrayBuffer())
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      return reply.status(502).send({ error: msg.slice(0, 300) })
+      return { error: msg.slice(0, 300), status: 502 }
     }
 
     const filename = `${randomUUID()}.mp3`
     await uploadFile(`ai-audio/${filename}`, audioBuffer!, 'audio/mpeg', audioBuffer!.length)
-    return reply.send({ url: `/api/v1/ai/audio/${filename}` })
+    return { url: `/api/v1/ai/audio/${filename}` }
+}
+
+export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
+  // Hand the agent the same multi-provider media engines the UI uses, so its
+  // generate_image / generate_audio tools aren't a second implementation.
+  registerMediaGenerators({ image: generateImageCore, audio: generateAudioCore })
+
+  // POST /ai/generate-image — multi-provider AI image generation
+  fastify.post('/ai/generate-image', async (req, reply) => {
+    const { prompt, workspaceId } = req.body as { prompt?: string; workspaceId?: string }
+    if (workspaceId && await denyIfNotMember(prisma, workspaceId, req.authUser!.id, reply)) return
+    const r = await generateImageCore(prisma, { prompt, workspaceId, userId: req.authUser!.id })
+    if ('error' in r) return reply.status(r.status).send({ error: r.error })
+    return reply.send(r)
+  })
+
+  // POST /ai/generate-audio — multi-provider AI audio/TTS generation
+  fastify.post('/ai/generate-audio', async (req, reply) => {
+    const { prompt, workspaceId } = req.body as { prompt?: string; workspaceId?: string }
+    if (workspaceId && await denyIfNotMember(prisma, workspaceId, req.authUser!.id, reply)) return
+    const r = await generateAudioCore(prisma, { prompt, workspaceId, userId: req.authUser!.id })
+    if ('error' in r) return reply.status(r.status).send({ error: r.error })
+    return reply.send(r)
   })
 
   // POST /ai/upload-audio — receive a recorded audio blob from browser TTS

@@ -7,15 +7,18 @@ import http from 'http'
 
 const { Pool } = pg
 const pool = new Pool({ connectionString: process.env.DATABASE_URL })
+
+// Страховка: для realtime-сервиса доступность важнее fail-fast. Одна ошибка в
+// хуке (как было с onDisconnect) не должна ронять процесс и отдавать 502 всем —
+// логируем и продолжаем жить. Настоящие баги всё равно видны в логе.
+process.on('unhandledRejection', (e) => console.error('[collab] unhandledRejection:', e))
+process.on('uncaughtException', (e) => console.error('[collab] uncaughtException:', e))
 const MAX_VERSIONS = 50
 // Save a version snapshot every 5 minutes of activity
 const VERSION_INTERVAL_MS = 5 * 60 * 1000
 
 // Track pending version saves: pageId → { timer, content, title }
 const versionTimers = new Map()
-
-// Track presence manually: pageId → Map<clientId, user>
-const presenceMap = new Map()
 
 async function saveVersion(pageId, title, content) {
   try {
@@ -87,21 +90,11 @@ const server = new Server({
     if (!rows.length) throw new Error('Page not found')
   },
 
-  async onConnect({ documentName, connection }) {
-    // Initialize presence slot for this document
-    if (!presenceMap.has(documentName)) {
-      presenceMap.set(documentName, new Map())
-    }
-  },
-
-  async onDisconnect({ documentName, document: ydoc, clientsCount, connection }) {
-    // Clean up presence for this connection
-    const docPresence = presenceMap.get(documentName)
-    if (docPresence) {
-      docPresence.delete(connection.readyState)
-      if (docPresence.size === 0) presenceMap.delete(documentName)
-    }
-
+  async onDisconnect({ documentName, document: ydoc, clientsCount }) {
+    // Присутствие берётся живьём из Yjs awareness (см. HTTP API ниже), отдельная
+    // presence-мапа была мёртвым кодом — и её очистка через connection.readyState
+    // роняла ВЕСЬ процесс на каждом отключении (connection здесь undefined в
+    // Hocuspocus v4), из-за чего сервил уходил в петлю рестарта и отдавал 502.
     if (clientsCount > 0) return
     // Last client disconnected — save version immediately
     try {

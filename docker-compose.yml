@@ -150,7 +150,17 @@ services:
       SINOUT_EDITION: ${SINOUT_EDITION:-solo}
       EXECUTOR_URL: ${EXECUTOR_URL:-http://executor:8088}
       EXECUTOR_TOKEN: ${EXECUTOR_TOKEN:-}
-    networks: [default, sandbox, sandbox_net]
+    # Backend сидит в трёх сетях, и одна из них (sandbox) — internal, без интернета.
+    # Docker выбирает ОДИН шлюз по умолчанию; когда выбор падал на sandbox, контейнер
+    # терял выход наружу целиком — отваливались Telegram, эмбеддинги, платежи. При этом
+    # DNS продолжал работать (он локальный), поэтому в логах видно «имя разрешилось, а
+    # коннект таймаутит» и легко подумать на провайдера. Пересоздание контейнера могло
+    # перевыбрать шлюз — отсюда «сломалось на ровном месте». Прибиваем шлюз к default.
+    networks:
+      default:
+        gw_priority: 100
+      sandbox: {}
+      sandbox_net: {}
     # порт закрыт снаружи — проксируется через nginx
     volumes:
       - ${UPLOADS_DIR:-uploads}:/app/uploads

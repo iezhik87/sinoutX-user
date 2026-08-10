@@ -200,6 +200,36 @@ export const agentHistKey = (channel: string, workspaceId: string, chatKey: stri
 //   • no typing indicator / no editing (Viber) → no live "thinking…" placeholder
 //   • no deletion (Viber)                      → get_secret is stripped from the
 //     toolset upstream, so a Vault secret can never reach a chat we cannot clean.
+// Telegram/Viber не принимают сообщение длиннее ~4096 символов. Раньше мы просто
+// резали ответ на 3900 и ТЕРЯЛИ хвост — пользователь видел обрыв на полуслове и
+// был вынужден просить «продолжи» (а модель до-генерировала заново). Режем ДО
+// форматирования (чтобы не разорвать HTML-тег) по границам абзацев/строк.
+function splitForChannel(text: string, limit = 3500): string[] {
+  if (text.length <= limit) return [text]
+  const chunks: string[] = []
+  let buf = ''
+  const push = () => { if (buf.trim()) chunks.push(buf); buf = '' }
+  for (const para of text.split('\n\n')) {
+    if (para.length > limit) {
+      push()
+      let rest = para
+      while (rest.length > limit) {
+        let cut = rest.lastIndexOf('\n', limit)
+        if (cut < limit * 0.5) cut = rest.lastIndexOf(' ', limit)
+        if (cut < limit * 0.5) cut = limit
+        chunks.push(rest.slice(0, cut))
+        rest = rest.slice(cut).replace(/^[\n ]+/, '')
+      }
+      buf = rest
+      continue
+    }
+    if (buf && (buf.length + 2 + para.length) > limit) push()
+    buf = buf ? `${buf}\n\n${para}` : para
+  }
+  push()
+  return chunks.length ? chunks : [text.slice(0, limit)]
+}
+
 export async function runChannelAgent(
   prisma: PrismaClient,
   adapter: ChannelAdapter,
@@ -220,7 +250,10 @@ export async function runChannelAgent(
   // The live placeholder needs BOTH a typing indicator and message editing.
   // Without them (Viber) we stay silent until the answer is ready — a stream of
   // un-deletable "thinking" messages would be worse than nothing.
-  const live = adapter.canType && adapter.canEdit
+  // Automated runs (scheduled skills, persist=false) skip the placeholder entirely:
+  // a scheduled brief shouldn't post "⏳ Думаю…" first, and on a SKIP day it must be
+  // able to send nothing at all without leaving a stray placeholder behind.
+  const live = adapter.canType && adapter.canEdit && persist
   let currentStep = L.thinking
   let phId: string | undefined
   let busy: NodeJS.Timeout | undefined
@@ -246,9 +279,14 @@ export async function runChannelAgent(
     // summarizes if it gets long.
     const convId = await redis.get(convKey)
     if (convId) {
+      // Load a WIDE recent slice: a data-entry session (dictating a draw / weigh-in)
+      // is hundreds of tiny turns, and at 30 the agent couldn't see its own data
+      // from a few minutes ago → it «lost the thread» and miscalculated. streamChat
+      // then trims by a character budget, so loading many small messages is cheap
+      // and safe; the budget caps what actually reaches the model.
       const rows = await prisma.aiMessage.findMany({
         where: { conversationId: convId, role: { in: ['user', 'assistant'] } },
-        orderBy: { createdAt: 'desc' }, take: 30,
+        orderBy: { createdAt: 'desc' }, take: 400,
         select: { role: true, content: true },
       })
       history = rows.reverse().map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }))
@@ -287,6 +325,7 @@ export async function runChannelAgent(
   }
 
   let reply = ''
+  let errorText = ''            // provider/refusal error surfaced by streamChat
   let lastTask: { id: string; title?: string } | null = null
   let revealedSecret = false // get_secret was used → this reply contains Vault secrets
   try {
@@ -296,6 +335,11 @@ export async function runChannelAgent(
       try {
         const parsed = JSON.parse(line) as { type?: string; text?: string; tool?: string; kind?: string; id?: string; title?: string }
         if (parsed.type === 'text' && parsed.text) reply += parsed.text
+        // ⚠️ streamChat отдаёт реальную причину (баланс/квота исчерпаны, отказ,
+        // ключ не настроен) как type:'error'. Раньше здесь это игнорировалось —
+        // и пользователь в Telegram вместо «на ключе кончились деньги» получал
+        // «🤔 Пустой ответ, переформулируй» и по 13 раз диктовал впустую.
+        else if (parsed.type === 'error' && parsed.text) errorText = parsed.text
         else if (parsed.type === 'tool_start' && parsed.tool) { currentStep = stepLabel(parsed.tool, userLanguage); if (parsed.tool === 'get_secret') revealedSecret = true }
         else if (parsed.type === 'entity' && parsed.kind === 'task' && parsed.id) lastTask = { id: parsed.id, title: parsed.title }
       } catch { /* ignore */ }
@@ -305,8 +349,41 @@ export async function runChannelAgent(
   } finally {
     if (busy) clearInterval(busy) // stop the typing/dots animation once the answer is ready
   }
+  // Ошибка провайдера важнее пустого текста: показываем её, а не «переформулируй».
+  if (!reply.trim() && errorText) reply = '❌ ' + errorText
+
+  // Баланс ключа исчерпан (BYOK — свой ключ провайдера; заранее его не узнать,
+  // сигнал только сам 402). На скилах по расписанию НЕ заваливаем чат красной
+  // ошибкой каждый запуск (утро+вечер+аудит = 3 в день) — шлём ОДИН алерт раз в
+  // 6 часов, и в приложение, и в мессенджер, и на этом умолкаем. В интерактивном
+  // чате ошибку оставляем как есть: человек тут и сразу видит причину.
+  if (!persist && /💳|баланс|credit|quota|insufficient|\b402\b/i.test(errorText)) {
+    try {
+      if (await redis.set(`ai:lowbalance:${workspaceId}`, '1', 'EX', 21600, 'NX') === 'OK') {
+        const title = { ru: '💳 Баланс AI-ключа исчерпан', en: '💳 AI key balance exhausted', be: '💳 Баланс AI-ключа скончыўся' }[userLanguage]
+        const body = { ru: 'Пополни ключ провайдера или подключи свой в Настройки → AI. Автоматические сводки не приходят, пока баланс на нуле.',
+          en: 'Top up your provider key or connect your own in Settings → AI. Scheduled digests are paused while the balance is zero.',
+          be: 'Папоўні ключ або падключы свой у Настройках → AI. Аўтаматычныя зводкі не прыходзяць, пакуль баланс нулявы.' }[userLanguage]
+        if (userId) {
+          const { NotificationService } = await import('../notification/notification.service.js')
+          await new NotificationService(prisma).create({ userId, type: 'system', title, body, link: '/settings' }).catch(() => {})
+        }
+        await adapter.send(`${title}\n${body}`).catch(() => {})
+      }
+    } catch { /* redis/notify — best effort */ }
+    return // на автопрогоне сырую ошибку в чат не шлём
+  }
 
   reply = reply.trim() || L.empty
+
+  // Automated runs (scheduled skills) may answer "SKIP" to stay silent on an empty
+  // day. Suppress a standalone/trailing SKIP so the token never leaks into the chat;
+  // if nothing meaningful remains, send nothing at all.
+  if (!persist && /(^|\n)\s*skip\.?\s*$/i.test(reply)) {
+    const stripped = reply.replace(/(^|\n)\s*skip\.?\s*$/i, '').trim()
+    if (!stripped) return
+    reply = stripped
+  }
 
   // Persist trimmed history (last 10 turns, 1h TTL) for follow-up questions.
   try {
@@ -334,21 +411,29 @@ export async function runChannelAgent(
     } catch (e) { console.error(`[${adapter.id}] persist conversation`, e) }
   }
 
-  let out = adapter.format(reply).slice(0, 3900)
-  if (revealedSecret) {
-    out += { ru: '\n\n🕐 <i>Это сообщение с секретами удалю через 1 минуту.</i>', en: '\n\n🕐 <i>I will delete this secret message in 1 minute.</i>', be: '\n\n🕐 <i>Гэта паведамленне выдалю праз 1 хвіліну.</i>' }[userLanguage]
-  }
   const buttons: ChannelButton[] | undefined = lastTask ? taskButtons(lastTask.id, userLanguage) : undefined
 
-  // Edit the placeholder into the answer when we can; otherwise send it fresh.
-  let sentId: string | undefined
-  if (live && phId && await adapter.edit(phId, out, buttons)) sentId = phId
-  else sentId = await adapter.send(out, buttons)
+  // Секретный ответ — коротко и ОДНИМ сообщением (так его проще удалить через
+  // минуту); длинные обычные ответы шлём несколькими сообщениями, не теряя хвост.
+  if (revealedSecret) {
+    const out = adapter.format(reply).slice(0, 3900) +
+      { ru: '\n\n🕐 <i>Это сообщение с секретами удалю через 1 минуту.</i>', en: '\n\n🕐 <i>I will delete this secret message in 1 minute.</i>', be: '\n\n🕐 <i>Гэта паведамленне выдалю праз 1 хвіліну.</i>' }[userLanguage]
+    let sentId: string | undefined
+    if (live && phId && await adapter.edit(phId, out, buttons)) sentId = phId
+    else sentId = await adapter.send(out, buttons)
+    if (sentId !== undefined && adapter.canDelete) {
+      setTimeout(() => { void adapter.delete(sentId!).catch(() => {}) }, 60_000)
+    }
+    return
+  }
 
-  // Auto-delete the secret message after 60s so passwords don't linger in the chat.
-  // Unreachable on channels without deletion — get_secret is stripped there.
-  if (revealedSecret && sentId !== undefined && adapter.canDelete) {
-    setTimeout(() => { void adapter.delete(sentId!).catch(() => {}) }, 60_000)
+  const chunks = splitForChannel(reply)
+  for (let i = 0; i < chunks.length; i++) {
+    const isLast = i === chunks.length - 1
+    const out = adapter.format(chunks[i])            // форматируем каждый кусок отдельно — тег не разорвётся
+    const btns = isLast ? buttons : undefined         // кнопки задачи только на последнем сообщении
+    if (i === 0 && live && phId && await adapter.edit(phId, out, btns)) continue // первый — в плейсхолдер
+    await adapter.send(out, btns)
   }
 }
 

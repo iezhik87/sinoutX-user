@@ -13,6 +13,7 @@ export const CAP = {
   CODE_EXEC_NET: 'code_exec:net',       // sandbox WITH internet — relaxation, admin only
   VAULT_REVEAL: 'vault:reveal',         // agent may fetch+return Vault secret VALUES (admin only by default)
   MANAGED_TOKENS: 'managed_tokens',     // we bill tokens (cloud pay-as-you-go)
+  LAB_USE: 'lab:use',                   // experimental "lab" tools — owner/admin only (never in BASE_CAPS)
 } as const
 
 const ALL_CAPS = Object.values(CAP)

@@ -13,7 +13,7 @@ import { errorHandler } from './middleware/errorHandler.js'
 import { createAuthMiddleware } from './middleware/authenticate.js'
 import { isFrozen, primeFrozenCache } from './lib/frozen.js'
 import { primeBillingMode, isBillingEnabled } from './lib/billingMode.js'
-import { isSoloEdition } from './lib/edition.js'
+import { isSoloEdition, isLabEnabled } from './lib/edition.js'
 import { primeManaged } from './lib/managed.js'
 import { primePricing } from './lib/pricing.js'
 import { writeAuditLog } from './lib/audit.js'
@@ -348,6 +348,16 @@ async function bootstrap() {
 
     // Background sampler for the admin monitoring dashboard
     startMonitoring(prisma)
+
+    // «Лаборатория» — личные эксперименты, вырезаемые из публичного снапшота.
+    // Импорт ДИНАМИЧЕСКИЙ и путь НЕ литерал: иначе tsc в снапшоте (где папки нет)
+    // упал бы на «Cannot find module». Нет папки / ошибка → просто работаем без неё.
+    if (isLabEnabled()) {
+      const labPath = './lab/index.js'
+      import(labPath)
+        .then((m: { register?: (p: PrismaClient) => void }) => { m.register?.(prisma); console.log('[lab] extensions registered') })
+        .catch(() => console.log('[lab] SINOUT_LAB=true, но папка lab отсутствует — пропускаю'))
+    }
 
     // Sync built-in modules into the catalog, then re-sync installed instances
     // so manifest updates (languages, views, fields) propagate automatically.

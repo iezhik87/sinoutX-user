@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, Fragment } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Users, Settings, Shield, Trash2, UserCheck, UserX, Key, Save, RefreshCw, Check, UserPlus, X, Eye, EyeOff, Copy, ClipboardList, Loader2, Database, Download, Upload, RotateCcw, Clock, Activity, Cpu, MemoryStick, Network, HardDrive, AlertTriangle, Coins } from 'lucide-react'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
@@ -1465,6 +1465,15 @@ function LicensesTab() {
 
 // ─── Audit Tab (global, admin) ──────────────────────────────────────────────────
 
+function AuditField({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="flex flex-col">
+      <dt className="text-[11px] uppercase tracking-wide text-slate-500">{label}</dt>
+      <dd className={cn('text-slate-200 break-all', mono && 'font-mono text-xs')}>{value}</dd>
+    </div>
+  )
+}
+
 function AuditTab() {
   const { language } = useLanguageStore()
   const al = useT().admin.audit
@@ -1473,6 +1482,8 @@ function AuditTab() {
   const [cursor, setCursor] = useState<string | undefined>()
   const [items, setItems] = useState<AdminAuditItem[]>([])
   const [actionFilter, setActionFilter] = useState('')
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const fullTime = (iso: string) => new Date(iso).toLocaleString(language === 'en' ? 'en-GB' : language === 'be' ? 'be-BY' : 'ru-RU')
 
   const { data, isFetching } = useQuery({
     queryKey: ['admin-audit', cursor, actionFilter],
@@ -1489,7 +1500,10 @@ function AuditTab() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-slate-100">{al.title}</h2>
+        <div className="flex items-baseline gap-3">
+          <h2 className="text-lg font-semibold text-slate-100">{al.title}</h2>
+          <span className="text-xs text-slate-500">{al.rowHint}</span>
+        </div>
         <select
           value={actionFilter}
           onChange={(e) => { setItems([]); setCursor(undefined); setActionFilter(e.target.value) }}
@@ -1515,10 +1529,17 @@ function AuditTab() {
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-700/50">
-            {items.map((item) => (
-              <tr key={item.id} className="hover:bg-slate-800/50 transition-colors">
+            {items.map((item) => {
+              const open = expandedId === item.id
+              return (
+              <Fragment key={item.id}>
+              <tr
+                onClick={() => setExpandedId(open ? null : item.id)}
+                className={cn('cursor-pointer transition-colors', open ? 'bg-slate-800/60' : 'hover:bg-slate-800/50')}
+              >
                 <td className="px-4 py-2.5 text-slate-200 whitespace-nowrap">
                   <span className="inline-flex items-center gap-2">
+                    <span className={cn('text-slate-500 transition-transform', open && 'rotate-90')}>▸</span>
                     {labelFor(item.action)}
                     {(item.action === 'ai.write' || item.meta?.source === 'mcp') && (
                       <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-violet-500/20 text-violet-300 border border-violet-500/30">Claude</span>
@@ -1531,7 +1552,34 @@ function AuditTab() {
                 <td className="px-4 py-2.5 text-slate-500 whitespace-nowrap font-mono text-xs">{item.ip ?? '—'}</td>
                 <td className="px-4 py-2.5 text-slate-500 whitespace-nowrap">{formatDistanceToNow(new Date(item.createdAt), { addSuffix: true, locale })}</td>
               </tr>
-            ))}
+              {open && (
+                <tr className="bg-slate-900/40">
+                  <td colSpan={6} className="px-4 py-4">
+                    <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-3">{al.details}</div>
+                    <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-2 text-sm">
+                      <AuditField label={al.colAction} value={`${labelFor(item.action)}  ·  ${item.action}`} mono />
+                      <AuditField label={al.exactTime} value={fullTime(item.createdAt)} />
+                      <AuditField label={al.colUser} value={item.userEmail ?? '—'} />
+                      <AuditField label={al.userId} value={item.userId ?? '—'} mono />
+                      <AuditField label={al.colWorkspace} value={item.workspaceName ?? '—'} />
+                      <AuditField label={al.workspaceId} value={item.workspaceId ?? '—'} mono />
+                      <AuditField label={al.resourceType} value={item.resourceType ?? '—'} />
+                      <AuditField label={al.colResource} value={item.resourceName ?? '—'} />
+                      <AuditField label={al.resourceId} value={item.resourceId ?? '—'} mono />
+                      <AuditField label={al.colIp} value={item.ip ?? '—'} mono />
+                      <AuditField label={al.eventId} value={item.id} mono />
+                    </dl>
+                    <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mt-4 mb-2">{al.metaTitle}</div>
+                    {item.meta && Object.keys(item.meta).length > 0 ? (
+                      <pre className="text-xs text-slate-300 bg-slate-950/70 border border-slate-800 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap break-words">{JSON.stringify(item.meta, null, 2)}</pre>
+                    ) : (
+                      <div className="text-xs text-slate-600 italic">{al.noMeta}</div>
+                    )}
+                  </td>
+                </tr>
+              )}
+              </Fragment>
+            )})}
             {items.length === 0 && !isFetching && (
               <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-500">{al.none}</td></tr>
             )}

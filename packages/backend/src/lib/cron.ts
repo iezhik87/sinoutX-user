@@ -255,7 +255,11 @@ async function processScheduledSkills(prisma: PrismaClient) {
         if ((sk.schedule?.hour ?? 9) !== hour) continue
         // Once per local day per skill.
         if ((await redis.set(`skill:${workspaceId}:${sk.id}:${day}`, '1', 'EX', 90000, 'NX')) !== 'OK') continue
-        await runChannelAgent(prisma, adapter, workspaceId, adapter.chatKey, owner?.userId, undefined, sk.prompt!, 'ru', false)
+        // Обрамляем плановый прогон: без этого модель принимает голую инструкцию за
+        // «настрой скил» и каждый раз пишет «скил создан / теперь буду присылать».
+        // Здесь чётко: это регулярный запуск, выдай ТОЛЬКО результат или SKIP.
+        const framed = `[Плановый запуск скила «${sk.name}». Это регулярный автозапуск по расписанию, НЕ создание и НЕ настройка — скил уже давно работает. Выполни инструкцию ниже и пришли ТОЛЬКО её результат. НЕ пиши вводных «скил создан», «теперь буду присылать», «готово, настроил» — пользователь это знает. Если по инструкции докладывать нечего — ответь ровно словом SKIP и не отправляй ничего.]\n\n${sk.prompt!}`
+        await runChannelAgent(prisma, adapter, workspaceId, adapter.chatKey, owner?.userId, undefined, framed, 'ru', false)
           .catch((e) => console.error('[cron] skill run error', sk.id, e))
         // Stamp lastRunAt.
         const all = await getCustomTools(workspaceId, prisma)

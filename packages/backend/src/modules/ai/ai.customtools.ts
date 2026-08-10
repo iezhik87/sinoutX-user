@@ -169,7 +169,10 @@ function isPrivateIp(ip: string): boolean {
     (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31) || a >= 224
 }
 
-async function guardUrl(rawUrl: string): Promise<URL> {
+/** SSRF guard: https-only, no private/internal hosts (DNS-resolved too).
+ *  Exported so the lab reuses the SAME protection — even an owner-only tool must
+ *  not let a prompt-injected agent reach postgres/minio on the docker network. */
+export async function guardUrl(rawUrl: string): Promise<URL> {
   let u: URL
   try { u = new URL(rawUrl) } catch { throw new Error('Invalid URL') }
   if (u.protocol !== 'https:' && !(ALLOW_INTERNAL && u.protocol === 'http:')) throw new Error('Only https URLs are allowed')

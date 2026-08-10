@@ -411,7 +411,7 @@ export function ProjectPage() {
                           <button
                             onClick={(e) => handleDeletePage(e, page.id)}
                             className="opacity-0 group-hover:opacity-100 p-1 -my-1 rounded text-slate-500 hover:text-red-400 hover:bg-red-950/30 transition-all"
-                            title={t.project.delete}
+                            title={t.pages.delete}
                           >
                             <Trash2 size={13} />
                           </button>
@@ -427,7 +427,7 @@ export function ProjectPage() {
                             <button
                               onClick={(e) => handleDeletePage(e, child.id)}
                               className="opacity-0 group-hover:opacity-100 p-1 -my-1 rounded text-slate-500 hover:text-red-400 hover:bg-red-950/30 transition-all"
-                              title={t.project.delete}
+                              title={t.pages.delete}
                             >
                               <Trash2 size={13} />
                             </button>

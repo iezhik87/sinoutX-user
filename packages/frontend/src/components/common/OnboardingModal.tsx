@@ -33,10 +33,17 @@ export function OnboardingModal() {
 
   useEffect(() => {
     if (!storageKey) return
-    if (!localStorage.getItem(storageKey)) {
-      setVisible(true)
-    }
-  }, [storageKey])
+    if (localStorage.getItem(storageKey)) return
+    // Тур — для НОВЫХ аккаунтов. Раньше он гейтился только localStorage, поэтому
+    // всплывал у существующего пользователя на новом устройстве/в чистом браузере
+    // (и при каждом заходе через автоматизацию без постоянного профиля). Аккаунтам
+    // старше 48 часов больше не показываем. createdAt приходит из /auth/me с
+    // небольшой задержкой — пока его нет, решение откладываем (эффект перезапустится).
+    if (!user?.createdAt) return
+    const ageMs = Date.now() - new Date(user.createdAt).getTime()
+    if (ageMs < 48 * 3600 * 1000) setVisible(true)
+    else localStorage.setItem(storageKey, '1') // существующий аккаунт — гасим навсегда
+  }, [storageKey, user?.createdAt])
 
   function dismiss() {
     if (storageKey) localStorage.setItem(storageKey, '1')

@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate, useParams, useNavigate, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Sidebar } from '@/components/layout/Sidebar'
+import { RouteErrorBoundary } from '@/components/RouteErrorBoundary'
 import { MobileNav } from '@/components/layout/MobileNav'
 import { MobileInstallBanner } from '@/components/layout/MobileInstallBanner'
 import { useIsMobile } from '@/hooks/useIsMobile'
@@ -185,9 +186,14 @@ function AppShell() {
   }, [mobileApp])
 
   // Ask the server once per session: a freeze may predate this browser tab.
+  // Also backfill the stored user with fields login omits (createdAt) — the
+  // onboarding tour reads it to avoid greeting long-standing accounts.
   useEffect(() => {
     authApi.me()
-      .then((me) => useBillingStore.getState().setFrozen(!!me.frozenAt))
+      .then((me) => {
+        useBillingStore.getState().setFrozen(!!me.frozenAt)
+        useAuthStore.getState().patchUser({ createdAt: me.createdAt, frozenAt: me.frozenAt })
+      })
       .catch(() => {})
   }, [])
 
@@ -241,6 +247,7 @@ function AppShell() {
 
       <main className="flex-1 flex flex-col min-w-0 overflow-auto" style={{ background: 'var(--bg-app)', paddingBottom: mobileApp ? 'calc(58px + env(safe-area-inset-bottom))' : undefined }}>
         <FrozenBanner />
+        <RouteErrorBoundary resetKey={location.pathname}>
         <Routes>
           <Route path="/" element={<DashboardPage />} />
 
@@ -291,6 +298,7 @@ function AppShell() {
 
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
+        </RouteErrorBoundary>
       </main>
 
       <AiSidebar

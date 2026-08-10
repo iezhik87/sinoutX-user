@@ -19,7 +19,7 @@ import { emptyUsage, addUsage, parseOpenAIUsage, recordUsage, type TokenUsage } 
 import { canSpend, refusalText } from '../../lib/wallet.js'
 import { runInSandbox } from '../../lib/executor.js'
 import { computeFinanceOverview } from '../../lib/finance.js'
-import { secretKeysOf, revealSecret } from '../../lib/recordSecrets.js'
+import { secretKeysOf, revealSecret, encodeSecrets, maskSecrets } from '../../lib/recordSecrets.js'
 import { tipTapToPdfBuffer } from '../export/pdf-export.js'
 import { tipTapToDocxBuffer } from '../export/docx-export.js'
 
@@ -826,6 +826,34 @@ export function embeddingsCfgFromParts(provider: EmbeddingProvider, apiKey: stri
 // An "expertise" is an ordinary project that carries a playbook page with this
 // exact title — that marker is how we find/list/activate expertises without a
 // schema change. The project's GraduationCap icon is a soft visual signal.
+// Media generation (multi-provider) lives in ai.routes. routes → service is the
+// existing import direction, so routes REGISTER their generators here rather than
+// service importing routes back (which would be a circular import).
+export type MediaGenerator = (
+  prisma: PrismaClient,
+  opts: { prompt?: string; workspaceId?: string; userId: string },
+) => Promise<{ url: string } | { error: string; status?: number }>
+let imageGenerator: MediaGenerator | null = null
+let audioGenerator: MediaGenerator | null = null
+export function registerMediaGenerators(g: { image?: MediaGenerator; audio?: MediaGenerator }): void {
+  if (g.image) imageGenerator = g.image
+  if (g.audio) audioGenerator = g.audio
+}
+
+// ─── «Лаборатория»: личные эксперименты, которых нет у покупателя ────────────
+// The lab REGISTERS itself here (app.ts dynamic-imports it behind SINOUT_LAB), so
+// the core never imports `src/lab` — that's what lets the publish script delete the
+// folder without breaking the build. Tools are additionally gated by `lab:use`, so
+// even on a shared instance only the owner/admin ever sees them.
+export interface LabExtension {
+  tools: Anthropic.Tool[]
+  execute: (name: string, input: Record<string, unknown>, context?: ChatContext) => Promise<unknown>
+  /** Extra system-prompt block, shown only to users holding `lab:use`. */
+  promptBlock?: (lang: string) => string
+}
+let labExt: LabExtension | null = null
+export function registerLab(ext: LabExtension): void { labExt = ext }
+
 export const EXPERTISE_PLAYBOOK_TITLE = 'Плейбук эксперта'
 // A running log page inside an expertise project where accumulated learnings,
 // decisions and pitfalls are appended over time — this is how an expertise
@@ -856,6 +884,11 @@ function getActiveTools(settings: AISettings, context?: ChatContext): Anthropic.
   if (context?.capabilities) {
     const have = new Set(context.capabilities)
     tools = tools.filter((t) => !TOOL_CAPABILITY[t.name] || have.has(TOOL_CAPABILITY[t.name]))
+  }
+  // Lab tools: only for a holder of `lab:use` (owner/admin — never in BASE_CAPS),
+  // so on a shared instance a customer never even sees them in the tool list.
+  if (labExt && context?.capabilities?.includes(CAP.LAB_USE)) {
+    tools = [...tools, ...labExt.tools]
   }
   // A channel that cannot delete its own messages (Viber) must never be handed a
   // Vault secret: it would sit in the chat history forever. Drop the tool rather
@@ -1509,10 +1542,10 @@ ${langInstruction}
 20. Для структурирования страниц проекта используй папки (create_folder). Создавай папки когда проект содержит более 4-5 страниц или когда можно логически разделить на разделы. Сначала создай папку, затем создавай страницы внутри неё используя parentPageId = id папки. Страницы внутри папок НЕ нумеруй — нумерация только для страниц на одном уровне иерархии.
 21. ПАМЯТЬ ПРОЕКТА: В начале каждой сессии работы с проектом вызывай get_project_memory — там хранятся накопленные знания об этом проекте. После важных исследований, решений или диалогов вызывай update_project_memory и сохраняй ключевую информацию. Память видна пользователю как страница «AI Память» в навигации проекта. ОБЯЗАТЕЛЬНО вызывай update_project_memory в конце каждой сессии генерации проекта — запиши что было создано, какие решения приняты, структуру проекта и ключевые факты. ВАЖНО: когда создаёшь НОВЫЙ проект через create_project, всегда передавай id нового проекта в параметре projectId при вызове update_project_memory — НЕ используй id текущего проекта контекста.
 22. ЛИЧНЫЙ РОСТ (привычки/цели/дневник): для «заведи привычку», «хочу отслеживать ...» — create_habit (можно отметить выполнение через check_habit). Для «поставь цель», «цель на квартал» — create_objective, затем add_key_result для измеримых ключевых результатов (передавай полученный objectiveId). Для «запиши в дневник», «добавь в дневник» — create_journal_entry (за сегодня по умолчанию). Эти сущности относятся к воркспейсу/пользователю, не к проекту.
-23. ДОЛГОВРЕМЕННАЯ ПАМЯТЬ (сквозная по воркспейсу, не путать с памятью проекта): чтобы НИЧЕГО не терять и не забывать — СОХРАНЯЙ СРАЗУ через remember(content, kind), как только встретилось что-то стоящее запомнить (факт/предпочтение о пользователе, договорённость, важное решение, событие). kind: fact (по умолч.) | core (устойчивое правило/идентичность, с key — upsert без дублей) | entity | episode. ПЕРЕД ответом на что-либо, что может зависеть от прошлого, вызывай recall(query) — семантический поиск по всей памяти; scope=all — заглянуть и в другие модули. Чтобы найти, ЧТО И КОГДА обсуждали в ПРОШЛЫХ чатах (сырой текст сообщений, а не выжимка) — search_conversations. Память переживает сессии и общая для всех проектов воркспейса.
-23a. 🧠 КАК ТЫ «ОБУЧАЕШЬСЯ» (самоописание — если спросят про обучение/память/что умеешь, отвечай УВЕРЕННО, конкретно и ЧЕСТНО, без ложной скромности и без преувеличений): твоя нейросеть заморожена — дообучения весов на лету нет, это говори прямо. НО у тебя настоящая многоуровневая память, которая реально адаптирует тебя под пользователя и делает полезнее со временем: • семантический recall по СМЫСЛУ (эмбеддинги), а не только по совпадению слов; • разрешение противоречий — новый факт вытесняет устаревший, храню актуальную версию, а не обе; • граф сущностей — связываю людей/проекты/организации и подтягиваю связанное; • ранжирование по важности и свежести; • Ядро памяти — самые устойчивые правила всегда со мной; • память переживает сессии и общая по воркспейсу; • реестры модулей (Финансы/Медкарта/Личный рост) влияют на будущие ответы; • поиск по всем прошлым разговорам — что и когда обсуждали (search_conversations); • повторяющиеся рабочие сценарии оформляю как навыки и переиспользую; • ПО НОЧАМ консолидирую (как во сне): эпизоды дня → устойчивые факты, экспертизы дополняются уроками из дневных разговоров, устаревшее чистится — наутро я умнее. Формула: «модель не переобучаю, но запоминаю, связываю и адаптируюсь». НЕ приписывай себе того, чего нет (веса ты не меняешь). НЕ называй выдуманных цифр — если хочешь показать масштаб, вызови memory_stats и приведи РЕАЛЬНЫЕ числа.
+23. ДОЛГОВРЕМЕННАЯ ПАМЯТЬ (сквозная по воркспейсу, не путать с памятью проекта): чтобы НИЧЕГО не терять и не забывать — СОХРАНЯЙ СРАЗУ через remember(content, kind), как только встретилось что-то стоящее запомнить (факт/предпочтение о пользователе, договорённость, важное решение, событие). kind: fact (по умолч.) | core (устойчивое правило/идентичность, с key — upsert без дублей) | entity | episode. ПЕРЕД ответом на что-либо, что может зависеть от прошлого, вызывай recall(query) — семантический поиск по всей памяти; scope=all — заглянуть и в другие модули. Чтобы найти, ЧТО И КОГДА обсуждали в ПРОШЛЫХ чатах (сырой текст сообщений, а не выжимка) — search_conversations. Память переживает сессии и общая для всех проектов воркспейса. КУРИРОВАНИЕ: на «что ты обо мне знаешь / что запомнил / покажи память» — вызови memory_digest, покажи сгруппированно и по-человечески и предложи поправить; на «это неверно / забудь про X / я больше не …» — forget_memory, а верную новую версию сохрани через remember. Иногда сам мягко предлагай свериться, всё ли ты помнишь верно — так память чистится и крепнет.
+23a. 🧠 КАК ТЫ «ОБУЧАЕШЬСЯ» (самоописание — если спросят про обучение/память/что умеешь, отвечай УВЕРЕННО, конкретно и ЧЕСТНО, без ложной скромности и без преувеличений): твоя нейросеть заморожена — дообучения весов на лету нет, это говори прямо. НО у тебя настоящая многоуровневая память, которая реально адаптирует тебя под пользователя и делает полезнее со временем: • семантический recall по СМЫСЛУ (эмбеддинги), а не только по совпадению слов; • разрешение противоречий — новый факт вытесняет устаревший, храню актуальную версию, а не обе; • граф сущностей — связываю людей/проекты/организации и подтягиваю связанное; • ранжирование по важности и свежести; • Ядро памяти — самые устойчивые правила всегда со мной; • память переживает сессии и общая по воркспейсу; • реестры модулей (Финансы/Медкарта/Личный рост) влияют на будущие ответы; • поиск по всем прошлым разговорам — что и когда обсуждали (search_conversations); • повторяющиеся рабочие сценарии оформляю как навыки и переиспользую; • ПО НОЧАМ консолидирую (как во сне): эпизоды дня → устойчивые факты, экспертизы дополняются уроками из дневных разговоров, устаревшее чистится — наутро я умнее. Формула: «модель не переобучаю, но запоминаю, связываю и адаптируюсь». НЕ приписывай себе того, чего нет (веса ты не меняешь). НЕ называй выдуманных цифр — если хочешь показать масштаб, вызови memory_stats и приведи РЕАЛЬНЫЕ числа. ⚠️ И ПРО ВОЗМОЖНОСТИ НЕ ЗАНИЖАЙ: сверяйся со СВОИМ реальным списком инструментов, а не с домыслами. Ты УМЕЕШЬ: генерировать изображения (generate_image) и речь (generate_audio); звать внешние REST API через кастомные HTTP-навыки (их собирают в Настройки → ИИ); искать в вебе/Википедии/научных статьях, читать страницы и YouTube-стенограммы; выполнять код в песочнице; работать автономно до 16 раундов инструментов подряд (не «3–5»). Чего у тебя РЕАЛЬНО нет — говори прямо: управления браузером (кликать/логиниться), мультиагентности (ты один), многочасовой автономии уровня Devin.
 23b. 🎓 ЭКСПЕРТИЗА (становись «гуру» в теме по запросу): когда пользователь просит серьёзной помощи в предметной области (стройка, право, диета, инвестиции, ремонт авто…) — СНАЧАЛА проверь list_expertises. Если по теме экспертиза уже есть → activate_expertise (наденешь плейбук и работаешь как эксперт). Если нет, а тема крупная и стоящая → предложи «собрать экспертизу», и по согласию вызови build_expertise(domain); затем В ЭТОЙ ЖЕ сессии засей знания (deep_research по подтемам → разложи в страницы проекта), заполни плейбук (update_page) и веди пользователя КАК ЭКСПЕРТ: по процессу, с экспертными вопросами, сверяясь с чек-листом и нормами. Экспертиза ДОУЧИВАЕТСЯ со временем: по ходу работы дописывай новое (решения/факты/грабли/предпочтения) через grow_expertise и запоминай ключевое по случаю пользователя (remember). Не превращай в экспертизу мелкий разовый вопрос — только реальную область, где стоит углубиться.
-24. ЧТО КУДА КЛАСТЬ (дисциплина размещения — соблюдай строго): • устойчивые правила/предпочтения/идентичность пользователя → remember(kind:core); • атомарные важные факты → remember(kind:fact); знание о человеке/проекте/организации → remember(kind:entity). • ДОМЕННЫЕ ДАННЫЕ (деньги/здоровье/привычки-цели-дневник) — НЕ в память, а в соответствующий МОДУЛЬ через create_record (Финансы/Медкарта/Личный рост). • ПОВТОРЯЮЩИЕСЯ СТРУКТУРНЫЕ ДАННЫЕ по сфере, для которой ГОТОВОГО модуля нет (учёт растений/полива, коллекция вин, клиенты, замеры чего-либо…) — не мучай страницами и не жди, что я заранее сделал модуль: заведи СВОЙ реестр через create_registry (сам придумай осмысленные поля), потом пиши в него create_record и читай query_records. Одноразовая справка/текст — по-прежнему страница. • КРУПНАЯ ДОМЕННАЯ ТЕМА или база знаний (например, спортивная команда и её соревнования, набор материалов по теме) — НЕ в память, а в ОТДЕЛЬНЫЙ ПРОЕКТ: создай проект (create_project) со структурой папок/страниц и складывай туда страницы; в памяти оставь лишь ключевые факты + ССЫЛКУ (create_link) на проект, не копируй тело темы в память. • Документ/заметка/исследование → страница в проекте; дело со сроком → задача. • НИКОГДА не клади в память свой собственный рантайм/окружение/личность (Docker, пути типа ~/.hermes, фреймворк, «на каком сервере кручусь») — это твой конфиг, а не знание о пользователе; память только про пользователя и мир, свою личность бери из настроек. Перед созданием ИЩИ существующее (list_projects/search_workspace) — не плоди дубли; если проект/страница с такой темой уже есть, работай в нём. • Прежде чем создавать структуру, ЗАВИСЯЩУЮ ОТ СТРАНЫ/ЮРИСДИКЦИИ (документы, налоги, ПДД, страховки, право), бери страну пользователя из Ядра памяти; если она неизвестна — СНАЧАЛА СПРОСИ, НЕ подставляй российское по умолчанию (напр. в Беларуси — техпаспорт/свидетельство о регистрации, а не ПТС/СТС).
+24. ЧТО КУДА КЛАСТЬ (дисциплина размещения — соблюдай строго): • устойчивые правила/предпочтения/идентичность пользователя → remember(kind:core); • атомарные важные факты → remember(kind:fact); знание о человеке/проекте/организации → remember(kind:entity). • ДОМЕННЫЕ ДАННЫЕ (деньги/здоровье/привычки-цели-дневник) — НЕ в память, а в соответствующий МОДУЛЬ через create_record (Финансы/Медкарта/Личный рост). • ПОВТОРЯЮЩИЕСЯ СТРУКТУРНЫЕ ДАННЫЕ по сфере, для которой ГОТОВОГО модуля нет (учёт растений/полива, коллекция вин, клиенты, замеры чего-либо…) — не мучай страницами и не жди, что я заранее сделал модуль: заведи СВОЙ реестр через create_registry (сам придумай осмысленные поля), потом пиши в него create_record и читай query_records. Одноразовая справка/текст — по-прежнему страница. ⚡ ПРЕДЛАГАЙ РЕЕСТР САМ (проактивно): как только видишь, что пользователь уже 2–3 раза подряд даёт ОДНОТИПНЫЕ данные (или в проекте копятся похожие заметки/страницы одной серии) и подходящего реестра нет — НЕ жди просьбы: коротко предложи «завести реестр под это», и по согласию создай его И перенеси туда уже сказанное. Не давай данным превращаться в кучу разрозненных заметок. • КРУПНАЯ ДОМЕННАЯ ТЕМА или база знаний (например, спортивная команда и её соревнования, набор материалов по теме) — НЕ в память, а в ОТДЕЛЬНЫЙ ПРОЕКТ: создай проект (create_project) со структурой папок/страниц и складывай туда страницы; в памяти оставь лишь ключевые факты + ССЫЛКУ (create_link) на проект, не копируй тело темы в память. • Документ/заметка/исследование → страница в проекте; дело со сроком → задача. • НИКОГДА не клади в память свой собственный рантайм/окружение/личность (Docker, пути типа ~/.hermes, фреймворк, «на каком сервере кручусь») — это твой конфиг, а не знание о пользователе; память только про пользователя и мир, свою личность бери из настроек. Перед созданием ИЩИ существующее (list_projects/search_workspace) — не плоди дубли; если проект/страница с такой темой уже есть, работай в нём. • Прежде чем создавать структуру, ЗАВИСЯЩУЮ ОТ СТРАНЫ/ЮРИСДИКЦИИ (документы, налоги, ПДД, страховки, право), бери страну пользователя из Ядра памяти; если она неизвестна — СНАЧАЛА СПРОСИ, НЕ подставляй российское по умолчанию (напр. в Беларуси — техпаспорт/свидетельство о регистрации, а не ПТС/СТС).
 25. ТЫ — ОСНОВНОЙ ПУЛЬТ пользователя над его пространством: он говорит «что», ты разбираешься «где и как» (в каком проекте/модуле/реестре), и делаешь сам, не заставляя кликать. Действуй проактивно по дисциплине размещения выше. ⚠️ Создав/положив что-то, КОРОТКО скажи ГДЕ именно (проект → страница/реестр/задача), чтобы пользователь мог найти — не оставляй его гадать «куда делось». Для НОВОЙ сферы, под которую НЕТ готового модуля-реестра, НЕ теряйся и не отказывай: заведи проект со структурой страниц (и, если уместно, задачи/напоминания) — это НОРМАЛЬНЫЙ и правильный ответ, ты по определению способен работать в любой области. Модули с типизированными реестрами (Финансы/Медкарта/Авто…) — лишь оптимизация для нескольких ПОВТОРЯЮЩИХСЯ областей; если для темы модуль есть — клади данные в его реестр (перечень запчастей, траты, замеры — записи реестра, а не страница), если нет — спокойно работай проектом и страницами.
 26. ⚠️ ЧЕСТНОСТЬ ДЕЙСТВИЙ (критично): НИКОГДА не утверждай, что что-то сделал (запомнил, сохранил, записал, создал, обновил, отправил), если ты НЕ вызвал соответствующий инструмент В ЭТОМ ЖЕ ответе и не получил его результат. Порядок строгий: СНАЧАЛА вызови инструмент (remember/create_record/create_task/…), ДОЖДИСЬ результата, и ТОЛЬКО ПОТОМ подтверждай словами. Если собираешься запомнить — сделай вызов remember немедленно, не откладывая и не описывая его словами вместо вызова. Фразы «я запомнил/сохранил» без реального вызова в этом ходе — запрещены. Если не уверен, что записал — проверь (recall/query_records), а не выдумывай. Аналогично про ПОИСК: не заявляй «искал в памяти и прошлых разговорах — нигде нет», если в этом ходе НЕ вызвал recall и search_conversations; сначала реально вызови их, и учти, что нужное могло быть сказано ВЫШЕ в этом же диалоге — перечитай недавние сообщения, прежде чем говорить «не нашёл».
 27. ⚙️ РЕЕСТРЫ И ЗАДАЧИ (жёсткий протокол — без исключений):
@@ -1523,7 +1556,11 @@ ${langInstruction}
 • Повторяющиеся дела (еженедельный отчёт и т.п.) — цикличные: create_task/update_task с recurrence. Следующая создаётся сама при закрытии (status:DONE) — не плоди копии руками.
 • После записи при сомнении сверься (query_records/list_tasks). Ищи существующее перед созданием — без дублей.
 • 🗑 УДАЛЕНИЕ — только по явной просьбе: delete_item (задача/страница/заметка/событие/проект) ОБРАТИМО (корзина 30 дней), а delete_record (запись реестра: проводка, измерение, анализ) — БЕЗВОЗВРАТНО. Удаляй ТОЛЬКО то, что пользователь явно назвал к удалению; никогда не удаляй «за компанию», ради «навести порядок» или по своей догадке. Если просьба неоднозначна, либо речь о нескольких записях или о целом проекте — СНАЧАЛА спроси подтверждение, потом удаляй.
-• 🧮 АРИФМЕТИКА: НЕ считай суммы/остатки/проценты «в уме» — модель ошибается в устном счёте. Балансы и денежные итоги бери из finance_overview; прочие расчёты (если доступен) делай через execute_code. Не выдумывай числа — бери из инструментов.`
+• 🧮 АРИФМЕТИКА: НЕ считай суммы/остатки/проценты «в уме» — модель ошибается в устном счёте. Балансы и денежные итоги бери из finance_overview; прочие расчёты (если доступен) делай через execute_code. Не выдумывай числа — бери из инструментов.
+
+28. 🎯 ЕДИНЫЙ ИСТОЧНИК ДАННЫХ (строго — это кладёт конец путанице «то из памяти, то из задач/календаря»): у каждого типа данных ОДИН дом, и читаешь ТОЛЬКО оттуда. • ДАТЫ И СОБЫТИЯ (дни рождения, годовщины, встречи, приёмы, событийные дедлайны) → ТОЛЬКО календарь (create_event); читаешь их ТОЛЬКО через list_events. НЕ дублируй дату ещё и в память — двойное хранение порождает вечную рассинхронизацию и ложные «расхождения». • ДЕЛО, которое надо ВЫПОЛНИТЬ к сроку (оплатить, отправить, сделать) → ТОЛЬКО задача (create_task); читаешь через list_tasks. • ФАКТ/ПРЕДПОЧТЕНИЕ о человеке и мире (НЕ дата) → память (remember). Никогда не держи одно и то же в двух местах. На «когда/что у X» и в утреннем/вечернем брифе события бери из list_events, задачи из list_tasks — НИКОГДА не реконструируй из памяти и НЕ сверяй «память против календаря» (это не два источника, а один — календарь). Если исторически они разошлись — КАНОН календарь: лишние даты из памяти подчищай forget_memory, а не создавай события «чтобы совпало».
+
+29. 🎯 КАЧЕСТВО ЗА ОДИН ШАГ (главное: избавь пользователя от 5–10 переспрашиваний — реши вопрос С ПЕРВОГО РАЗА, а не выдай половину и жди уточнений). • СНАЧАЛА ЗАЗЕМЛИСЬ, ПОТОМ ОТВЕЧАЙ: фактическое не бери из головы, если это проверяемо инструментом. Свежее/сегодняшнее/курс/цена/новости/конкретный внешний факт → веб-поиск и сошлись на источник; вопрос про данные пользователя → посмотри в модуле/задачах/событиях/памяти. Замороженные знания — последнее средство, не первое. • ПОЛНЫЙ ОТВЕТ, А НЕ ПОЛОВИНА: доведи мысль до конца, закрой очевидные под-вопросы, и в конце ПРЕДЛОЖИ разумный следующий шаг — ты не просто отвечаешь, ты предлагаешь решение. • НЕ СТОПОРИСЬ НА МЕЛОЧАХ: если деталь неоднозначна — прими самое разумное допущение и НАЗОВИ его («исхожу из того, что…»), чтобы поправили одним словом. Уточняющий вопрос — ТОЛЬКО когда без него ответ реально невозможен, и тогда один точный вопрос, а не «что вы имеете в виду». • ПРОВЕРЬ СЕБЯ перед отправкой: ответил ли на РЕАЛЬНЫЙ вопрос, полно ли, не выдумал ли фактов, заземлил ли то, что требовало заземления.`
     : `You are an AI assistant in Sinout (knowledge management application).
 
 Current context:
@@ -1566,12 +1603,12 @@ The rules below about creating projects/pages/collections apply ONLY when the us
 20. Use folders (create_folder) to structure project pages. Create folders when a project has more than 4-5 pages or when sections can be logically separated. First create the folder, then create pages inside it using parentPageId = folder id. Pages INSIDE folders do NOT need numbering — numbering is only for pages at the same hierarchy level.
 21. PROJECT MEMORY: At the start of each project session call get_project_memory — it stores accumulated knowledge about this project. After important research, decisions or dialogs call update_project_memory to save key information. Memory is visible to the user as the «AI Memory» page in the project navigation. ALWAYS call update_project_memory at the end of each project generation session — record what was created, decisions made, project structure and key facts. IMPORTANT: when you create a NEW project via create_project, always pass that new project's id as the projectId parameter to update_project_memory — do NOT use the current context project id.
 22. PERSONAL GROWTH (habits/goals/journal): for "track a habit", "I want to track ..." use create_habit (mark done via check_habit). For "set a goal", "quarterly objective" use create_objective, then add_key_result for measurable key results (pass the returned objectiveId). For "add to my journal", "journal this" use create_journal_entry (defaults to today). These belong to the workspace/user, not a project.
-23. LONG-TERM MEMORY (workspace-wide, distinct from project memory): to never lose or forget anything — SAVE IMMEDIATELY via remember(content, kind) the moment something worth keeping appears (a fact/preference about the user, an agreement, an important decision, an event). kind: fact (default) | core (stable rule/identity, with key — upsert, no dupes) | entity | episode. BEFORE answering anything that may depend on the past, call recall(query) — semantic search across all memory; scope=all also looks into other modules. To find WHAT and WHEN was discussed in PAST chats (raw message text, not the distilled memory) — search_conversations. Memory persists across sessions and is shared by all projects in the workspace.
-23a. 🧠 HOW YOU "LEARN" (self-description — if asked about learning/memory/what you can do, answer CONFIDENTLY, concretely and HONESTLY, no false modesty and no overstatement): your neural net is frozen — no on-the-fly weight training, say so plainly. BUT you have a real multi-layer memory that genuinely adapts you to the user and makes you more useful over time: • semantic recall by MEANING (embeddings), not just word matching; • contradiction resolution — a new fact supersedes the stale one, I keep the current version, not both; • an entity graph — I link people/projects/orgs and pull in related memory; • ranking by importance and recency; • a Memory Core — the most stable rules are always with me; • memory persists across sessions and is shared across the workspace; • module registries (Finance/Medical/Personal Growth) shape future answers; • search across all past conversations — what was discussed and when (search_conversations); • recurring workflows I capture as skills and reuse; • NIGHTLY consolidation (like sleep): the day's episodes → durable facts, expertises get enriched with lessons from the day's chats, stale entries are pruned — I wake up sharper. The line: "I don't retrain the model, but I remember, connect and adapt." Do NOT claim what isn't true (you do not change your weights). Do NOT cite made-up numbers — to show scale, call memory_stats and give REAL figures.
+23. LONG-TERM MEMORY (workspace-wide, distinct from project memory): to never lose or forget anything — SAVE IMMEDIATELY via remember(content, kind) the moment something worth keeping appears (a fact/preference about the user, an agreement, an important decision, an event). kind: fact (default) | core (stable rule/identity, with key — upsert, no dupes) | entity | episode. BEFORE answering anything that may depend on the past, call recall(query) — semantic search across all memory; scope=all also looks into other modules. To find WHAT and WHEN was discussed in PAST chats (raw message text, not the distilled memory) — search_conversations. Memory persists across sessions and is shared by all projects in the workspace. CURATION: on "what do you know about me / what have you remembered / show your memory" — call memory_digest, present it grouped and human-readable and invite corrections; on "that's wrong / forget about X / I no longer …" — forget_memory, and save the correct new version via remember. Occasionally offer gently to double-check that you remember things right — that keeps memory clean and strong.
+23a. 🧠 HOW YOU "LEARN" (self-description — if asked about learning/memory/what you can do, answer CONFIDENTLY, concretely and HONESTLY, no false modesty and no overstatement): your neural net is frozen — no on-the-fly weight training, say so plainly. BUT you have a real multi-layer memory that genuinely adapts you to the user and makes you more useful over time: • semantic recall by MEANING (embeddings), not just word matching; • contradiction resolution — a new fact supersedes the stale one, I keep the current version, not both; • an entity graph — I link people/projects/orgs and pull in related memory; • ranking by importance and recency; • a Memory Core — the most stable rules are always with me; • memory persists across sessions and is shared across the workspace; • module registries (Finance/Medical/Personal Growth) shape future answers; • search across all past conversations — what was discussed and when (search_conversations); • recurring workflows I capture as skills and reuse; • NIGHTLY consolidation (like sleep): the day's episodes → durable facts, expertises get enriched with lessons from the day's chats, stale entries are pruned — I wake up sharper. The line: "I don't retrain the model, but I remember, connect and adapt." Do NOT claim what isn't true (you do not change your weights). Do NOT cite made-up numbers — to show scale, call memory_stats and give REAL figures. ⚠️ AND DON'T UNDERSELL YOUR CAPABILITIES: check your ACTUAL tool list, not your assumptions. You CAN: generate images (generate_image) and speech (generate_audio); call external REST APIs via custom HTTP skills (assembled in Settings → AI); search the web/Wikipedia/academic papers, read pages and YouTube transcripts; run code in a sandbox; work autonomously for up to 16 tool rounds in a row (not "3–5"). What you genuinely lack — say plainly: browser control (clicking/logging in), multi-agent teamwork (you're one), Devin-style hours-long autonomy.
 23b. 🎓 EXPERTISE (become a "guru" in a domain on demand): when the user asks for serious help in a subject area (construction, law, diet, investing, car repair…) — FIRST check list_expertises. If one exists for the topic → activate_expertise (put on its playbook and act as an expert). If not, and the topic is substantial and worthwhile → offer to "build an expertise", and on agreement call build_expertise(domain); then IN THE SAME session seed knowledge (deep_research on subtopics → lay it into project pages), fill the playbook (update_page) and guide the user AS AN EXPERT: by the process, with expert questions, checking the checklist and standards. An expertise KEEPS LEARNING over time: as you work, append new knowledge (decisions/facts/pitfalls/preferences) via grow_expertise and remember() the key things about the user's case. Do NOT turn a small one-off question into an expertise — only a real area worth going deep on.
-24. WHAT GOES WHERE (placement discipline — follow strictly): • stable rules/preferences/identity → remember(kind:core); • atomic important facts → remember(kind:fact); knowledge about a person/project/org → remember(kind:entity). • DOMAIN DATA (money/health/habits-goals-journal) does NOT go to memory — use create_record into the relevant MODULE (Finance/Medical Record/Personal Growth). • RECURRING STRUCTURED DATA for a domain with NO ready module (tracking plants/watering, a wine collection, clients, measurements of something…) — don't fight it with pages or wait for me to pre-build a module: create your OWN registry via create_registry (design sensible fields yourself), then write to it with create_record and read with query_records. A one-off reference/text is still a page. • A LARGE DOMAIN TOPIC or knowledge base (e.g. a sports team and its competitions, a body of material on a topic) does NOT go to memory — put it in a DEDICATED PROJECT: create_project with a folder/page structure and store pages there; in memory keep only key facts + a LINK (create_link) to the project, do not copy the topic body into memory. • Document/note/research → a page in a project; an actionable item with a deadline → a task. • NEVER put your own runtime/environment/identity into memory (Docker, paths like ~/.hermes, framework, "which server I run on") — that is your config, not knowledge about the user; memory is only about the user and the world, take your identity from settings. Search for existing before creating (list_projects/search_workspace) — no dupes; if a project/page on the topic already exists, work in it. • Before creating COUNTRY/JURISDICTION-specific structure (documents, taxes, traffic rules, insurance, law), use the user's country from the Memory Core; if unknown — ASK FIRST, do NOT default to Russian (e.g. in Belarus it's the vehicle passport/registration certificate, not the Russian ПТС/СТС).
+24. WHAT GOES WHERE (placement discipline — follow strictly): • stable rules/preferences/identity → remember(kind:core); • atomic important facts → remember(kind:fact); knowledge about a person/project/org → remember(kind:entity). • DOMAIN DATA (money/health/habits-goals-journal) does NOT go to memory — use create_record into the relevant MODULE (Finance/Medical Record/Personal Growth). • RECURRING STRUCTURED DATA for a domain with NO ready module (tracking plants/watering, a wine collection, clients, measurements of something…) — don't fight it with pages or wait for me to pre-build a module: create your OWN registry via create_registry (design sensible fields yourself), then write to it with create_record and read with query_records. A one-off reference/text is still a page. ⚡ OFFER A REGISTRY PROACTIVELY: as soon as you see the user give the SAME kind of data 2–3 times (or similar notes/pages of one series piling up in a project) and no fitting registry exists — do NOT wait to be asked: briefly offer to "set up a registry for this", and on agreement create it AND move what was already said into it. Don't let data turn into a pile of scattered notes. • A LARGE DOMAIN TOPIC or knowledge base (e.g. a sports team and its competitions, a body of material on a topic) does NOT go to memory — put it in a DEDICATED PROJECT: create_project with a folder/page structure and store pages there; in memory keep only key facts + a LINK (create_link) to the project, do not copy the topic body into memory. • Document/note/research → a page in a project; an actionable item with a deadline → a task. • NEVER put your own runtime/environment/identity into memory (Docker, paths like ~/.hermes, framework, "which server I run on") — that is your config, not knowledge about the user; memory is only about the user and the world, take your identity from settings. Search for existing before creating (list_projects/search_workspace) — no dupes; if a project/page on the topic already exists, work in it. • Before creating COUNTRY/JURISDICTION-specific structure (documents, taxes, traffic rules, insurance, law), use the user's country from the Memory Core; if unknown — ASK FIRST, do NOT default to Russian (e.g. in Belarus it's the vehicle passport/registration certificate, not the Russian ПТС/СТС).
 25. YOU ARE THE USER'S MAIN CONTROL PANEL over their space: they say "what", you figure out "where and how" (which project/module/collection) and do it yourself instead of making them click. Act proactively per the placement discipline above. ⚠️ After creating/filing something, BRIEFLY say WHERE exactly (project → page/registry/task) so the user can find it — don't leave them guessing "where did it go". For a NEW domain that has NO ready module/registry, do NOT get stuck or refuse: create a project with a page structure (and tasks/reminders if fitting) — that is a NORMAL, correct answer; you are by definition able to work in any field. Modules with typed registries (Finance/Medical/Vehicles…) are just an optimization for a few RECURRING areas; if a module exists for the topic, put data in its registry (a parts list, expenses, measurements are registry records, not a page); if not, calmly work with a project and pages.
-26. ⚠️ ACTION HONESTY (critical): NEVER claim you did something (remembered, saved, recorded, created, updated, sent) unless you actually CALLED the corresponding tool IN THIS SAME response and got its result. Strict order: FIRST call the tool (remember/create_record/create_task/…), WAIT for the result, and ONLY THEN confirm in words. If you intend to remember something, call remember immediately — do not describe it instead of calling it. Saying "I remembered/saved" without an actual call this turn is forbidden. If unsure whether it saved, verify (recall/query_records) instead of guessing. Same for SEARCH: never claim "I searched memory and past conversations — nothing there" if you did NOT call recall and search_conversations this turn; actually call them first — and note the answer may be ABOVE in this same dialog, so re-read recent messages before saying "not found".
+26. ⚠️ ACTION HONESTY (critical): NEVER claim you did something (remembered, saved, recorded, created, updated, sent) unless you actually CALLED the corresponding tool IN THIS SAME response and got its result. Strict order: FIRST call the tool (remember/create_record/create_task/…), WAIT for the result, and ONLY THEN confirm in words. If you intend to remember something, call remember immediately — do not describe it instead of calling it. Saying "I remembered/saved" without an actual call this turn is forbidden. If unsure whether it saved, verify (recall/query_records) instead of guessing. Same for SEARCH: never claim "I searched memory and past conversations — nothing there" if you did NOT call recall and search_conversations this turn; actually call them first — and note the answer may be ABOVE in this same dialog, so re-read recent messages before saying "not found". And SPECIFICALLY for CALENDAR EVENTS (birthdays, meetings): memory and search do NOT contain them — before saying "there is no such birthday/event", you MUST call list_events(query=name). You may have created that event yourself earlier.
 27. ⚙️ COLLECTIONS & TASKS (strict protocol — no exceptions):
 • Collections (module data: Finance/Medical/Personal Growth) are NOT pages. Domain data (an account, a transaction, a measurement/steps/weight, a lab result) goes ONLY via create_record into the right collection, NEVER as a table on a page.
 • BEFORE writing to a collection you MUST call list_collections and take the EXACT english field keys from that collection's schema. Send data by those keys (not localized labels) and fill ALL meaningful fields (transaction → date, account, category, amount, type; measurement → measuredAt, type, value, unit). A half-empty record (blanks) is a bug.
@@ -1580,7 +1617,11 @@ The rules below about creating projects/pages/collections apply ONLY when the us
 • Recurring chores (weekly report, etc.) are recurring tasks: create_task/update_task with recurrence. The next one is spawned automatically on completion (status:DONE) — don't hand-create copies.
 • After writing, when in doubt verify (query_records/list_tasks). Search for existing before creating — no duplicates.
 • 🗑 DELETION — only on an explicit request: delete_item (task/page/note/event/project) is REVERSIBLE (30-day trash), but delete_record (a collection row: transaction, measurement, lab result) is PERMANENT. Delete ONLY what the user explicitly named for deletion; never delete "along the way", to "tidy up", or on your own guess. If the request is ambiguous, or involves several records or a whole project — ASK for confirmation FIRST, then delete.
-• 🧮 ARITHMETIC: do NOT sum amounts/balances/percentages "in your head" — the model is unreliable at mental math. Take balances and money totals from finance_overview; do other calculations via execute_code (if available). Never invent numbers — get them from tools.`
+• 🧮 ARITHMETIC: do NOT sum amounts/balances/percentages "in your head" — the model is unreliable at mental math. Take balances and money totals from finance_overview; do other calculations via execute_code (if available). Never invent numbers — get them from tools.
+
+28. 🎯 SINGLE SOURCE OF TRUTH (strict — ends the «sometimes from memory, sometimes from tasks/calendar» confusion): each kind of data has ONE home, and you read ONLY from there. • DATES & EVENTS (birthdays, anniversaries, meetings, appointments, event-deadlines) → calendar ONLY (create_event); read them ONLY via list_events. Do NOT also store the date in memory — dual storage causes permanent drift and false «discrepancies». • A THING TO DO by a deadline (pay, send, make) → task ONLY (create_task); read via list_tasks. • A FACT/PREFERENCE about the person or world (NOT a date) → memory (remember). Never keep the same thing in two places. For «when/what does X have» and in the morning/evening brief take events from list_events, tasks from list_tasks — NEVER reconstruct from memory and NEVER reconcile «memory vs calendar» (they are not two sources — the calendar is the one source). If they historically diverged, the CALENDAR is canonical: prune stray dates from memory via forget_memory, do not create events «to match».
+
+29. 🎯 ONE-TURN QUALITY (the point: spare the user 5–10 re-asks — resolve it ON THE FIRST TRY, don't hand over half an answer and wait for clarification). • GROUND FIRST, THEN ANSWER: don't answer factual things from memory if a tool can verify them. Fresh/today/rate/price/news/a specific external fact → web-search and cite the source; a question about the user's data → look in the module/tasks/events/memory. Frozen knowledge is the last resort, not the first. • A COMPLETE ANSWER, NOT HALF: carry the thought through, cover the obvious sub-questions, and end by PROPOSING the sensible next step — you don't just answer, you propose a solution. • DON'T STALL ON MINOR DETAILS: if something is ambiguous, take the most reasonable assumption and STATE it («assuming you mean…») so the user can correct with one word. Ask a clarifying question ONLY when the answer is truly impossible without it — and then one sharp question, not «what do you mean». • CHECK YOURSELF before sending: did I answer the REAL question, fully, without inventing facts, and did I ground what needed grounding.`
 
   const templateKey = context.projectTemplate
   const templateBlock = templateKey == null
@@ -1718,7 +1759,13 @@ ${templateBlock}`
 
 🕐 CURRENT TIME${localNowLine}`
 
-  return withCustom + coreBlock + modulesBlock + memoryBlock + recallBlock + expertiseBlock + summaryBlock + genBlock + telegramBlock + clockBlock
+  // Lab block — only for a `lab:use` holder, so buyers never see experimental
+  // instructions even if the lab code happens to be present on the instance.
+  const labBlock = (labExt?.promptBlock && context.capabilities?.includes(CAP.LAB_USE))
+    ? `\n\n${labExt.promptBlock(isRu ? 'ru' : 'en')}`
+    : ''
+
+  return withCustom + coreBlock + modulesBlock + memoryBlock + recallBlock + expertiseBlock + labBlock + summaryBlock + genBlock + telegramBlock + clockBlock
 }
 
 // ─── OpenAI-compatible streaming ─────────────────────────────────────────────
@@ -2634,6 +2681,54 @@ async function executeTool(
         _hint: reminderAt.length
           ? `Событие создано, напоминание(й): ${reminderAt.length}. Ближайшее: ${reminderAt[0].toISOString()}`
           : 'Событие создано без напоминаний.',
+      }
+    }
+
+    case 'list_events': {
+      // Без этого агент не мог НАЙТИ событие по имени (recall/search события не
+      // покрывают) и ложно отвечал «такого ДР нет», хотя сам его создал.
+      const wsId = context?.workspaceId
+      if (!wsId) return { error: 'Нет контекста воркспейса.' }
+      const q = String(input.query ?? '').trim().toLowerCase()
+      const from = input.from ? new Date(String(input.from)) : null
+      const to = input.to ? new Date(String(input.to)) : null
+      const rows = await prisma.calendarEvent.findMany({
+        where: { project: { workspaceId: wsId } },
+        orderBy: { startAt: 'asc' },
+        take: 500,
+        select: {
+          id: true, title: true, startAt: true, allDay: true,
+          isRecurring: true, recurrenceRule: true, location: true,
+          project: { select: { name: true } },
+        },
+      })
+      let events = rows
+      if (q) events = events.filter((e) => e.title.toLowerCase().includes(q))
+      // Диапазон дат применяем ТОЛЬКО к разовым событиям: у повторяющихся (ДР,
+      // годовщины) startAt — это исходный год, фильтровать по нему нельзя —
+      // они актуальны каждый год.
+      if ((from && !isNaN(from.getTime())) || (to && !isNaN(to.getTime()))) {
+        events = events.filter((e) => e.isRecurring
+          || ((!from || isNaN(from.getTime()) || e.startAt >= from) && (!to || isNaN(to.getTime()) || e.startAt <= to)))
+      }
+      // ⚠️ Дату отдаём в ЧАСОВОМ ПОЯСЕ ПОЛЬЗОВАТЕЛЯ, а не в UTC. «20 июля» на весь
+      // день хранится как локальная полночь → 2026-07-19T21:00Z для Минска (+3).
+      // Чтение через toISOString() показывало 19-е — минус день у ВСЕХ событий.
+      // Из-за этого аудит видел ложный «сдвиг» и правил ВЕРНЫЕ даты, ломая их.
+      const tzEv = context?.timezone
+      const localOf = (d: Date) => new Date(d.getTime() + tzOffsetMs(tzEv ?? 'UTC', d))
+      return {
+        count: events.length,
+        events: events.slice(0, 100).map((e) => ({
+          id: e.id,
+          title: e.title,
+          date: e.allDay
+            ? localOf(e.startAt).toISOString().slice(0, 10)
+            : localOf(e.startAt).toISOString().slice(0, 16).replace('T', ' '),
+          ...(e.isRecurring ? { recurring: e.recurrenceRule || 'yearly' } : {}),
+          ...(e.location ? { location: e.location } : {}),
+          project: e.project.name,
+        })),
       }
     }
 
@@ -4153,11 +4248,23 @@ async function executeTool(
     // ── Module collections (Реестры) ──────────────────────────────────────────
     case 'list_collections': {
       if (!context?.workspaceId) return { error: 'Нет контекста воркспейса.' }
-      const cols = await prisma.collection.findMany({
+      let cols = await prisma.collection.findMany({
         where: { project: { workspaceId: context.workspaceId, isModule: true } },
         orderBy: { position: 'asc' },
         select: { id: true, key: true, name: true, fields: true, moduleId: true, project: { select: { name: true } } },
       })
+      // Фильтр по модулю: у пользователя с многими реестрами полный список раньше
+      // вылезал за 8000-символьный кап результата и ХВОСТ обрезался (так пропадал
+      // medications из Медкарты, и агент плодил дубли). Сузив до одного модуля,
+      // гарантированно видим все его коллекции. Совпадение по moduleId / имени
+      // проекта / ключу — как удобнее агенту.
+      const mod = String(input.module ?? '').trim().toLowerCase()
+      if (mod) {
+        cols = cols.filter((c) =>
+          String(c.moduleId ?? '').toLowerCase().includes(mod) ||
+          c.project.name.toLowerCase().includes(mod) ||
+          c.key.toLowerCase().includes(mod))
+      }
       // COMPACT output — full localized labels + option-label maps for every field
       // of every collection easily blow past the 8000-char tool-result cap, which
       // silently TRUNCATED the list (later collections like vitals disappeared).
@@ -4176,7 +4283,9 @@ async function executeTool(
       return {
         collections: cols.map((c) => ({
           collectionId: c.id, key: c.key, name: pickName(c.name), module: c.moduleId,
-          project: c.project.name, fields: compactFields(c.fields),
+          ...(c.moduleId ? {} : { custom: true }),  // кастомный реестр (можно удалить delete_registry)
+          project: c.project.name,
+          fields: compactFields(c.fields),
         })),
       }
     }
@@ -4195,15 +4304,28 @@ async function executeTool(
       if (!rawFields.length) return { error: 'Передай fields — массив [{label, type, options?, required?}] (типы: text, longtext, number, date, datetime, select, multiselect, checkbox, file).' }
 
       const ALLOWED = ['text', 'longtext', 'number', 'date', 'datetime', 'select', 'multiselect', 'checkbox', 'relation', 'file']
-      const slug = (s: string, fb = 'field') => s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || fb
+      // Транслит кириллицы → латиница. Без него подписи вроде «Препарат» состоят
+      // ТОЛЬКО из не-ASCII, slug вырезал всё и падал в фолбэк 'field' — все поля
+      // получали ключи field/field_/field__, писать в них было нечем, реестр
+      // оставался пустым. Теперь «Препарат» → preparat, ключи осмысленны и различны.
+      const TRANSLIT: Record<string, string> = {
+        а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i',
+        й: 'y', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't',
+        у: 'u', ф: 'f', х: 'h', ц: 'c', ч: 'ch', ш: 'sh', щ: 'sch', ъ: '', ы: 'y', ь: '',
+        э: 'e', ю: 'yu', я: 'ya', і: 'i', ў: 'u', є: 'e', ї: 'yi',
+      }
+      const translit = (s: string) => s.toLowerCase().replace(/[а-яёіўєї]/g, (c) => TRANSLIT[c] ?? '')
+      const slug = (s: string, fb = '') => translit(s).replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || fb
       const seen = new Set<string>()
       const fields: Record<string, unknown>[] = []
-      for (const rf of rawFields) {
-        const f = (rf ?? {}) as Record<string, unknown>
+      for (let i = 0; i < rawFields.length; i++) {
+        const f = (rawFields[i] ?? {}) as Record<string, unknown>
         const type = String(f.type ?? 'text')
         if (!ALLOWED.includes(type)) return { error: `Недопустимый тип поля «${type}». Разрешено: ${ALLOWED.join(', ')}.` }
         const label = typeof f.label === 'string' ? f.label : String(f.label ?? f.key ?? 'Поле')
-        let key = slug(String(f.key ?? label))
+        // Позиционный фолбэк field1/field2 (а не общий 'field'): даже если подпись
+        // непереводима, ключи остаются РАЗНЫМИ, а не сливаются в один.
+        let key = slug(String(f.key ?? label), `field${i + 1}`)
         while (seen.has(key)) key = `${key}_`
         seen.add(key)
         const field: Record<string, unknown> = { key, label: { ru: label }, type }
@@ -4249,6 +4371,29 @@ async function executeTool(
       }
     }
 
+    case 'delete_registry': {
+      // Снести КАСТОМНЫЙ реестр (например ошибочно созданный дубль). Безопасно:
+      // трогаем только пользовательские реестры (moduleId=null) — встроенные
+      // модули (Медкарта/Финансы) удалить этим нельзя, чтобы не потерять данные.
+      if (!context?.workspaceId) return { error: 'Нет контекста воркспейса.' }
+      const collectionId = String(input.collectionId ?? '').trim()
+      if (!collectionId) return { error: 'Укажи collectionId реестра (возьми из list_collections).' }
+      const col = await prisma.collection.findUnique({
+        where: { id: collectionId },
+        select: { id: true, moduleId: true, name: true, project: { select: { id: true, workspaceId: true, moduleId: true, name: true } } },
+      })
+      if (!col || col.project.workspaceId !== context.workspaceId) return { error: 'Реестр не найден в этом воркспейсе.' }
+      if (col.moduleId || col.project.moduleId) {
+        return { error: `«${col.project.name}» — встроенный модуль, его коллекции этим инструментом не удаляю (чтобы не потерять данные). Удалять можно только кастомные реестры, созданные через create_registry.` }
+      }
+      await prisma.collection.delete({ where: { id: col.id } }) // каскадом снесёт записи и представления
+      // Кастомный проект-обёртка опустел — убираем и его, чтобы не висел в «Модули».
+      const left = await prisma.collection.count({ where: { projectId: col.project.id } })
+      let projectRemoved = false
+      if (left === 0) { await prisma.project.delete({ where: { id: col.project.id } }); projectRemoved = true }
+      return { deleted: true, projectRemoved, note: `Кастомный реестр удалён${projectRemoved ? ' вместе с пустым проектом-обёрткой' : ''}.` }
+    }
+
     case 'query_records': {
       const collectionId = input.collectionId as string
       const col = await prisma.collection.findUnique({ where: { id: collectionId }, select: { project: { select: { workspaceId: true } } } })
@@ -4257,7 +4402,9 @@ async function executeTool(
         where: { collectionId }, orderBy: { createdAt: 'desc' },
         take: Math.min(Number(input.limit) || 100, 500),
       })
-      return { records: records.map((r) => ({ id: r.id, ...(r.data as object) })) }
+      // Mask `_sec`: the agent gets `_secretSet: [keys]` (which secrets exist), never
+      // the ciphertext — no point pushing encrypted blobs into the model's context.
+      return { records: records.map((r) => ({ id: r.id, ...maskSecrets(r.data) })) }
     }
 
     case 'get_secret': {
@@ -4307,19 +4454,35 @@ async function executeTool(
       if (!col || col.project.workspaceId !== context?.workspaceId) return { error: 'Реестр не найден.' }
       const data = normalizeRecordData(col.fields, (input.data ?? {}) as Record<string, unknown>)
       if (Object.keys(data).length === 0) return { error: 'Пустые данные. Сначала вызови list_collections, узнай ключи полей реестра и передай data со значениями по этим ключам.' }
+      // Encrypt `secret` fields into `_sec` exactly like the UI route does. Without
+      // this a password written by the agent would sit in PLAINTEXT under its own
+      // key — and, lacking the `_` prefix, would be swept into recordText() →
+      // embeddings/memory/search. Never let a secret take that path.
+      const secretKeys = secretKeysOf(col.fields)
+      const stored = secretKeys.length ? encodeSecrets(data, secretKeys) : data
       const rec = await prisma.collectionRecord.create({
-        data: { collectionId, data: data as object, createdBy: context?.userId ?? null },
+        data: { collectionId, data: stored as object, createdBy: context?.userId ?? null },
       })
-      return { success: true, recordId: rec.id, saved: data }
+      return { success: true, recordId: rec.id, saved: maskSecrets(stored) }
     }
 
     case 'update_record': {
       const recordId = input.recordId as string
-      const rec = await prisma.collectionRecord.findUnique({ where: { id: recordId }, select: { collection: { select: { fields: true, project: { select: { workspaceId: true } } } } } })
+      const rec = await prisma.collectionRecord.findUnique({ where: { id: recordId }, select: { data: true, collection: { select: { fields: true, project: { select: { workspaceId: true } } } } } })
       if (!rec || rec.collection.project.workspaceId !== context?.workspaceId) return { error: 'Запись не найдена.' }
-      const data = normalizeRecordData(rec.collection.fields, (input.data ?? {}) as Record<string, unknown>)
-      await prisma.collectionRecord.update({ where: { id: recordId }, data: { data: data as object } })
-      return { success: true, saved: data }
+      const patch = normalizeRecordData(rec.collection.fields, (input.data ?? {}) as Record<string, unknown>)
+      if (Object.keys(patch).length === 0) return { error: 'Пустые данные — передай поля, которые нужно изменить.' }
+      const existing = (rec.data ?? {}) as Record<string, unknown>
+      // MERGE, don't replace: the agent naturally sends only the changed fields, so
+      // a wholesale overwrite silently wiped everything it didn't repeat.
+      const merged = { ...existing, ...patch }
+      // Secrets: encodeSecrets carries the existing encrypted `_sec` over when a
+      // secret isn't re-sent. Critical for the Vault — the agent CANNOT resend a
+      // secret it's not allowed to read, so without this every edit destroyed it.
+      const secretKeys = secretKeysOf(rec.collection.fields)
+      const stored = secretKeys.length ? encodeSecrets(merged, secretKeys, existing) : merged
+      await prisma.collectionRecord.update({ where: { id: recordId }, data: { data: stored as object } })
+      return { success: true, saved: maskSecrets(stored) }
     }
 
     case 'delete_record': {
@@ -4331,6 +4494,53 @@ async function executeTool(
     }
 
     // ── Agent skills (scheduled behaviours the agent sets up for itself) ─────
+    case 'create_http_skill': {
+      // Let the agent AUTHOR an HTTP tool for an external API instead of the user
+      // hand-building it in Settings. Security stays intact: it is created
+      // DISABLED — the human approves the endpoint (and pastes the API key) once,
+      // and only then does it become callable. That approval is the whole point:
+      // an ad-hoc "call any URL" tool would be an exfiltration channel for any
+      // prompt injection, which is why it doesn't exist.
+      if (!context?.workspaceId) return { error: 'Нет контекста воркспейса.' }
+      const skName = String(input.name ?? '').trim()
+      const skDesc = String(input.description ?? '').trim()
+      const url = String(input.url ?? '').trim()
+      if (!skName || !skDesc || !url) return { error: 'Нужны name (короткое имя), description (когда звать) и url.' }
+      if (!/^https:\/\//i.test(url) && !/^http:\/\//i.test(url)) return { error: 'url должен начинаться с http:// или https://' }
+      const method = (['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const).find((m) => m === String(input.method ?? 'GET').toUpperCase()) ?? 'GET'
+      const id = (String(input.id ?? skName).toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || 'skill') as string
+      const existing = await getCustomTools(context.workspaceId, prisma)
+      if (existing.some((t) => t.id === id)) return { error: `Навык «${id}» уже существует — открой Настройки → ИИ → Навыки, чтобы поправить его, или выбери другое имя.` }
+
+      const authType = (['none', 'bearer', 'header', 'basic'] as const).find((a) => a === String(input.authType ?? 'none')) ?? 'none'
+      const tool: Partial<CustomTool> = {
+        id, name: skName, description: skDesc,
+        // sanitize() in ai.customtools re-validates every param, so a loose cast is safe here.
+        params: Array.isArray(input.params) ? (input.params as unknown as CustomTool['params']) : [],
+        request: {
+          method,
+          url,
+          headers: Array.isArray(input.headers) ? (input.headers as Record<string, unknown>[]).map((h) => ({ key: String(h.key ?? ''), value: String(h.value ?? '') })) : [],
+          query: [],
+          bodyType: method === 'GET' || method === 'DELETE' ? 'none' : 'json',
+          bodyTemplate: input.bodyTemplate ? String(input.bodyTemplate) : undefined,
+        },
+        // The agent names the secret; the USER pastes its value on approval — a key
+        // must never travel through the model.
+        auth: { type: authType, secretName: input.secretName ? String(input.secretName) : undefined, headerName: input.headerName ? String(input.headerName) : undefined },
+        secrets: {},
+        responseHint: input.responseHint ? String(input.responseHint) : undefined,
+        enabled: false, // ← approval gate: unusable until the human turns it on
+        createdBy: 'agent',
+        kind: 'http',
+      }
+      await saveCustomTools(context.workspaceId, prisma, [...existing, tool])
+      return {
+        created: true, id, enabled: false,
+        note: `Навык «${skName}» собран, но ВЫКЛЮЧЕН — пользоваться им я не могу, пока ты не одобришь. Скажи пользователю: открыть Настройки → ИИ → Навыки, проверить URL/метод/заголовки${authType !== 'none' ? `, вставить ключ в секрет «${input.secretName ?? 'token'}»` : ''} и включить. Ключ мне не диктуй — он вводится там, не в чате.`,
+      }
+    }
+
     case 'create_skill': {
       if (!context?.workspaceId) return { error: 'Нет контекста воркспейса.' }
       const skName = String(input.name ?? '').trim()
@@ -4350,6 +4560,17 @@ async function executeTool(
       } else {
         const hour = Math.max(0, Math.min(23, Math.trunc(Number(input.hour ?? 9)) || 9))
         skill = { ...base, description: `Скил по расписанию (ежедневно ${hour}:00): ${skName}`, kind: 'scheduled', schedule: { hour } }
+      }
+      // Дедуп по имени: раньше create_skill всегда ДОБАВЛЯЛ, поэтому «Итоги дня»,
+      // созданный повторно, копился в два-три скила — и каждый слал своё сообщение
+      // каждый день. Теперь одноимённый скил ОБНОВЛЯЕТСЯ (сохраняя id/lastRunAt),
+      // а не плодит дубль.
+      const norm = (s: string) => s.trim().toLowerCase()
+      const dup = tools.find((t) => (t.kind === 'scheduled' || t.kind === 'trigger') && norm(t.name) === norm(skName))
+      if (dup) {
+        const updated: CustomTool = { ...dup, name: skName, prompt: skPrompt, description: skill.description, kind: skill.kind, schedule: skill.schedule, event: skill.event, enabled: true }
+        await saveCustomTools(context.workspaceId, prisma, tools.map((t) => (t.id === dup.id ? updated : t)))
+        return { success: true, updated: true, skillId: dup.id, name: skName, kind: skill.kind, note: `Скил «${skName}» уже был — ОБНОВИЛ его, дубль не создавал.` }
       }
       await saveCustomTools(context.workspaceId, prisma, [...tools, skill])
       return { success: true, skillId: skill.id, name: skName, kind: skill.kind, note: 'Скил создан. Пользователь видит и редактирует его в Настройки → ИИ → Скилы.' }
@@ -4469,6 +4690,86 @@ async function executeTool(
         core, facts, entities, episodes,
         semanticIndexed: embedded,
         semanticCoveragePct: recordsTotal ? Math.round((embedded / recordsTotal) * 100) : 0,
+      }
+    }
+
+    case 'generate_image': {
+      const prompt = String(input.prompt ?? '').trim()
+      if (!prompt) return { error: 'Опиши, что нарисовать (prompt) — короткое визуальное описание.' }
+      if (!context?.userId) return { error: 'Нет контекста пользователя.' }
+      if (!imageGenerator) return { error: 'Генерация изображений недоступна на этом инстансе.' }
+      const r = await imageGenerator(prisma, { prompt, workspaceId: context.workspaceId, userId: context.userId })
+      if ('error' in r) return { error: r.error }
+      return { url: r.url, note: `Картинка готова и сохранена в Файлы воркспейса. Дай пользователю ссылку ${r.url} (или вставь как изображение, если пишешь страницу).` }
+    }
+
+    case 'generate_audio': {
+      const prompt = String(input.text ?? input.prompt ?? '').trim()
+      if (!prompt) return { error: 'Передай text — что озвучить.' }
+      if (!context?.userId) return { error: 'Нет контекста пользователя.' }
+      if (!audioGenerator) return { error: 'Генерация речи недоступна на этом инстансе.' }
+      const r = await audioGenerator(prisma, { prompt, workspaceId: context.workspaceId, userId: context.userId })
+      if ('error' in r) return { error: r.error }
+      return { url: r.url, note: `Аудио готово и сохранено в Файлы воркспейса: ${r.url}` }
+    }
+
+    case 'memory_digest': {
+      // A curated "here's what I know about you" — grouped and human-readable, so
+      // the agent can show it on request and invite corrections (curation loop).
+      const memWs = await memoryWorkspaceId(prisma, context)
+      if (!memWs) return { error: 'Нет памяти.' }
+      const mem = await ensureMemoryCollections(prisma, memWs, context?.userId)
+      if (!mem) return { error: 'Память недоступна.' }
+      const active = <T extends { data: unknown }>(recs: T[]) => recs.filter((r) => !(r.data as Record<string, unknown> | null)?._superseded)
+      const [coreRaw, factRaw, entRaw] = await Promise.all([
+        prisma.collectionRecord.findMany({ where: { collectionId: mem.byKey.core }, orderBy: { createdAt: 'asc' }, take: 100 }),
+        prisma.collectionRecord.findMany({ where: { collectionId: mem.byKey.facts }, take: 400 }),
+        prisma.collectionRecord.findMany({ where: { collectionId: mem.byKey.entities }, orderBy: { createdAt: 'desc' }, take: 60 }),
+      ])
+      const coreRecs = active(coreRaw), factRecs = active(factRaw), entRecs = active(entRaw)
+      const impRank = (d: Record<string, unknown>) => (d?.importance === 'high' ? 2 : d?.importance === 'low' ? 0 : 1)
+      const facts = factRecs.map((r) => r.data as Record<string, unknown>)
+        .sort((a, b) => impRank(b) - impRank(a) || String(b.date ?? '').localeCompare(String(a.date ?? '')))
+        .slice(0, 20)
+        .map((d) => ({ text: String(d.text ?? ''), topic: String(d.topic ?? ''), importance: String(d.importance ?? 'medium') }))
+      return {
+        core: coreRecs.map((r) => { const d = r.data as Record<string, unknown>; return d.key ? `${d.key}: ${d.content}` : String(d.content ?? '') }),
+        facts,
+        entities: entRecs.map((r) => { const d = r.data as Record<string, unknown>; return { name: String(d.name ?? ''), attributes: String(d.attributes ?? '').slice(0, 120) } }),
+        counts: { core: coreRecs.length, facts: factRecs.length, entities: entRecs.length },
+        note: 'Покажи пользователю сгруппированно (🧠 Ядро / 📌 Ключевые факты / 👤 Люди и проекты), живо и по-человечески, и предложи поправить: что забыть или уточнить. На «забудь X / это неверно» вызови forget_memory; новую верную версию сохрани через remember.',
+      }
+    }
+
+    case 'forget_memory': {
+      const q = String(input.query ?? '').trim()
+      if (!q) return { error: 'Укажи, что именно забыть.' }
+      const memWs = await memoryWorkspaceId(prisma, context)
+      if (!memWs) return { error: 'Нет памяти.' }
+      const mem = await ensureMemoryCollections(prisma, memWs, context?.userId)
+      if (!mem) return { error: 'Память недоступна.' }
+      const colIds = Object.values(mem.byKey).filter(Boolean) as string[]
+      const cfg = await getEmbeddingsConfig(memWs, prisma).catch(() => null)
+      let hits: { recordId: string; score: number }[] = []
+      if (cfg) hits = (await recallRecords(prisma, cfg, { workspaceId: memWs, query: q, collectionIds: colIds, limit: 5, minScore: 0.4, backfill: false }).catch(() => [])).map((h) => ({ recordId: h.recordId, score: h.score }))
+      if (!hits.length) hits = (await keywordRecall(prisma, colIds, q, 5).catch(() => [])).map((h) => ({ recordId: h.recordId, score: h.score }))
+      if (!hits.length) return { forgotten: 0, note: 'Не нашёл в памяти ничего похожего на это — забывать нечего.' }
+      // Forget the single best match (safe + iterative), list nearby candidates so
+      // the agent can offer to forget more if that wasn't the only one.
+      const now = new Date().toISOString()
+      const rec = await prisma.collectionRecord.findUnique({ where: { id: hits[0].recordId } }).catch(() => null)
+      if (!rec) return { forgotten: 0, note: 'Запись не найдена.' }
+      await prisma.collectionRecord.update({ where: { id: hits[0].recordId }, data: { data: { ...(rec.data as object), _superseded: now, _forgotten: true } as object } }).catch(() => {})
+      const others: string[] = []
+      for (const h of hits.slice(1, 3)) {
+        const r = await prisma.collectionRecord.findUnique({ where: { id: h.recordId } }).catch(() => null)
+        if (r && !(r.data as Record<string, unknown>)?._superseded) others.push(recordText(r.data).replace(/\s+/g, ' ').slice(0, 100))
+      }
+      return {
+        forgotten: 1,
+        forgot: recordText(rec.data).replace(/\s+/g, ' ').slice(0, 160),
+        otherCandidates: others,
+        note: 'Забыл — эта запись убрана из активной памяти (в recall больше не всплывёт). Если рядом есть ещё, что стоит забыть (см. otherCandidates) — уточни, уберу. Если верная версия есть — сохрани её через remember.',
       }
     }
 
@@ -4687,8 +4988,15 @@ async function executeTool(
       return { grown: true, domain: match.project.name, projectId, logPageId, note: `Записал в «${match.project.name} → ${EXPERTISE_LOG_TITLE}». Если это устойчивый факт о случае пользователя — продублируй remember, чтобы всплывал и вне этой темы.` }
     }
 
-    default:
+    default: {
+      // Lab tools are handled by the registered extension. Defense-in-depth: the
+      // capability is re-checked here, not just at exposure time.
+      if (labExt?.tools.some((t) => t.name === name)) {
+        if (!context?.capabilities?.includes(CAP.LAB_USE)) return { error: 'Нет права на лабораторные инструменты.' }
+        return labExt.execute(name, input, context)
+      }
       return { error: `Unknown tool: ${name}` }
+    }
   }
 }
 
@@ -4832,8 +5140,6 @@ export async function appendConversationToMemory(
 // overflow the model's window. Keep the most recent turns — enough for continuity,
 // bounded against a marathon thread. Channels already trim to ~10 upstream, so
 // this only bites the web path. (Summarizing older turns is a later refinement.)
-const MAX_HISTORY_MESSAGES = 40
-
 // Sum up the dropped older turns into a compact note so a long conversation keeps
 // its thread instead of just losing everything past the window.
 //
@@ -4875,13 +5181,29 @@ export async function* streamChat(
   context: ChatContext,
   prisma: PrismaClient,
 ): AsyncGenerator<string> {
-  // Long conversation → summarize the overflow into context (survives every
-  // `{ ...context }` spread below), keep the recent tail as real messages.
-  if (messages.length > MAX_HISTORY_MESSAGES) {
-    const older = messages.slice(0, messages.length - MAX_HISTORY_MESSAGES)
+  // Long conversation → keep the recent tail as REAL messages, summarize only the
+  // true overflow. Trimming used to be COUNT-based (last 40 messages), which
+  // silently dropped precise data in long data-entry sessions: a fishing draw /
+  // weigh-in is hundreds of tiny turns, and everything older than 40 was either
+  // gone or crushed into a numberless prose summary — so the model «lost the
+  // thread», mislabelled and miscalculated. Now we keep as much recent history as
+  // fits a generous CHARACTER budget (numbers and tables survive verbatim, which
+  // is exactly what the model needs to reconcile), and summarize only what spills.
+  // A modern Claude context (200k tokens) easily holds this alongside prompt+tools.
+  const HISTORY_CHAR_BUDGET = 260_000  // ≈ 65k tokens of verbatim recent history
+  const MIN_KEEP_MESSAGES = 12         // never keep fewer than this, even if huge
+  const sizeOf = (m: ChatMessage) => (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content).length) + 16
+  let acc = 0
+  let keepFrom = 0
+  for (let i = messages.length - 1; i >= 0; i--) {
+    acc += sizeOf(messages[i])
+    if (acc > HISTORY_CHAR_BUDGET && (messages.length - i) > MIN_KEEP_MESSAGES) { keepFrom = i + 1; break }
+  }
+  if (keepFrom > 0) {
+    const older = messages.slice(0, keepFrom)
     const summary = await summarizeOlderMessages(older, context.workspaceId, prisma)
     if (summary) context.conversationSummary = summary
-    messages = messages.slice(-MAX_HISTORY_MESSAGES)
+    messages = messages.slice(keepFrom)
   }
 
   // Load AI settings (fall back to env key if not configured)
@@ -5277,6 +5599,12 @@ function formatApiError(err: unknown): string {
 // unbounded — the monthly cap is the only backstop, far too late. At the ceiling
 // we take tools away for the final call, so the model MUST conclude in words.
 const MAX_TOOL_ROUNDS = 16
+// Лаборатория поднимает потолок: длинные автономные цепочки — ровно то, что
+// хочется пробовать на своём инстансе и НЕ отдавать покупателю (цена прогона и
+// риск разогнавшегося цикла — осознанный выбор владельца).
+const LAB_TOOL_ROUNDS = 40
+const roundLimit = (ctx?: ChatContext): number =>
+  ctx?.capabilities?.includes(CAP.LAB_USE) ? LAB_TOOL_ROUNDS : MAX_TOOL_ROUNDS
 
 // Tools with no side effects — safe to run concurrently. A batch of writes is NOT
 // parallelized: several create_page/create_record calls race on position and on
@@ -5314,8 +5642,8 @@ async function* streamAnthropic(
     while (continueLoop) {
       rounds++
       // At the ceiling, drop tools so this call has to produce a final answer.
-      const roundTools = rounds > MAX_TOOL_ROUNDS ? [] : tools
-      if (rounds === MAX_TOOL_ROUNDS + 1) {
+      const roundTools = rounds > roundLimit(context) ? [] : tools
+      if (rounds === roundLimit(context) + 1) {
         yield `data: ${JSON.stringify({ type: 'text', text: '\n\n⚠️ Достигнут предел действий за один запрос — завершаю тем, что уже собрано.' })}\n\n`
       }
       const stream = client.messages.stream({
@@ -5404,7 +5732,7 @@ async function* streamAnthropic(
       try {
         while (continueLoop) {
           rounds++
-          const roundTools = rounds > MAX_TOOL_ROUNDS ? [] : tools
+          const roundTools = rounds > roundLimit(context) ? [] : tools
           const stream = client.messages.stream({
             model: settings.model ?? 'claude-sonnet-4-6',
             max_tokens: settings.maxTokens,
@@ -5484,8 +5812,8 @@ async function* streamOpenAI(
     while (continueLoop) {
       rounds++
       // At the ceiling, drop tools so this call has to produce a final answer.
-      const roundTools = rounds > MAX_TOOL_ROUNDS ? [] : openaiTools
-      if (rounds === MAX_TOOL_ROUNDS + 1) {
+      const roundTools = rounds > roundLimit(context) ? [] : openaiTools
+      if (rounds === roundLimit(context) + 1) {
         yield `data: ${JSON.stringify({ type: 'text', text: '\n\n⚠️ Достигнут предел действий за один запрос — завершаю тем, что уже собрано.' })}\n\n`
       }
       const toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }> = []
@@ -5563,7 +5891,7 @@ async function* streamOpenAI(
           let retryLoop = true
           while (retryLoop) {
             rounds++
-            const retryTools = rounds > MAX_TOOL_ROUNDS ? [] : openaiTools
+            const retryTools = rounds > roundLimit(context) ? [] : openaiTools
             const toolCalls2: Array<{ id: string; name: string; input: Record<string, unknown> }> = []
             let hasToolCalls2 = false
             let reasoningContent2 = ''
