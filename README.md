@@ -167,6 +167,11 @@ sinout/
 - Docker + Docker Compose
 - 4 GB RAM (8 GB recommended — Meilisearch, SearXNG and Whisper are hungry)
 
+> **Windows / macOS:** this is memory *allocated to Docker Desktop* (Settings →
+> Resources), not your total system RAM — Docker Desktop runs in its own VM/WSL2
+> with its own cap, often left at a low default. Below ~4 GB, the frontend's
+> production build can fail with `JavaScript heap out of memory` mid-install.
+
 ### 1. Clone
 
 ```bash
