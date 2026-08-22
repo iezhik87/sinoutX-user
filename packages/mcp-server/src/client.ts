@@ -227,14 +227,20 @@ export async function askAI(
     const raw = decoder.decode(value, { stream: true })
     for (const line of raw.split('\n')) {
       if (!line.startsWith('data: ')) continue
+      // Parsing and reacting to an explicit error event used to share one
+      // try/catch, so a real `type:'error'` from the backend (e.g. the
+      // provider ran out of balance) was thrown on purpose one line down,
+      // then immediately caught by the SAME catch meant for malformed JSON
+      // and discarded — the caller got a silently truncated answer instead
+      // of the real reason. Parse first; react to the event outside any
+      // catch that could reabsorb it.
+      let event: { type: string; text?: string }
       try {
-        const event = JSON.parse(line.slice(6)) as { type: string; text?: string }
-        if (event.type === 'text' && event.text) chunks.push(event.text)
-        if (event.type === 'done') break
-        if (event.type === 'error' && event.text) throw new Error(event.text)
-      } catch {
-        // skip malformed lines
-      }
+        event = JSON.parse(line.slice(6))
+      } catch { continue }
+      if (event.type === 'error' && event.text) throw new Error(event.text)
+      if (event.type === 'text' && event.text) chunks.push(event.text)
+      if (event.type === 'done') break
     }
   }
 

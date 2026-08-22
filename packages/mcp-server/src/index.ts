@@ -90,10 +90,12 @@ const transports: Record<string, StreamableHTTPServerTransport> = {}
 
 function checkAuth(req: http.IncomingMessage, res: http.ServerResponse): string | null {
   const apiKey = (req.headers['x-api-key'] as string | undefined)?.trim()
-  // Allow any per-user key (backend validates it) or, if a shared gateway
-  // secret is configured, that exact key. Empty/unknown keys are rejected.
+  // Accept a per-user personal key (the backend then validates it against its
+  // hashed store) or, if a shared gateway secret is configured, that exact key.
+  // Fail CLOSED: an unset REQUIRED_KEY must NOT turn into "any non-empty key
+  // passes" — only real personal keys or the configured secret get through.
   const allowed = !!apiKey && (
-    !REQUIRED_KEY || apiKey === REQUIRED_KEY || apiKey.startsWith(PERSONAL_KEY_PREFIX)
+    apiKey.startsWith(PERSONAL_KEY_PREFIX) || (!!REQUIRED_KEY && apiKey === REQUIRED_KEY)
   )
   if (!allowed) {
     res.writeHead(401, { 'Content-Type': 'application/json' })

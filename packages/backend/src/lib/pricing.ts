@@ -12,6 +12,7 @@
 // old row keeps the price that actually applied.
 
 import type { PrismaClient } from '@prisma/client'
+import { getManagedAi, getManagedVision, getManagedEmbeddings } from './managed.js'
 
 export interface ModelPrice {
   /** Fresh input, per 1M tokens. */
@@ -149,11 +150,46 @@ export async function primePricing(prisma: PrismaClient): Promise<void> {
   console.log(`[pricing] margin +${marginPercent()}%, ${n} custom price(s)`)
 }
 
-/** Everything the admin panel shows: defaults merged with his edits. */
+/** Model ids this instance can actually be billed for right now, straight from
+ *  "Ключи SinoutX" — the ONE place that decides what runs. Image gen is priced
+ *  per picture in a separate table, not here. */
+function activeModelIds(): string[] {
+  const ids: string[] = []
+  const ai = getManagedAi(); if (ai?.model) ids.push(ai.model)
+  const vision = getManagedVision(); if (vision?.model) ids.push(vision.model)
+  const emb = getManagedEmbeddings(); if (emb?.model) ids.push(emb.model)
+  return ids
+}
+
+/**
+ * Everything the admin panel shows: defaults merged with his edits — but an
+ * UNTOUCHED shipped default the instance cannot possibly be billed for (a
+ * different provider is configured, nothing runs on it) is left out, not
+ * merely dimmed. It is exactly this kind of dead entry — present, plausible-
+ * looking, and wrong — that hid the Luna id mismatch in the first place.
+ *
+ * Two things are never filtered, on purpose: a custom row the admin typed in
+ * himself (he put it there deliberately, active or not), and a shipped
+ * default he actually edited (the edit is real intent — hiding it here would
+ * silently drop it the next time anything on this tab gets saved, since only
+ * what is visible in the form is what gets persisted).
+ */
 export function pricingForAdmin() {
+  const active = activeModelIds()
+  const configured = active.length > 0
+  const all = MODEL_PRICES()
+  const models = configured
+    ? Object.fromEntries(Object.entries(all).filter(([id, price]) => {
+        if (active.includes(id)) return true
+        const def = DEFAULT_MODEL_PRICES[id]
+        if (!def) return true // not a shipped default at all — the admin's own row
+        return def.input !== price.input || def.cachedInput !== price.cachedInput || def.output !== price.output
+      }))
+    : all // nothing configured yet (fresh instance) — show every shipped default, we don't know which will matter
+
   return {
     marginPercent: marginPercent(),
-    models: MODEL_PRICES(),
+    models,
     images: IMAGE_PRICES(),
     defaults: { models: DEFAULT_MODEL_PRICES, images: DEFAULT_IMAGE_PRICES, marginPercent: DEFAULT_MARGIN_PERCENT },
   }

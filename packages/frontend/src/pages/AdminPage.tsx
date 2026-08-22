@@ -172,6 +172,10 @@ const adminApi = {
   getPricing: () => api.get<PricingView>('/admin/pricing').then((r) => r.data),
   updatePricing: (p: { marginPercent: number; models: Record<string, ModelPrice>; images: Record<string, number> }) =>
     api.patch<PricingView>('/admin/pricing', p).then((r) => r.data),
+  getOpenRouterPrice: (model: string) =>
+    api.get<{ price: ModelPrice; resolvedId: string }>('/admin/pricing/openrouter', { params: { model } }).then((r) => r.data),
+  getOpenRouterModelList: () =>
+    api.get<{ models: { id: string; label: string }[] }>('/admin/pricing/openrouter/list').then((r) => r.data.models),
   testProvider: (params: { provider: string; apiKey?: string; baseUrl?: string; model?: string }) =>
     api.post<{ ok: boolean; error?: string; message?: string; models?: ModelOpt[] }>('/ai/settings/test', params).then((r) => r.data),
   testImage: (params: { provider: string; apiKey?: string; baseUrl?: string; model?: string }) =>
@@ -787,10 +791,20 @@ function PricingCard() {
   const qc = useQueryClient()
   const pr = useT().admin.pricing
   const { data } = useQuery({ queryKey: ['admin-pricing'], queryFn: adminApi.getPricing })
+  // Fetched once and cached — backs the "add a model" picker below so an id is
+  // CHOSEN from the real OpenRouter catalog, not typed (a typo there is a
+  // silently-unpriced model, never an error anyone sees).
+  const { data: orModels } = useQuery({ queryKey: ['openrouter-model-list'], queryFn: adminApi.getOpenRouterModelList, staleTime: 5 * 60 * 1000 })
   const [draft, setDraft] = useState<PricingView | null>(null)
   const [saved, setSaved] = useState(false)
   const [newModel, setNewModel] = useState('')
   const [newImage, setNewImage] = useState('')
+  const [refreshingId, setRefreshingId] = useState<string | null>(null)
+  const [refreshError, setRefreshError] = useState<string | null>(null)
+  // name -> the OpenRouter id the price actually came from, when it differs
+  // from the row's own name (e.g. row "deepseek-v4-pro" resolves via
+  // "deepseek/deepseek-v4-pro") — shown so the substitution is never silent.
+  const [resolvedVia, setResolvedVia] = useState<Record<string, string>>({})
 
   const mutation = useMutation({
     // Store only what differs from the shipped defaults. Persisting the whole
@@ -819,6 +833,24 @@ function PricingCard() {
 
   const edit = (fn: (v: PricingView) => PricingView) => setDraft(fn(view))
   const num = (v: string) => Math.max(0, parseFloat(v.replace(',', '.')) || 0)
+
+  // Pull today's real price for one model from OpenRouter — fills the row, does
+  // NOT save. The admin still reviews and hits the main Save button below, same
+  // as any other edit here.
+  const refreshFromOpenRouter = async (name: string) => {
+    setRefreshingId(name)
+    setRefreshError(null)
+    try {
+      const { price, resolvedId } = await adminApi.getOpenRouterPrice(name)
+      edit((v) => ({ ...v, models: { ...v.models, [name]: price } }))
+      setResolvedVia((v) => (resolvedId !== name ? { ...v, [name]: resolvedId } : v))
+    } catch (e) {
+      const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error
+      setRefreshError(msg || `Не удалось получить цену для ${name}`)
+    } finally {
+      setRefreshingId(null)
+    }
+  }
 
   const isDefault = (name: string) => {
     const d = data.defaults.models[name]
@@ -877,22 +909,43 @@ function PricingCard() {
                   <td className="py-1.5 pr-2 font-mono text-slate-300">
                     {name}
                     {!isDefault(name) && <span className="ml-2 text-[10px] text-primary-400">{pr.custom}</span>}
+                    {/* The refresh below can pull a bare id's price via a resolved
+                        OpenRouter equivalent (deepseek-v4-pro → deepseek/deepseek-
+                        v4-pro) — say so, so the row's own name never silently
+                        stops meaning what it says. */}
+                    {resolvedVia[name] && (
+                      <div className="text-[10px] text-slate-500 font-normal">via {resolvedVia[name]}</div>
+                    )}
                   </td>
                   <td className="py-1.5 px-1 text-right">{priceInput(price.input, (n) => edit((v) => ({ ...v, models: { ...v.models, [name]: { ...price, input: n } } })))}</td>
                   <td className="py-1.5 px-1 text-right">{priceInput(price.cachedInput, (n) => edit((v) => ({ ...v, models: { ...v.models, [name]: { ...price, cachedInput: n } } })))}</td>
                   <td className="py-1.5 px-1 text-right">{priceInput(price.output, (n) => edit((v) => ({ ...v, models: { ...v.models, [name]: { ...price, output: n } } })))}</td>
                   <td className="py-1.5 pl-2 text-right">
-                    {/* A shipped model cannot be deleted — only overridden. The row
-                        would come back on reload and the button would be a lie. */}
-                    {!data.defaults.models[name] && (
+                    <div className="flex items-center justify-end gap-2">
+                      {/* Shown for every row now — the backend resolves bare ids
+                          (no "/") via a suffix match against the OpenRouter
+                          catalog, so this works uniformly, not just for ids
+                          already shaped like "provider/model". */}
                       <button
-                        onClick={() => edit((v) => { const m = { ...v.models }; delete m[name]; return { ...v, models: m } })}
-                        className="text-slate-600 hover:text-red-400"
-                        title={pr.remove}
+                        onClick={() => refreshFromOpenRouter(name)}
+                        disabled={refreshingId === name}
+                        className="text-slate-600 hover:text-primary-400 disabled:opacity-50"
+                        title={pr.refreshFromOpenRouter}
                       >
-                        <Trash2 size={12} />
+                        <RefreshCw size={12} className={refreshingId === name ? 'animate-spin' : ''} />
                       </button>
-                    )}
+                      {/* A shipped model cannot be deleted — only overridden. The row
+                          would come back on reload and the button would be a lie. */}
+                      {!data.defaults.models[name] && (
+                        <button
+                          onClick={() => edit((v) => { const m = { ...v.models }; delete m[name]; return { ...v, models: m } })}
+                          className="text-slate-600 hover:text-red-400"
+                          title={pr.remove}
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -900,19 +953,32 @@ function PricingCard() {
           </table>
         </div>
 
+        {refreshError && <p className="text-[11px] text-red-400">{refreshError}</p>}
+
         <div className="flex gap-2">
           <input
             value={newModel}
             onChange={(e) => setNewModel(e.target.value)}
             placeholder={pr.addModel}
+            list="or-model-options"
             className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-200 font-mono"
           />
+          {/* Picked from the live OpenRouter catalog — typing still works (the
+              list only suggests), but a chosen id is a real one, not a guess. */}
+          <datalist id="or-model-options">
+            {(orModels ?? []).map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+          </datalist>
           <button
-            onClick={() => {
+            onClick={async () => {
               const id = newModel.trim()
               if (!id || view.models[id]) return
-              edit((v) => ({ ...v, models: { ...v.models, [id]: { input: 0, cachedInput: 0, output: 0 } } }))
               setNewModel('')
+              // Seed the row with a live price when the id resolves (exact or via
+              // the bare-id fallback) — zeros only when it truly isn't found, same
+              // as any other unpriced custom row.
+              const found = await adminApi.getOpenRouterPrice(id).catch(() => null)
+              edit((v) => ({ ...v, models: { ...v.models, [id]: found?.price ?? { input: 0, cachedInput: 0, output: 0 } } }))
+              if (found && found.resolvedId !== id) setResolvedVia((v) => ({ ...v, [id]: found.resolvedId }))
             }}
             disabled={!newModel.trim()}
             className="btn btn-ghost text-xs px-3 border border-slate-700 disabled:opacity-40"
@@ -1026,6 +1092,10 @@ function ManagedKeysCard() {
     const fresh = await adminApi.updateManaged({ [slot]: { provider: p.provider, model: p.model, apiKey: p.apiKey ?? '', baseUrl: p.baseUrl ?? '' } })
     qc.setQueryData(['admin-managed'], fresh)
     qc.invalidateQueries({ queryKey: ['ai-models'] })
+    // The backend may have just auto-synced this model's live price (openrouter
+    // slots) — the Pricing tab's cache would otherwise show stale data until
+    // some unrelated refetch happened to touch it.
+    qc.invalidateQueries({ queryKey: ['admin-pricing'] })
   }
   const resetSlot = async (slot: keyof ManagedView) => {
     const fresh = await adminApi.updateManaged({ [slot]: { provider: '', model: '', apiKey: '', baseUrl: '' } })

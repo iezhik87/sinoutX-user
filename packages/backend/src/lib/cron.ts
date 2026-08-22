@@ -12,7 +12,8 @@ import { outboundChannels, notifyChannels } from '../modules/integration/channel
 import { chargeMonth } from './subscription.js'
 import { isBillingEnabled } from './billingMode.js'
 import { expireStalePendingTopups } from './wallet.js'
-import { usd } from './pricing.js'
+import { usd, MODEL_PRICES } from './pricing.js'
+import { resolveOpenRouterPrice } from './openrouterPricing.js'
 import { parseAssembled } from '../modules/ai/ai.customtools.js'
 import { indexRecord, recallRecords } from './embeddings.js'
 import { promises as fs } from 'fs'
@@ -798,6 +799,50 @@ async function processSubscriptions(prisma: PrismaClient) {
   if (charged) console.log(`[cron] subscriptions: charged ${charged}, froze ${frozen}`)
 }
 
+// ─── OpenRouter price drift check (once a day) ─────────────────────────────
+// Provider prices move without warning — this whole feature exists because
+// DeepSeek repriced mid-session and nobody had a way to know until the bill
+// showed it. Rather than wait for a human to notice, compare what is on file
+// against OpenRouter's live catalog for every priced model and nudge the
+// admins when it has moved enough to matter. Sweeps EVERY model on file, not
+// just ones already shaped like "provider/model": resolveOpenRouterPrice
+// falls back to a suffix search for our own bare shipped ids (deepseek-v4-pro
+// → deepseek/deepseek-v4-pro) and simply skips what it truly can't resolve.
+const PRICE_DRIFT_THRESHOLD = 0.15 // 15% — provider prices wiggle a little; don't cry wolf over rounding.
+
+async function checkOpenRouterPriceDrift(prisma: PrismaClient) {
+  const candidates = Object.entries(MODEL_PRICES())
+  if (!candidates.length) return
+
+  const drift = (was: number, now: number) => (was > 0 ? Math.abs(now - was) / was : now > 0 ? 1 : 0)
+
+  for (const [modelId, old] of candidates) {
+    const resolved = await resolveOpenRouterPrice(modelId).catch(() => null)
+    if (!resolved || 'ambiguous' in resolved) continue // not on OpenRouter, or not uniquely resolvable — nothing safe to compare
+    const live = resolved.price
+
+    if (drift(old.input, live.input) < PRICE_DRIFT_THRESHOLD && drift(old.output, live.output) < PRICE_DRIFT_THRESHOLD) continue
+
+    // Once per model per day — a price that stays moved doesn't need a fresh alert every night.
+    if (await redis.set(`pricing:drift:${modelId}`, '1', 'EX', 86400, 'NX') !== 'OK') continue
+
+    const dir = live.input + live.output > old.input + old.output ? 'выросла' : 'снизилась'
+    const via = resolved.resolvedId !== modelId ? ` (на OpenRouter это ${resolved.resolvedId})` : ''
+    const admins = await prisma.user.findMany({ where: { role: { in: ['OWNER', 'ADMIN'] } }, select: { id: true } })
+    const svc = new NotificationService(prisma)
+    for (const a of admins) {
+      await svc.create({
+        userId: a.id,
+        type: 'system',
+        title: `💲 Цена модели ${modelId} ${dir}`,
+        body: `В прайсе у нас: $${old.input.toFixed(2)} / $${old.output.toFixed(2)} за 1M (вход/выход). Сейчас на OpenRouter${via}: $${live.input.toFixed(2)} / $${live.output.toFixed(2)}. Обновите в Админке → Биллинг → Цены, чтобы не продавать себе в убыток.`,
+        link: '/admin',
+      }).catch(() => {})
+    }
+    console.log(`[cron] price drift: ${modelId} stored=${old.input}/${old.output} live=${live.input}/${live.output}`)
+  }
+}
+
 export function startCronJobs(prisma: PrismaClient) {
   // Run every hour at :00
   cron.schedule('0 * * * *', async () => {
@@ -815,6 +860,7 @@ export function startCronJobs(prisma: PrismaClient) {
   // Daily at 03:10 UTC — quiet hours, and far from the hourly batch above.
   cron.schedule('10 3 * * *', async () => {
     await processSubscriptions(prisma).catch((e) => console.error('[cron] subscriptions error:', e))
+    await checkOpenRouterPriceDrift(prisma).catch((e) => console.error('[cron] price drift check error:', e))
   })
 
   // Run every minute: send Telegram reminders for tasks/events, and write off

@@ -115,10 +115,14 @@ async function bootstrap() {
       servers: [{ url: `http://localhost:${config.PORT}` }],
     },
   })
-  await app.register(swaggerUi, {
-    routePrefix: '/docs',
-    uiConfig: { docExpansion: 'list' },
-  })
+  // The interactive docs map the whole API for anyone who opens them. Keep them
+  // for local development, but never expose /docs on a production deployment.
+  if (config.NODE_ENV !== 'production') {
+    await app.register(swaggerUi, {
+      routePrefix: '/docs',
+      uiConfig: { docExpansion: 'list' },
+    })
+  }
 
   // ── Error handler ────────────────────────────────────────
   app.setErrorHandler(errorHandler)

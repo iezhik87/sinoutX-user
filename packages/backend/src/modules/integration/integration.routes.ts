@@ -350,7 +350,9 @@ export async function runChannelAgent(
     if (busy) clearInterval(busy) // stop the typing/dots animation once the answer is ready
   }
   // Ошибка провайдера важнее пустого текста: показываем её, а не «переформулируй».
-  if (!reply.trim() && errorText) reply = '❌ ' + errorText
+  // errorText уже приходит из formatApiError с собственным префиксом "❌ Ошибка: " —
+  // не дублируем его здесь (было "❌ ❌ Ошибка: ...").
+  if (!reply.trim() && errorText) reply = errorText
 
   // Баланс ключа исчерпан (BYOK — свой ключ провайдера; заранее его не узнать,
   // сигнал только сам 402). На скилах по расписанию НЕ заваливаем чат красной

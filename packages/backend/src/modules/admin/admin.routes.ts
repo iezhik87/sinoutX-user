@@ -13,6 +13,8 @@ import { writeAuditLog } from '../../lib/audit.js'
 import { issueLicenseKey } from '../../lib/license.js'
 import { config } from '../../config/index.js'
 import { fromMicroUsd, toMicroUsd, isPriced, marginPercent, pricingForAdmin, setPricingOverrides } from '../../lib/pricing.js'
+import { resolveOpenRouterPrice, fetchOpenRouterModelList } from '../../lib/openrouterPricing.js'
+import type { ModelPrice } from '../../lib/pricing.js'
 import { adjust } from '../../lib/wallet.js'
 import { setBillingMode, isBillingEnabled } from '../../lib/billingMode.js'
 import { managedForAdmin, saveManaged, MANAGED_SLOTS } from '../../lib/managed.js'
@@ -285,6 +287,39 @@ export async function adminRoutes(app: FastifyInstance, prisma: PrismaClient) {
     return reply.send(pricingForAdmin())
   })
 
+  // GET /admin/pricing/openrouter/list — every model OpenRouter serves, for the
+  // "add a model" picker: choose an id from the real catalog instead of typing
+  // one that may not exist (a typo here is a silent, permanently-unpriced model).
+  app.get('/admin/pricing/openrouter/list', { preHandler: [authenticate, requireOwnerOrAdmin] }, async (_req, reply) => {
+    try {
+      return reply.send({ models: await fetchOpenRouterModelList() })
+    } catch (e) {
+      return reply.status(502).send({ error: (e as Error).message })
+    }
+  })
+
+  // GET /admin/pricing/openrouter?model=<id> — pull today's real price for one
+  // model from OpenRouter's public catalog, so the admin doesn't have to hand-
+  // type it (and doesn't have to remember to, when a provider reprices). Works
+  // for our own bare shipped ids too (e.g. "deepseek-v4-pro") via a suffix
+  // fallback in resolveOpenRouterPrice — see there for why.
+  app.get('/admin/pricing/openrouter', { preHandler: [authenticate, requireOwnerOrAdmin] }, async (req, reply) => {
+    const q = z.object({ model: z.string().min(1) }).parse(req.query)
+    let result
+    try {
+      result = await resolveOpenRouterPrice(q.model)
+    } catch (e) {
+      return reply.status(502).send({ error: (e as Error).message })
+    }
+    if (!result) return reply.status(404).send({ error: `Модель "${q.model}" не найдена в каталоге OpenRouter` })
+    if ('ambiguous' in result) {
+      return reply.status(409).send({
+        error: `Несколько моделей на OpenRouter подходят под "${q.model}": ${result.ambiguous.join(', ')}. Добавьте нужную по полному id через поле ниже.`,
+      })
+    }
+    return reply.send({ price: result.price, resolvedId: result.resolvedId })
+  })
+
   app.patch('/admin/pricing', { preHandler: [authenticate, requireOwnerOrAdmin] }, async (req, reply) => {
     const price = z.object({
       input: z.number().min(0).max(1000),
@@ -316,6 +351,23 @@ export async function adminRoutes(app: FastifyInstance, prisma: PrismaClient) {
 
     return reply.send(pricingForAdmin())
   })
+
+  // Merge one model's price into the stored overrides without clobbering the
+  // rest of the table. PATCH /admin/pricing above replaces the whole JSON
+  // blob because the frontend always sends a full snapshot; this is called
+  // with just a single model, so it must read-merge-write instead.
+  async function upsertPriceOverride(modelId: string, price: ModelPrice) {
+    const existing = await prisma.appSettings.findUnique({ where: { id: 'singleton' }, select: { pricing: true } })
+    const current = (existing?.pricing ?? {}) as { marginPercent?: number; models?: Record<string, ModelPrice>; images?: Record<string, number> }
+    const next = { ...current, models: { ...current.models, [modelId]: price } }
+    const row = await prisma.appSettings.upsert({
+      where: { id: 'singleton' },
+      create: { id: 'singleton', pricing: next as object },
+      update: { pricing: next as object },
+      select: { pricing: true },
+    })
+    setPricingOverrides(row.pricing as never)
+  }
 
   // ── Managed provider keys ────────────────────────────────────────────
   // The keys the INSTANCE pays with. Stored encrypted, cached in memory, and
@@ -350,6 +402,26 @@ export async function adminRoutes(app: FastifyInstance, prisma: PrismaClient) {
     const body = z.object(shape).parse(req.body)
 
     await saveManaged(prisma, body)
+
+    // Close the exact gap that just bit Luna: a model picked here but never
+    // priced (or priced under a slightly different id) silently bills at $0.
+    // Only token-priced slots apply — images are priced per picture, a
+    // different table — and only when the provider is openrouter, the one
+    // source with a live catalog to resolve against; other providers still
+    // need a manual price in the Pricing tab, same as before.
+    //
+    // Fire-and-forget, NOT awaited: saving a provider key is a critical action
+    // that must always complete fast — it must never sit blocked behind a
+    // third-party HTTP call. This found that out the hard way: awaited here,
+    // one slow/hung fetch to OpenRouter froze the Save button for every admin.
+    const TOKEN_SLOTS = ['ai', 'vision', 'embeddings'] as const
+    for (const key of TOKEN_SLOTS) {
+      const s = body[key]
+      if (!s || s.provider !== 'openrouter' || !s.model) continue
+      void resolveOpenRouterPrice(s.model)
+        .then((resolved) => resolved && !('ambiguous' in resolved) ? upsertPriceOverride(s.model!, resolved.price) : null)
+        .catch((e) => console.error('[pricing] auto-sync failed', s.model, e))
+    }
 
     await writeAuditLog(prisma, {
       action: 'admin.managed_keys_updated',

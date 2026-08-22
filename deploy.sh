@@ -102,12 +102,13 @@ if [ "$BACKEND_CHANGED" = false ] && [ "$COMPOSE_CHANGED" = false ]; then
   BACKEND_CHANGED=true  # ensure nginx re-resolves the new backend IP below
 fi
 
-# Recreating backend/frontend gives the container a new internal IP, but the
-# nginx reverse proxy resolves the static `upstream` blocks only once at start —
-# so it keeps proxying to the old (now dead) IP and returns 502. Reload nginx so
-# it re-resolves the upstreams. (collab/mcp use a resolver var and self-heal.)
-if [ "$BACKEND_CHANGED" = true ] || [ "$FRONTEND_CHANGED" = true ]; then
-  echo "==> Reloading nginx so it re-resolves backend/frontend IPs..."
+# Reload nginx when either (a) backend/frontend were recreated — they get a new
+# internal IP and the static `upstream` blocks resolve only once at start, so
+# without a reload nginx proxies to the old dead IP and 502s; or (b) nginx.conf
+# itself changed — a bind-mounted config is NOT picked up by `up -d`, it needs an
+# explicit reload (otherwise config edits silently never deploy).
+if [ "$BACKEND_CHANGED" = true ] || [ "$FRONTEND_CHANGED" = true ] || [ "$COMPOSE_CHANGED" = true ]; then
+  echo "==> Reloading nginx (re-resolve upstream IPs / pick up nginx.conf changes)..."
   docker compose exec -T nginx nginx -s reload || docker compose restart nginx
 fi
 

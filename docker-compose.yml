@@ -242,6 +242,7 @@ services:
     environment:
       PORT: 3012
       DATABASE_URL: postgresql://${DB_USER:-sinout}:${DB_PASSWORD}@postgres:5432/sinout
+      JWT_SECRET: ${JWT_SECRET}
 
   # ═══ Frontend ═══
   frontend:

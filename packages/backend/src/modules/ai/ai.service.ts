@@ -1861,12 +1861,26 @@ async function* streamOpenAICompatible(
         }
         return
       }
+      // Only a genuinely malformed line is swallowed here. Parsing and the
+      // error-check used to share one try/catch, so a provider's in-stream
+      // error (200 OK, but `data: {"error":{...}}` in the body — this is how
+      // DeepSeek/OpenAI-compatible gateways report "balance exhausted" etc.)
+      // was thrown on purpose one line down, then immediately caught by the
+      // SAME catch meant for JSON.parse failures and discarded as "malformed
+      // SSE line" — the caller never saw it, and the user got a bare "Пустой
+      // ответ" instead of the real reason. Parse first, react to the error
+      // OUTSIDE any catch that could reabsorb it.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let chunk: any
       try {
-        const chunk = JSON.parse(data)
-        // DeepSeek / OpenAI error event in SSE body — throw so retry logic catches it
-        if (chunk.error) {
-          throw new Error(chunk.error.message ?? JSON.stringify(chunk.error))
-        }
+        chunk = JSON.parse(data)
+      } catch { continue }
+
+      if (chunk.error) {
+        throw new Error(chunk.error.message ?? JSON.stringify(chunk.error))
+      }
+
+      try {
         // The usage chunk carries an EMPTY `choices` array, so it must be read
         // before the guard below drops it.
         const usage = parseOpenAIUsage(chunk.usage as Record<string, unknown> | undefined)
@@ -5546,48 +5560,69 @@ function formatApiError(err: unknown): string {
     } catch { /* keep raw */ }
   }
 
+  // Matched case-insensitively from here on. A status-coded HTTP error
+  // ("429: ...") matches regardless of case anyway, but an in-stream
+  // `chunk.error` (no status, just the provider's own sentence) commonly
+  // starts capitalized — "Insufficient Balance", "Rate limit reached",
+  // "Invalid API key" — and every branch here used to compare against
+  // `msg` as-is, so those never matched and fell through to the generic
+  // fallback. Caught this by hand once already for the geo-block branch;
+  // fixing it for every branch instead of case-by-case.
+  const lower = msg.toLowerCase()
+
   // Rate limit
-  if (msg.includes('rate_limit') || msg.includes('429') || msg.includes('rate limit')) {
+  if (lower.includes('rate_limit') || lower.includes('429') || lower.includes('rate limit')) {
     return '⏳ Превышен лимит запросов API (rate limit). Подождите 1 минуту и повторите, или переключитесь на более быструю модель (Sonnet / Haiku) в Настройках → AI Ассистент.'
   }
   // Auth
-  if (msg.includes('401') || msg.includes('authentication') || msg.includes('api_key') || msg.includes('invalid x-api-key')) {
+  if (lower.includes('401') || lower.includes('authentication') || lower.includes('api_key') || lower.includes('invalid x-api-key') || lower.includes('invalid api key')) {
     return '🔑 Неверный API ключ. Проверьте настройки в Настройки → AI Ассистент.'
   }
   // Overloaded / gateway errors
-  if (msg.includes('overloaded') || msg.includes('529') || msg.includes('503') || msg.includes('502') || msg.includes('504')) {
+  if (lower.includes('overloaded') || lower.includes('529') || lower.includes('503') || lower.includes('502') || lower.includes('504')) {
     return '🔄 Серверы AI перегружены или недоступны (502/503/504). Подождите 10–30 секунд и повторите запрос.'
   }
   // Timeout from AbortSignal
-  if (msg.includes('AbortError') || msg.includes('The operation was aborted') || msg.includes('signal timed out')) {
+  if (lower.includes('aborterror') || lower.includes('the operation was aborted') || lower.includes('signal timed out')) {
     return '⌛ AI не ответил за 5 минут — запрос слишком большой или сервер перегружен. Попробуйте снова или упростите запрос.'
   }
   // Context too long
-  if ((msg.includes('context') && msg.includes('length')) || msg.includes('maximum context')) {
+  if ((lower.includes('context') && lower.includes('length')) || lower.includes('maximum context')) {
     return '📄 Диалог слишком длинный. Начни новый диалог (кнопка ↺) или сократи историю сообщений.'
   }
-  // Quota / balance
-  if (msg.includes('credit') || msg.includes('quota') || msg.includes('billing') || msg.includes('insufficient_quota')) {
-    return '💳 Закончился баланс API. Пополните счёт на console.anthropic.com или выберите другого провайдера.'
+  // Quota / balance. "Insufficient Balance" is DeepSeek's literal 402 text
+  // for an empty wallet — the exact case this branch exists for, missing
+  // until now because none of "credit/quota/billing/insufficient_quota"
+  // appear in it.
+  if (lower.includes('credit') || lower.includes('quota') || lower.includes('billing') || lower.includes('insufficient_quota') || lower.includes('insufficient balance')) {
+    return '💳 Закончился баланс API. Пополните счёт у провайдера или выберите другого в Настройки → AI Ассистент.'
+  }
+  // Geo-restriction — provider blocks the region the request/account is tied
+  // to. Seen intermittently through OpenRouter's openai/* models from a
+  // server in a sanctioned region; a manual retry sometimes lands on a
+  // different upstream node and succeeds, so this is worth retrying, not
+  // giving up on.
+  if (lower.includes('country') && (lower.includes('region') || lower.includes('territory') || lower.includes('not supported'))) {
+    return '🌍 Провайдер модели не обслуживает регион запроса (гео-ограничение). Часто срабатывает нестабильно — повторите запрос ещё раз; если повторяется постоянно, выберите другую модель в Настройки → AI Ассистент.'
   }
   // Input stream / connection dropped mid-stream
-  if (msg.includes('input stream') || msg.includes('stream error') || msg.includes('connection error')) {
+  if (lower.includes('input stream') || lower.includes('stream error') || lower.includes('connection error')) {
     return '🔄 Соединение с AI было прервано на середине ответа (слишком много инструментов или большой контекст). Попробуйте снова — обычно со второй попытки всё работает.'
   }
   // Timeout / connection
-  if (msg.includes('timeout') || msg.includes('ETIMEDOUT') || msg.includes('ECONNREFUSED') || msg.includes('ENOTFOUND')) {
+  if (lower.includes('timeout') || lower.includes('etimedout') || lower.includes('econnrefused') || lower.includes('enotfound')) {
     return '⌛ Нет соединения с AI провайдером. Проверьте Base URL и что сервис запущен.'
   }
   // Node.js fetch network error (DNS fail, connection reset, EPIPE, etc.)
-  if (msg.toLowerCase().includes('fetch failed') || msg.includes('ECONNRESET') || msg.includes('EPIPE') || msg.includes('socket hang up')) {
+  if (lower.includes('fetch failed') || lower.includes('econnreset') || lower.includes('epipe') || lower.includes('socket hang up')) {
     return '🌐 Сетевая ошибка при обращении к AI провайдеру (соединение оборвалось). Попробуйте повторить запрос.'
   }
   // Ollama: model runner crashed
-  if (msg.includes('llama runner') || msg.includes('runner process') || msg.includes('process has terminated')) {
+  if (lower.includes('llama runner') || lower.includes('runner process') || lower.includes('process has terminated')) {
     return '🦙 Ollama: процесс модели завершился с ошибкой. Возможные причины: недостаточно RAM/VRAM, модель повреждена. Попробуй: ollama pull <модель> заново, или выбери модель поменьше.'
   }
   // Ollama: model not found
-  if (msg.includes('model') && (msg.includes('not found') || msg.includes('does not exist'))) {
+  if (lower.includes('model') && (lower.includes('not found') || lower.includes('does not exist'))) {
     return '🦙 Ollama: модель не найдена. Выполни в терминале: ollama pull <название модели>'
   }
 
@@ -5879,7 +5914,13 @@ async function* streamOpenAI(
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    const isRetryable = msg.includes('input stream') || msg.includes('stream error') || msg.includes('ECONNRESET') || msg.includes('socket hang up') || msg.includes('fetch failed')
+    // Geo-restriction errors ("country/region/territory not supported") seen
+    // through OpenRouter's openai/* models are intermittent in practice — a
+    // retry often lands on a different upstream node and just works, so it
+    // is worth an automatic retry rather than making the user re-type.
+    const lowerMsg = msg.toLowerCase()
+    const isGeoBlock = lowerMsg.includes('country') && (lowerMsg.includes('region') || lowerMsg.includes('territory') || lowerMsg.includes('not supported'))
+    const isRetryable = msg.includes('input stream') || msg.includes('stream error') || msg.includes('ECONNRESET') || msg.includes('socket hang up') || msg.includes('fetch failed') || isGeoBlock
     if (isRetryable) {
       // Retry up to 3 times with increasing delay
       let retryErr: unknown = err

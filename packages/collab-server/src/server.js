@@ -4,9 +4,58 @@ import { TiptapTransformer } from '@hocuspocus/transformer'
 import pg from 'pg'
 import { createId } from '@paralleldrive/cuid2'
 import http from 'http'
+import crypto from 'crypto'
 
 const { Pool } = pg
 const pool = new Pool({ connectionString: process.env.DATABASE_URL })
+
+// Auth: verify the same HS256 JWT the backend issues (@fastify/jwt), WITHOUT a
+// jsonwebtoken dependency — a real-time service should stay lean. The collab WS
+// is exposed to the internet via nginx (/collab), so every document open MUST
+// prove who the user is and that they may touch this page — otherwise anyone who
+// learns a page id can read+write its live Yjs doc across tenants.
+const JWT_SECRET = process.env.JWT_SECRET || ''
+if (!JWT_SECRET) {
+  console.error('[collab] FATAL: JWT_SECRET is not set — every collab connection will be rejected.')
+}
+
+function verifyJwt(token) {
+  if (!token || typeof token !== 'string' || !JWT_SECRET) return null
+  const parts = token.split('.')
+  if (parts.length !== 3) return null
+  const [h, p, s] = parts
+  try {
+    const header = JSON.parse(Buffer.from(h, 'base64url').toString('utf8'))
+    if (header.alg !== 'HS256') return null // block alg-confusion ("none" etc.)
+    const expected = crypto.createHmac('sha256', JWT_SECRET).update(`${h}.${p}`).digest()
+    const got = Buffer.from(s, 'base64url')
+    if (expected.length !== got.length || !crypto.timingSafeEqual(expected, got)) return null
+    const payload = JSON.parse(Buffer.from(p, 'base64url').toString('utf8'))
+    if (payload.exp && Date.now() / 1000 > payload.exp) return null
+    return payload
+  } catch {
+    return null
+  }
+}
+
+// May this user open this page? Access = member of the page's workspace OR of the
+// specific project it lives in (projects can be shared independently). Mirrors the
+// backend's access model (Workspace has no owner column — membership is the truth).
+async function userMayAccessPage(pageId, userId) {
+  const { rows } = await pool.query(
+    `SELECT 1
+       FROM pages p
+       JOIN projects pr ON pr.id = p.project_id
+      WHERE p.id = $1 AND p.is_deleted = false
+        AND (
+          EXISTS (SELECT 1 FROM workspace_members wm WHERE wm.workspace_id = pr.workspace_id AND wm.user_id = $2)
+          OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = pr.id AND pm.user_id = $2)
+        )
+      LIMIT 1`,
+    [pageId, userId]
+  )
+  return rows.length > 0
+}
 
 // Страховка: для realtime-сервиса доступность важнее fail-fast. Одна ошибка в
 // хуке (как было с onDisconnect) не должна ронять процесс и отдавать 502 всем —
@@ -82,12 +131,16 @@ const server = new Server({
   port: parseInt(process.env.PORT ?? '3012', 10),
   quiet: false,
 
-  async onAuthenticate({ documentName }) {
-    const { rows } = await pool.query(
-      'SELECT id FROM pages WHERE id = $1 AND is_deleted = false LIMIT 1',
-      [documentName]
-    )
-    if (!rows.length) throw new Error('Page not found')
+  async onAuthenticate({ documentName, token }) {
+    // 1) Who are you? A valid, unexpired JWT signed by our backend.
+    const payload = verifyJwt(token)
+    if (!payload?.id) throw new Error('Unauthorized: valid token required')
+    // 2) May you touch THIS page? Membership of its workspace or project.
+    if (!(await userMayAccessPage(documentName, payload.id))) {
+      throw new Error('Forbidden: no access to this page')
+    }
+    // Hand context to later hooks (e.g. attribution) if ever needed.
+    return { user: { id: payload.id, name: payload.name } }
   },
 
   async onDisconnect({ documentName, document: ydoc, clientsCount }) {
