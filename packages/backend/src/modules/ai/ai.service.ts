@@ -494,7 +494,7 @@ async function extractFileText(
   mimeType: string,
   filename: string,
   opts: { maxLength?: number; sheetName?: string } = {},
-): Promise<{ text: string; pages?: number; sheets?: string[] }> {
+): Promise<{ text: string; pages?: number; sheets?: string[]; scanned?: boolean }> {
   const maxLen  = opts.maxLength ?? 20000
   const ext     = filename.split('.').pop()?.toLowerCase() ?? ''
 
@@ -507,7 +507,11 @@ async function extractFileText(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pdfParse = ((await import('pdf-parse' as any)).default ?? (await import('pdf-parse' as any))) as (b: Buffer) => Promise<{text: string; numpages: number}>
     const data = await pdfParse(buffer)
-    return { text: data.text.slice(0, maxLen), pages: data.numpages }
+    const text = data.text.slice(0, maxLen)
+    // A scanned PDF (no text layer) still parses "successfully" but yields near-empty
+    // text — flag it so callers can fall back to rendering pages as images and reading
+    // them with the vision model, instead of silently returning nothing as a "result".
+    return { text, pages: data.numpages, scanned: text.trim().length < 40 }
   }
 
   if (isDocx) {
@@ -553,6 +557,25 @@ async function extractFileText(
   }
 
   throw new Error(`Неподдерживаемый формат файла: ${mimeType || ext}. Поддерживается: PDF, DOCX, XLSX, XLS, CSV, TXT, JSON, XML, HTML, MD`)
+}
+
+// Renders a scanned (no text layer) PDF's pages to images and reads them with the
+// vision model — the same fallback the image branch of read_attachment already relies on.
+async function ocrScannedPdf(
+  prisma: PrismaClient, workspaceId: string, userId: string | null,
+  buffer: Buffer, pages: number | undefined, promptOverride?: string,
+): Promise<{ text: string; pages?: number }> {
+  const ocr = await resolveWorkspaceOcr(prisma, workspaceId, userId)
+  if (!ocr) {
+    throw new Error('Это скан PDF без текстового слоя, а распознавание (vision) не настроено. Добавьте OCR-ключ в настройках модуля или подключите vision-ключ на инстансе.')
+  }
+  const { pdfPagesToImages } = await import('../../lib/pdfRaster.js')
+  const images = await pdfPagesToImages(buffer, 20)
+  if (!images.length) throw new Error('Не удалось разобрать страницы PDF для распознавания')
+  const visionPrompt = promptOverride
+    || `Это скан документа (${images.length} стр.) без текстового слоя. Прочитай ВСЕ страницы по порядку и верни ВЕСЬ распознанный текст дословно. Если это чек, счёт или квитанция — дополнительно перечисли позиции с ценами и итоговую сумму. Только распознанное содержимое, без комментариев.`
+  const text = await runExtraction(ocr, { images }, visionPrompt)
+  return { text, pages }
 }
 
 // ─── Load AI settings from workspace ─────────────────────────────────────────
@@ -3849,6 +3872,18 @@ async function executeTool(
         const buffer = Buffer.concat(chunks.map((c) => Buffer.from(c)))
 
         const result = await extractFileText(buffer, mimeType, filename, { maxLength: maxLen, sheetName })
+        if (result.scanned) {
+          const workspaceId = input.workspaceId as string | undefined
+          if (!workspaceId) return { error: 'Это скан PDF без текстового слоя — для распознавания (vision) передайте workspaceId.' }
+          const ocrResult = await ocrScannedPdf(
+            prisma, workspaceId, context?.userId ?? null,
+            buffer, result.pages, input.prompt as string | undefined,
+          )
+          return {
+            url, filename, mimeType, size: buffer.length,
+            text: ocrResult.text, pages: ocrResult.pages, vision: true, truncated: false,
+          }
+        }
         return {
           url,
           filename,
@@ -3899,6 +3934,17 @@ async function executeTool(
         }
 
         const result = await extractFileText(buffer, attachment.mimeType, attachment.filename, { maxLength: maxLen, sheetName })
+        if (result.scanned) {
+          const ocrResult = await ocrScannedPdf(
+            prisma, attachment.workspaceId, context?.userId ?? null,
+            buffer, result.pages, input.prompt as string | undefined,
+          )
+          return {
+            attachmentId, filename: attachment.filename, mimeType: attachment.mimeType,
+            size: attachment.size, description: attachment.description,
+            text: ocrResult.text, pages: ocrResult.pages, vision: true, truncated: false,
+          }
+        }
         return {
           attachmentId,
           filename: attachment.filename,

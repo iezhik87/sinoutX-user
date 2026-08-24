@@ -624,12 +624,19 @@ async function ingestMedia(
   })
   if (quota) void maybeWarnStorage(prisma, workspaceId, quota.usedMb + Math.round(buf.byteLength / 1024 / 1024), quota.limitMb)
 
-  // An image with no auto-file hint goes to the agent: it can now read the photo
-  // (read_attachment → vision) and do what the user actually asked — check a
-  // receipt, read the text, answer a question — instead of silently filing it.
-  if (mime.startsWith('image/')) {
+  // An image (with or without a caption) or ANY file WITH an explicit caption
+  // goes to the agent: it can read it (read_attachment → text extraction or
+  // vision) and do what the user actually asked — translate, summarize, check
+  // a receipt — instead of silently filing it. This used to only trigger for
+  // images: a PDF sent together with "переведи этот файл" fell straight
+  // through to the generic "saved" reply below and the request was dropped
+  // outright, never reaching the agent at all. A bare non-image file with no
+  // caption stays genuinely ambiguous and is just saved, same as before — the
+  // user can always ask about it later by name.
+  const hasCaption = !!caption?.trim()
+  if (mime.startsWith('image/') || hasCaption) {
     const ask = caption?.trim() || M.imageToAgent
-    const agentText = `${ask}\n\n[Вложение доступно: attachmentId="${att.id}", файл "${name}", тип ${mime}. Если нужно ответить по содержимому изображения (распознать чек, прочитать текст, посчитать суммы) — прочитай его через read_attachment с этим attachmentId.]`
+    const agentText = `${ask}\n\n[Вложение доступно: attachmentId="${att.id}", файл "${name}", тип ${mime}. Если нужно ответить по содержимому вложения (распознать текст, перевести, посчитать суммы) — прочитай его через read_attachment с этим attachmentId.]`
     return { agentText }
   }
   return { reply: M.savedSource }

@@ -829,27 +829,29 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
   // ── Files ────────────────────────────────────────────────────
   {
     name: 'read_document_url',
-    description: 'Скачать документ по URL и извлечь текстовое содержимое. Поддерживает: PDF, DOCX, XLSX, TXT, CSV, JSON, XML, HTML, MD и другие форматы.',
+    description: 'Скачать документ по URL и извлечь текстовое содержимое. Поддерживает: PDF, DOCX, XLSX, TXT, CSV, JSON, XML, HTML, MD и другие форматы. Скан PDF без текстового слоя автоматически распознаётся vision-моделью (нужен workspaceId).',
     input_schema: {
       type: 'object',
       properties: {
-        url:       { type: 'string', description: 'URL документа' },
-        maxLength: { type: 'number', description: 'Максимальная длина извлечённого текста (по умолчанию 20000)' },
-        sheetName: { type: 'string', description: 'Для XLSX: название листа (по умолчанию первый)' },
+        url:         { type: 'string', description: 'URL документа' },
+        maxLength:   { type: 'number', description: 'Максимальная длина извлечённого текста (по умолчанию 20000)' },
+        sheetName:   { type: 'string', description: 'Для XLSX: название листа (по умолчанию первый)' },
+        workspaceId: { type: 'string', description: 'ID воркспейса — нужен, только если документ окажется сканом PDF без текстового слоя (для vision-распознавания)' },
+        prompt:      { type: 'string', description: 'Только для скана PDF: что именно распознать/посчитать. По умолчанию — весь текст + позиции и итог.' },
       },
       required: ['url'],
     },
   },
   {
     name: 'read_attachment',
-    description: 'Прочитать содержимое файла, сохранённого в проекте. Документы (PDF, DOCX, XLSX, CSV, TXT…) — как read_document_url. Изображения (JPEG, PNG, чеки, фото, скриншоты) распознаются vision-моделью: можно прочитать текст, позиции и суммы с фото чека.',
+    description: 'Прочитать содержимое файла, сохранённого в проекте. Документы (PDF, DOCX, XLSX, CSV, TXT…) — как read_document_url. Изображения и сканы PDF без текстового слоя (JPEG, PNG, чеки, фото, скриншоты) распознаются vision-моделью: можно прочитать текст, позиции и суммы с фото чека.',
     input_schema: {
       type: 'object',
       properties: {
         attachmentId: { type: 'string', description: 'ID вложения (из list_sources или fetch_and_save_source)' },
         maxLength:    { type: 'number', description: 'Максимальная длина извлечённого текста (по умолчанию 20000)' },
         sheetName:    { type: 'string', description: 'Для XLSX: название листа' },
-        prompt:       { type: 'string', description: 'Только для изображений: что именно распознать/посчитать (напр. «перечисли позиции с ценами и посчитай сумму»). По умолчанию — весь текст + позиции и итог.' },
+        prompt:       { type: 'string', description: 'Только для изображений и сканов PDF: что именно распознать/посчитать (напр. «перечисли позиции с ценами и посчитай сумму»). По умолчанию — весь текст + позиции и итог.' },
       },
       required: ['attachmentId'],
     },
