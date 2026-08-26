@@ -55,7 +55,10 @@ export function ProviderConnect({
   reset?: () => Promise<void>
 }) {
   const t = useT().settings.connect
-  const connected = current.hasKey && !!current.model
+  // A key is what proves a HOSTED provider is set up. One that needs none —
+  // the in-stack embedder, ollama, pollinations — is configured as soon as it
+  // has a model; requiring a key kept its card permanently «unconfigured».
+  const connected = !!current.model && (current.hasKey || !!keyless?.(current.provider ?? ''))
   const [editing, setEditing] = useState(false)
 
   const [provider, setProvider] = useState(current.provider ?? '')

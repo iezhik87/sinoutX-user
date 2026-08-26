@@ -185,14 +185,16 @@ export function getManagedVision(): { provider: string; model: string; apiKey: s
 const EMBEDDINGS_BASE_URLS: Record<string, string> = {
   openai:     'https://api.openai.com/v1',
   openrouter: 'https://openrouter.ai/api/v1',
+  local:      'http://embeddings:80/v1',
   together:   'https://api.together.xyz/v1',
   mistral:    'https://api.mistral.ai/v1',
 }
 
 export function getManagedEmbeddings(): { apiKey: string; baseUrl: string; model: string } | null {
-  if (cache.embeddings.apiKey) {
+  // Same rule as the workspace resolver: the in-stack embedder needs no key.
+  if (cache.embeddings.apiKey || cache.embeddings.provider === 'local') {
     return {
-      apiKey: cache.embeddings.apiKey,
+      apiKey: cache.embeddings.apiKey ?? '',
       // The slot records WHICH provider was chosen — honour it. Defaulting to
       // OpenAI regardless sent an OpenRouter key to api.openai.com, which
       // answered 403 and left every embedding silently unwritten.

@@ -189,7 +189,7 @@ const adminApi = {
   testImage: (params: { provider: string; apiKey?: string; baseUrl?: string; model?: string; slot?: 'image' }) =>
     api.post<{ ok: boolean; error?: string; message?: string; models?: ModelOpt[] }>('/ai/settings/test-image', params).then((r) => r.data),
   testEmbeddings: (params: { provider: string; apiKey?: string; baseUrl?: string; model?: string; slot?: 'embeddings' }) =>
-    api.post<{ ok: boolean; error?: string; message?: string }>('/ai/settings/test-embeddings', params).then((r) => r.data),
+    api.post<{ ok: boolean; error?: string; message?: string; models?: ModelOpt[] }>('/ai/settings/test-embeddings', params).then((r) => r.data),
   testVision: (params: { provider: string; apiKey?: string; baseUrl?: string; model?: string; slot?: 'vision' }) =>
     api.post<{ ok: boolean; error?: string; models?: ModelOpt[] }>('/ai/settings/test-vision', params).then((r) => r.data),
   getCatalog: (refresh?: boolean) =>
@@ -967,28 +967,9 @@ function PricingCard() {
 
 const MANAGED_LLM_PROVIDERS = ['deepseek', 'anthropic', 'openai', 'openrouter', 'groq', 'mistral', 'google', 'xai', 'together', 'ollama', 'custom'] as const
 const MANAGED_IMAGE_PROVIDERS = ['pollinations', 'openai', 'openrouter', 'flux', 'stability', 'fal', 'custom'] as const
-const MANAGED_EMBED_PROVIDERS = ['openai', 'openrouter', 'mistral', 'together', 'custom'] as const
+// `local` is the embedder that ships with the stack — no key, no internet.
+const MANAGED_EMBED_PROVIDERS = ['local', 'openai', 'openrouter', 'mistral', 'together', 'custom'] as const
 
-// A chat /models listing has no embedding models in it, so the choice is a
-// curated short list per provider. OpenRouter proxies OpenAI's — note the
-// `openai/` prefix, which is why searching for the bare name there finds nothing.
-const EMBED_MODELS: Record<string, { id: string; label: string }[]> = {
-  openai: [
-    { id: 'text-embedding-3-small', label: 'text-embedding-3-small (дёшево, 1536)' },
-    { id: 'text-embedding-3-large', label: 'text-embedding-3-large (точнее, 3072)' },
-    { id: 'text-embedding-ada-002', label: 'text-embedding-ada-002 (старое)' },
-  ],
-  openrouter: [
-    { id: 'openai/text-embedding-3-small', label: 'openai/text-embedding-3-small' },
-    { id: 'openai/text-embedding-3-large', label: 'openai/text-embedding-3-large' },
-  ],
-  mistral: [{ id: 'mistral-embed', label: 'mistral-embed' }],
-  together: [
-    { id: 'BAAI/bge-large-en-v1.5', label: 'BAAI/bge-large-en-v1.5' },
-    { id: 'BAAI/bge-base-en-v1.5', label: 'BAAI/bge-base-en-v1.5' },
-  ],
-  custom: [],
-}
 const KEYLESS = new Set(['pollinations', 'ollama'])
 
 /**
@@ -1044,7 +1025,7 @@ function ManagedKeysCard() {
   // an embeddings key that cannot embed must fail here, not at first use.
   const listEmb = async (p: { provider: string; apiKey?: string; baseUrl?: string }) => {
     const r = await adminApi.testEmbeddings({ ...p, slot: 'embeddings' })
-    return { ok: r.ok, error: r.error }
+    return { ok: r.ok, error: r.error, models: r.models }
   }
 
   return (
@@ -1071,8 +1052,9 @@ function ManagedKeysCard() {
         save={(x) => saveSlot('image', x)} reset={() => resetSlot('image')} />
 
       <ProviderConnect title={m.slotEmbeddings} providers={MANAGED_EMBED_PROVIDERS}
+        keyless={(pv) => pv === 'local'}
         current={{ hasKey: data.embeddings.hasKey, provider: data.embeddings.provider, model: data.embeddings.model, baseUrl: data.embeddings.baseUrl }}
-        listModels={listEmb} staticModels={(pv) => EMBED_MODELS[pv] ?? []}
+        listModels={listEmb}
         save={(x) => saveSlot('embeddings', x)} reset={() => resetSlot('embeddings')} />
     </div>
   )

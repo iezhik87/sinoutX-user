@@ -214,6 +214,39 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  # ═══ Эмбеддинги: свой сервис, без интернета и без ключей ═══
+  # Часть стека по умолчанию — потому что хостовых вариантов практически не
+  # осталось: OpenRouter эмбеддинги больше не отдаёт вовсе, а OpenAI напрямую
+  # закрыт в ряде стран. Свой сервис снимает и то, и другое, а заодно тексты
+  # не уходят наружу — для self-hosted это и есть главный смысл.
+  #
+  # Модель по умолчанию многоязычная (в т.ч. русский), 384 измерения, ~0.5 ГБ
+  # на диске и заметно меньше в памяти. Крупнее и точнее: multilingual-e5-base
+  # или BAAI/bge-m3 — им нужно больше и того, и другого (см. EMBEDDINGS_MEM).
+  #
+  # ВАЖНО: сменив модель, вы меняете размерность вектора. Уже сохранённые
+  # эмбеддинги станут несопоставимы с новыми — их придётся переиндексировать.
+  #
+  # Backend НЕ ждёт его готовности: первая загрузка модели идёт минуты, и
+  # держать из-за неё весь стек незачем — семантика подключится, когда сервис
+  # поднимется.
+  embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+    restart: unless-stopped
+    command: ["--model-id", "${EMBEDDINGS_MODEL_ID:-intfloat/multilingual-e5-small}"]
+    volumes:
+      - embeddings_models:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 180s   # первая загрузка модели идёт дольше обычного старта
+    mem_limit: ${EMBEDDINGS_MEM:-1g}
+    cpus: 2.0
+    security_opt:
+      - no-new-privileges:true
+
   # ═══ MCP Server ═══
   mcp-server:
     build:
@@ -286,3 +319,4 @@ volumes:
   redis_data:
   ssl_certs:
   whisper_models:
+  embeddings_models:

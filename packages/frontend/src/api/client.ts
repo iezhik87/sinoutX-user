@@ -1372,7 +1372,7 @@ export interface AudioProviderConfig {
   baseUrl?: string
 }
 
-export type EmbeddingProvider = 'openai' | 'openrouter' | 'together' | 'mistral' | 'custom'
+export type EmbeddingProvider = 'openai' | 'openrouter' | 'together' | 'mistral' | 'local' | 'custom'
 export interface EmbeddingsProviderConfig {
   provider: EmbeddingProvider
   apiKey?: string
@@ -1517,7 +1517,7 @@ export const aiSettingsApi = {
     ).then((r) => r.data),
 
   testEmbeddingsConnection: (params: { provider: EmbeddingProvider; apiKey?: string; baseUrl?: string; model?: string }, workspaceId?: string) =>
-    api.post<{ ok: boolean; error?: string; message?: string }>(
+    api.post<{ ok: boolean; error?: string; message?: string; models?: ModelOption[] }>(
       `/ai/settings/test-embeddings${workspaceId ? `?workspaceId=${workspaceId}` : ''}`, params
     ).then((r) => r.data),
 

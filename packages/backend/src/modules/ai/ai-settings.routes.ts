@@ -5,6 +5,7 @@ import { createHmac } from 'crypto'
 import { getUserAISettings, saveAISettings, AI_DEFAULTS, completeOnce, embeddingsCfgFromParts, type AIProvider } from './ai.service.js'
 import { embed } from '../../lib/embeddings.js'
 import { listVisionModels, runExtraction } from '../../lib/modules/vision.js'
+import { listEmbeddingModels } from '../../lib/modelCatalog.js'
 import { config } from '../../config/index.js'
 import { getManagedAi, getManagedVision, getManagedImage, getManagedEmbeddings, managedSummary } from '../../lib/managed.js'
 import { getCustomTools, saveCustomTools, maskCustomTool, executeCustomTool, SKILL_BUILDER_SYSTEM, buildAssemblyUserMessage, parseAssembled, type CustomTool } from './ai.customtools.js'
@@ -68,7 +69,7 @@ const aiSettingsSchema = z.object({
   }).optional(),
   // Embeddings provider (separate BYOK key — semantic memory recall)
   embeddings: z.object({
-    provider: z.enum(['openai', 'openrouter', 'together', 'mistral', 'custom']),
+    provider: z.enum(['openai', 'openrouter', 'together', 'mistral', 'local', 'custom']),
     apiKey:   z.string().optional(),
     model:    z.string().optional(),
     baseUrl:  z.string().optional(),
@@ -469,13 +470,13 @@ export async function aiSettingsRoutes(app: FastifyInstance, prisma: PrismaClien
         { id: 'o3',              label: 'o3' },
         { id: 'o4-mini',         label: 'o4-mini' },
       ],
+      // Last-resort list, used only when OpenRouter itself cannot be asked. Kept
+      // short and checked against the live catalogue — a stale id here sends the
+      // user to a model that answers «no endpoints found».
       openrouter: [
-        { id: 'anthropic/claude-sonnet-4-5',    label: 'Claude Sonnet 4.5 (via OR)' },
-        { id: 'openai/gpt-4o',                  label: 'GPT-4o (via OR)' },
-        { id: 'google/gemini-2.0-flash-001',    label: 'Gemini 2.0 Flash (via OR)' },
-        { id: 'meta-llama/llama-3.3-70b-instruct', label: 'Llama 3.3 70B (via OR)' },
-        { id: 'deepseek/deepseek-r1',           label: 'DeepSeek R1 (via OR)' },
-        { id: 'qwen/qwen3-235b-a22b',           label: 'Qwen3 235B (via OR)' },
+        { id: 'openai/gpt-4o',        label: 'GPT-4o (via OR)' },
+        { id: 'deepseek/deepseek-r1', label: 'DeepSeek R1 (via OR)' },
+        { id: 'qwen/qwen3-235b-a22b', label: 'Qwen3 235B (via OR)' },
       ],
       ollama: [
         { id: 'llama3.2',    label: 'Llama 3.2' },
@@ -503,13 +504,10 @@ export async function aiSettingsRoutes(app: FastifyInstance, prisma: PrismaClien
           { id: 'dall-e-2', label: 'DALL-E 2' },
         ],
         openrouter: [
-          { id: 'black-forest-labs/flux.2-pro',             label: 'FLUX.2 Pro (BFL via OR)' },
-          { id: 'openai/gpt-5-image',                       label: 'GPT-5 Image (via OR)' },
+            { id: 'openai/gpt-5-image',                       label: 'GPT-5 Image (via OR)' },
           { id: 'openai/gpt-5-image-mini',                  label: 'GPT-5 Image Mini (via OR)' },
           { id: 'google/gemini-2.5-flash-image',            label: 'Gemini 2.5 Flash Image (via OR)' },
           { id: 'google/gemini-3-pro-image-preview',        label: 'Gemini 3 Pro Image (via OR)' },
-          { id: 'sourceful/riverflow-v2-pro',               label: 'Riverflow V2 Pro (via OR)' },
-          { id: 'sourceful/riverflow-v2-fast',              label: 'Riverflow V2 Fast (via OR)' },
         ],
         flux: [
           { id: 'flux-pro-1.1',   label: 'FLUX 1.1 Pro (лучший)' },
@@ -701,7 +699,7 @@ export async function aiSettingsRoutes(app: FastifyInstance, prisma: PrismaClien
     const { workspaceId } = z.object({ workspaceId: z.string().optional() }).parse(req.query)
     if (workspaceId && await denyIfNotMember(prisma, workspaceId, req.authUser!.id, reply)) return
     const body = z.object({
-      provider: z.enum(['openai', 'openrouter', 'together', 'mistral', 'custom']),
+      provider: z.enum(['openai', 'openrouter', 'together', 'mistral', 'local', 'custom']),
       apiKey:   z.string().optional(),
       baseUrl:  z.string().optional(),
       model:    z.string().optional(),
@@ -719,15 +717,33 @@ export async function aiSettingsRoutes(app: FastifyInstance, prisma: PrismaClien
       const managed = getManagedEmbeddings()
       if (managed) apiKey = managed.apiKey
     }
-    if (!apiKey) return reply.send({ ok: false, error: 'API ключ обязателен' })
+    // The embedder that runs inside the stack has no key and needs none —
+    // demanding one here is what made the whole local path unreachable.
+    if (!apiKey && body.provider !== 'local') {
+      return reply.send({ ok: false, error: 'API ключ обязателен' })
+    }
 
-    const cfg = embeddingsCfgFromParts(body.provider, apiKey, body.baseUrl, body.model)
+    // Ask the provider which embedding models it actually serves. The list we
+    // used to ship went stale: both OpenRouter ids in it were retired, and
+    // OpenRouter now offers no embedding model at all.
+    const models = await listEmbeddingModels(body.provider, apiKey, body.baseUrl)
+
+    // Listing only — the form is still being filled in.
+    if (!body.model) {
+      return reply.send({
+        ok: true,
+        models,
+        ...(models.length ? {} : { error: 'Этот провайдер не отдаёт моделей эмбеддингов — впишите id вручную или выберите другого.' }),
+      })
+    }
+
+    const cfg = embeddingsCfgFromParts(body.provider, apiKey ?? '', body.baseUrl, body.model)
     try {
       const vecs = await embed(['ping'], cfg)
       if (!vecs || !vecs[0]?.length) {
-        return reply.send({ ok: false, error: `Эмбеддинг не получен. Проверьте ключ/модель/URL (${cfg.baseUrl}/embeddings, model=${cfg.model}).` })
+        return reply.send({ ok: false, models, error: `Эмбеддинг не получен. Проверьте ключ/модель/URL (${cfg.baseUrl}/embeddings, model=${cfg.model}).` })
       }
-      return reply.send({ ok: true, message: `OK — ${cfg.model}, размерность ${vecs[0].length}` })
+      return reply.send({ ok: true, models, message: `OK — ${cfg.model}, размерность ${vecs[0].length}` })
     } catch (e) {
       return reply.send({ ok: false, error: e instanceof Error ? e.message : 'Ошибка соединения' })
     }

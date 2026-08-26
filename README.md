@@ -165,7 +165,10 @@ sinout/
 ### Prerequisites
 
 - Docker + Docker Compose
-- 4 GB RAM (8 GB recommended — Meilisearch, SearXNG and Whisper are hungry)
+- 4 GB RAM (8 GB recommended — Meilisearch, SearXNG, Whisper and the
+  embedder are hungry). The embedder can be turned off with
+  `EMBEDDINGS_LOCAL_OFF=true` if memory is tight; semantic recall then
+  needs an external provider or does nothing.
 
 > **Windows / macOS:** this is memory *allocated to Docker Desktop* (Settings →
 > Resources), not your total system RAM — Docker Desktop runs in its own VM/WSL2

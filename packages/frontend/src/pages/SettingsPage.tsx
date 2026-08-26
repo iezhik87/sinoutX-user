@@ -742,22 +742,10 @@ function ApiKeysTab() {
 
 // 'sinoutx' is prepended at render time only when the server reports a key for it.
 const USER_IMAGE_PROVIDERS = ['pollinations', 'openai', 'openrouter', 'flux', 'stability', 'fal', 'custom'] as const
-const USER_EMBED_PROVIDERS = ['openai', 'openrouter', 'mistral', 'together', 'custom'] as const
+// `local` is the embedder that ships with the stack — no key, no internet.
+const USER_EMBED_PROVIDERS = ['local', 'openai', 'openrouter', 'mistral', 'together', 'custom'] as const
 // A chat /models listing has no embedding models; OpenRouter proxies OpenAI's
 // under the `openai/` prefix, which is why the bare name is not findable there.
-const USER_EMBED_MODELS: Record<string, { id: string; label: string }[]> = {
-  openai: [
-    { id: 'text-embedding-3-small', label: 'text-embedding-3-small' },
-    { id: 'text-embedding-3-large', label: 'text-embedding-3-large' },
-  ],
-  openrouter: [
-    { id: 'openai/text-embedding-3-small', label: 'openai/text-embedding-3-small' },
-    { id: 'openai/text-embedding-3-large', label: 'openai/text-embedding-3-large' },
-  ],
-  mistral: [{ id: 'mistral-embed', label: 'mistral-embed' }],
-  together: [{ id: 'BAAI/bge-large-en-v1.5', label: 'BAAI/bge-large-en-v1.5' }],
-  custom: [],
-}
 
 const ALL_PROVIDERS: AIProvider[] = ['anthropic', 'openai', 'openrouter', 'groq', 'mistral', 'google', 'xai', 'together', 'perplexity', 'deepseek', 'ollama', 'custom']
 
@@ -1068,9 +1056,9 @@ function AIAssistantTab({ workspaceId }: { workspaceId: string }) {
         <ProviderConnect
           title={isRu ? 'Эмбеддинги (память по смыслу)' : 'Embeddings (semantic memory)'}
           providers={USER_EMBED_PROVIDERS}
+          keyless={(pv) => pv === 'local'}
           current={embCurrent}
-          staticModels={(pv) => USER_EMBED_MODELS[pv] ?? []}
-          listModels={(x) => aiSettingsApi.testEmbeddingsConnection({ provider: x.provider as EmbeddingProvider, apiKey: x.apiKey, baseUrl: x.baseUrl }, workspaceId).then((r) => ({ ok: r.ok, error: r.error }))}
+          listModels={(x) => aiSettingsApi.testEmbeddingsConnection({ provider: x.provider as EmbeddingProvider, apiKey: x.apiKey, baseUrl: x.baseUrl }, workspaceId).then((r) => ({ ok: r.ok, error: r.error, models: r.models }))}
           save={(x) => saveSlot({ embeddings: { provider: x.provider as EmbeddingProvider, apiKey: x.apiKey, model: x.model, baseUrl: x.baseUrl } })}
           reset={() => saveSlot({ resetEmbeddings: true })}
         />
@@ -2023,15 +2011,54 @@ function WalletCard() {
           <div className={cn('h-full rounded-full', capPct > 80 ? 'bg-amber-500' : 'bg-primary-500')} style={{ width: `${capPct}%` }} />
         </div>
         <p className="text-[11px] text-slate-500 mt-1.5">{w.capHint}</p>
-        {wallet.nextChargeAt && (
+        {/* The bill, before it happens. Everything for it was already computed and
+            sent — it just was not shown, so «what will I be charged, and for
+            what» had no answer anywhere on screen. */}
+        {wallet.upcoming ? (
+          <div className="mt-2.5 pt-2.5 border-t border-slate-800/60 text-[11px]">
+            <div className="flex justify-between text-slate-500">
+              <span>
+                {w.nextCharge}
+                {wallet.nextChargeAt && (
+                  <span className="text-slate-400"> · {new Date(wallet.nextChargeAt).toLocaleDateString(language)}</span>
+                )}
+              </span>
+              <span className="text-slate-300 tabular-nums">{money(wallet.upcoming.totalUsd)}</span>
+            </div>
+            <div className="flex justify-between text-slate-600 mt-1">
+              <span>{w.billBase}</span>
+              <span className="tabular-nums">{money(wallet.upcoming.baseUsd)}</span>
+            </div>
+            {wallet.upcoming.packs > 0 && (
+              <div className="flex justify-between text-slate-600">
+                <span>{w.billPacks}: {wallet.upcoming.packs} × {wallet.storage.packMb} {w.mb}</span>
+                <span className="tabular-nums">{money(wallet.upcoming.storageUsd)}</span>
+              </div>
+            )}
+            {/* Tokens are charged as they are burned, not on this date — saying so
+                stops the total from reading as «everything I will pay». */}
+            <p className="text-slate-600 mt-1.5">{w.billTokensNote}</p>
+            {/* A sum with no date reads as a mistake. On a cloud instance the bill
+                is always computed, but the cycle only starts at the first top-up —
+                say which of the two the user is looking at. */}
+            {!wallet.nextChargeAt && <p className="text-slate-600 mt-1">{w.billNotStarted}</p>}
+          </div>
+        ) : wallet.nextChargeAt ? (
           <p className="text-[11px] text-slate-500 mt-1">
             {w.nextCharge}: <span className="text-slate-400">{new Date(wallet.nextChargeAt).toLocaleDateString(language)}</span>
           </p>
+        ) : wallet.cloud && (
+          // No cycle yet: it starts at the first top-up. Without this line the
+          // screen simply says nothing, and «why was I not charged» has no answer.
+          <p className="text-[11px] text-slate-500 mt-1">{w.billNotStarted}</p>
         )}
       </div>
 
-      {/* Storage — bought in packs, never metered into a surprise bill. The bar
-          is the whole explanation: what you hold, what you use, what it costs. */}
+      {/* Storage. The old block showed one bar and a «buy pack» button, which
+          answered none of the questions people actually have: how much of this
+          space is mine for free, how much am I renting, what does it cost me
+          every month, and what happens if I press «remove». Each line here is
+          one of those answers. */}
       {(
         <div className="border-t border-slate-800 pt-4">
           <div className="flex justify-between text-xs text-slate-500 mb-1">
@@ -2050,24 +2077,63 @@ function WalletCard() {
               />
             </div>
           )}
-          {wallet.cloud && (
-          <div className="flex flex-wrap items-center gap-2 mt-2.5">
-            <button onClick={() => setPacks(wallet.storage.packs + 1)} disabled={busy} className="btn border border-slate-600 text-slate-200 hover:bg-slate-700/50 text-xs font-medium px-3 py-1.5 rounded-lg disabled:opacity-50">
-              {w.buyPack} · +{wallet.storage.packMb} {w.mb} · ${wallet.storage.packPriceUsd.toFixed(2)}/{w.perMonth}
-            </button>
-            {wallet.storage.packs > 0 && (
-              <button onClick={() => setPacks(wallet.storage.packs - 1)} disabled={busy} className="btn-ghost text-xs px-2.5 py-1.5 text-slate-500">
-                − {w.removePack}
-              </button>
-            )}
-            <span className="text-[11px] text-slate-600">
-              {w.packsHeld}: {wallet.storage.packs}
-            </span>
-          </div>
+
+          {/* Where the space comes from, and what each part costs. */}
+          {wallet.cloud && wallet.storage.limitMb !== -1 && (
+            <div className="mt-3 text-xs">
+              <div className="flex justify-between py-1 border-b border-slate-800/60">
+                <span className="text-slate-400">{w.storageIncluded}</span>
+                <span className="text-slate-300 tabular-nums">
+                  {wallet.storage.freeMb} {w.mb} <span className="text-slate-600">· {w.storageFree}</span>
+                </span>
+              </div>
+              <div className="flex justify-between py-1 border-b border-slate-800/60">
+                <span className="text-slate-400">
+                  {w.packsHeld}: {wallet.storage.packs}
+                  {wallet.storage.packs > 0 && (
+                    <span className="text-slate-600"> × {wallet.storage.packMb} {w.mb}</span>
+                  )}
+                </span>
+                <span className="text-slate-300 tabular-nums">
+                  {wallet.storage.packs * wallet.storage.packMb} {w.mb}
+                  {wallet.storage.packs > 0 && (
+                    <span className="text-amber-400/90">
+                      {' · '}${(wallet.storage.packs * wallet.storage.packPriceUsd).toFixed(2)}/{w.perMonth}
+                    </span>
+                  )}
+                </span>
+              </div>
+              <div className="flex justify-between py-1 font-medium">
+                <span className="text-slate-300">{w.storageTotal}</span>
+                <span className="text-slate-200 tabular-nums">{wallet.storage.limitMb} {w.mb}</span>
+              </div>
+            </div>
           )}
-          <p className="text-[11px] text-slate-500 mt-1.5">
-            {wallet.storage.limitMb === -1 ? w.storageOwn : wallet.cloud ? w.packMonthly : w.storageHint}
-          </p>
+
+          {wallet.cloud && (
+            <div className="flex flex-wrap items-center gap-2 mt-3">
+              <button onClick={() => setPacks(wallet.storage.packs + 1)} disabled={busy} className="btn border border-slate-600 text-slate-200 hover:bg-slate-700/50 text-xs font-medium px-3 py-1.5 rounded-lg disabled:opacity-50">
+                {w.buyPack} · +{wallet.storage.packMb} {w.mb} · ${wallet.storage.packPriceUsd.toFixed(2)}/{w.perMonth}
+              </button>
+              {wallet.storage.packs > 0 && (
+                <button onClick={() => setPacks(wallet.storage.packs - 1)} disabled={busy} className="btn-ghost text-xs px-2.5 py-1.5 text-slate-500 hover:text-slate-300">
+                  − {w.removePack}
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Spell out the rental, because «buy a pack» reads like a purchase. */}
+          {wallet.cloud && wallet.storage.limitMb !== -1 ? (
+            <div className="mt-2.5 space-y-1">
+              <p className="text-[11px] text-slate-500">{w.packRental}</p>
+              {wallet.storage.packs > 0 && <p className="text-[11px] text-slate-500">{w.packRelease}</p>}
+            </div>
+          ) : (
+            <p className="text-[11px] text-slate-500 mt-1.5">
+              {wallet.storage.limitMb === -1 ? w.storageOwn : w.storageHint}
+            </p>
+          )}
         </div>
       )}
 

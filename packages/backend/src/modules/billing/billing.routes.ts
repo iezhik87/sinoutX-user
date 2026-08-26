@@ -227,6 +227,23 @@ export async function billingRoutes(app: FastifyInstance, prisma: PrismaClient) 
   // ── POST /wallet/storage-packs ───────────────────────────────────────
   // Storage is bought, never metered into a surprise. `packs` is the absolute
   // number the user wants to hold; the delta is charged (or released) at once.
+  /**
+   * How much of the current billing cycle is still ahead, 0..1. A pack taken
+   * mid-cycle is charged for that share only — the next monthly bill covers it
+   * in full from then on. Without a known cycle end (nobody has been billed
+   * yet), the first bill is a whole month away, so nothing is due now.
+   */
+  function remainingCycleShare(nextChargeAt: Date | null): number {
+    if (!nextChargeAt) return 0
+    const msLeft = nextChargeAt.getTime() - Date.now()
+    if (msLeft <= 0) return 0  // the bill is already due and will charge in full
+    // Months differ in length — measure THIS cycle instead of assuming 30 days.
+    const start = new Date(nextChargeAt)
+    start.setUTCMonth(start.getUTCMonth() - 1)
+    const span = nextChargeAt.getTime() - start.getTime()
+    return span > 0 ? Math.min(1, msLeft / span) : 0
+  }
+
   app.post('/wallet/storage-packs', async (req, reply) => {
     if (!isBillingEnabled()) {
       return reply.status(400).send({ error: 'This instance does not bill for storage' })
@@ -236,7 +253,7 @@ export async function billingRoutes(app: FastifyInstance, prisma: PrismaClient) 
 
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      select: { storagePacks: true, balanceMicroUsd: true, storageLimitMb: true },
+      select: { storagePacks: true, balanceMicroUsd: true, storageLimitMb: true, nextChargeAt: true },
     })
     if (!user) return reply.status(404).send({ error: 'Not found' })
 
@@ -244,19 +261,32 @@ export async function billingRoutes(app: FastifyInstance, prisma: PrismaClient) 
     if (delta === 0) return reply.send({ packs: body.packs })
 
     if (delta > 0) {
-      // The pack is paid for the moment it is taken. Charging only at the end of
-      // the month would let a user buy space, fill it, and drop the pack before
-      // the bill runs.
-      const cost = toMicroUsd(delta * config.PRICE_STORAGE_PACK_USD)
-      if (user.balanceMicroUsd < cost) {
+      // The pack is paid for the moment it is taken, so nobody can buy space,
+      // fill it and drop the pack before the bill runs. But the monthly bill
+      // charges for every pack held, so a full price here billed the first
+      // period TWICE — buy a pack the day before the cycle closes and you paid
+      // a whole month for that one day, then a whole month again. Charge only
+      // the remaining days of the current cycle; the bill takes it from there.
+      const full = toMicroUsd(delta * config.PRICE_STORAGE_PACK_USD)
+      const cost = toMicroUsd(delta * config.PRICE_STORAGE_PACK_USD * remainingCycleShare(user.nextChargeAt))
+
+      // Nothing is charged before the cycle starts (it is anchored to the first
+      // top-up), and the first bill then takes the packs in full. But «charge
+      // nothing» must not mean «take space for free»: an account that never
+      // tops up could hold the maximum 200 packs and never pay. Require the
+      // money to be there for the bill that is coming.
+      const required = cost > 0 ? cost : full
+      if (user.balanceMicroUsd < required) {
         return reply.status(402).send({
           error: 'insufficient_balance',
-          neededUsd: fromMicroUsd(cost),
+          neededUsd: fromMicroUsd(required),
           balanceUsd: fromMicroUsd(user.balanceMicroUsd),
         })
       }
-      const left = await adjust(prisma, userId, -cost, `storage: +${delta} × ${config.STORAGE_PACK_MB} MB`)
-      if (left === null) return reply.status(500).send({ error: 'charge failed' })
+      if (cost > 0) {
+        const left = await adjust(prisma, userId, -cost, `storage: +${delta} × ${config.STORAGE_PACK_MB} MB (pro rata)`)
+        if (left === null) return reply.status(500).send({ error: 'charge failed' })
+      }
     } else {
       // Releasing a pack must not leave the user above his own limit: the files
       // are already on our disk, and we are not going to delete them for him.

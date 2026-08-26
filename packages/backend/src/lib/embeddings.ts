@@ -15,11 +15,17 @@ export interface EmbeddingsConfig {
 }
 
 export async function embed(texts: string[], cfg: EmbeddingsConfig): Promise<number[][] | null> {
-  if (!cfg?.apiKey || texts.length === 0) return null
+  // A key is required of a hosted provider, but a local embedder has none —
+  // demanding one made self-hosting semantic memory impossible, which is the
+  // only option left where the hosted ones are geo-blocked.
+  if (!cfg?.baseUrl || texts.length === 0) return null
   try {
     const res = await fetch(`${cfg.baseUrl.replace(/\/$/, '')}/embeddings`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.apiKey}` },
+      headers: {
+        'content-type': 'application/json',
+        ...(cfg.apiKey ? { authorization: `Bearer ${cfg.apiKey}` } : {}),
+      },
       body: JSON.stringify({ model: cfg.model, input: texts }),
       signal: AbortSignal.timeout(30_000),
     })
@@ -145,7 +151,10 @@ function stripPrivate(data: unknown): unknown {
 
 // Compute + upsert the embedding for a single record. Safe to fire-and-forget.
 export async function indexRecord(prisma: PrismaClient, rec: { id: string; collectionId: string; data: unknown }, workspaceId: string, cfg: EmbeddingsConfig): Promise<void> {
-  if (!cfg?.apiKey) return
+  // A base URL is what makes the config usable; the key is optional, because the
+  // embedder running inside the stack has none. Checking the key here meant
+  // nothing was ever indexed against a local embedder — silently.
+  if (!cfg?.baseUrl) return
   const text = recordText(rec.data)
   if (!text.trim()) return
   const hash = textHash(text, cfg.model)

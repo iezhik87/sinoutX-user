@@ -54,7 +54,7 @@ export interface AudioProviderConfig {
 }
 
 // Embeddings provider — separate BYOK key (chat/image/video use their own keys).
-export type EmbeddingProvider = 'openai' | 'openrouter' | 'together' | 'mistral' | 'custom'
+export type EmbeddingProvider = 'openai' | 'openrouter' | 'together' | 'mistral' | 'local' | 'custom'
 export interface EmbeddingsProviderConfig {
   provider: EmbeddingProvider
   apiKey?: string
@@ -889,6 +889,10 @@ const EMBED_DEFAULTS: Record<EmbeddingProvider, { baseUrl: string; model: string
   openrouter: { baseUrl: 'https://openrouter.ai/api/v1',  model: 'openai/text-embedding-3-small' },
   together:   { baseUrl: 'https://api.together.xyz/v1',   model: 'BAAI/bge-large-en-v1.5' },
   mistral:    { baseUrl: 'https://api.mistral.ai/v1',     model: 'mistral-embed' },
+  // The embedder that ships with the stack (compose service `embeddings`).
+  // Needs no key and no internet, which is the point: the hosted providers are
+  // either gone (OpenRouter serves none) or geo-blocked.
+  local:      { baseUrl: 'http://embeddings:80/v1',        model: 'intfloat/multilingual-e5-small' },
   custom:     { baseUrl: '',                              model: 'text-embedding-3-small' },
 }
 
@@ -898,9 +902,12 @@ const EMBED_DEFAULTS: Record<EmbeddingProvider, { baseUrl: string; model: string
 export async function getEmbeddingsConfig(workspaceId: string, prisma: PrismaClient): Promise<EmbeddingsConfig | null> {
   const s = await getAISettings(workspaceId, prisma)
   const e = s.embeddings
-  if (e?.apiKey) {
+  // A key proves a hosted provider was configured. The in-stack embedder has no
+  // key, so requiring one dropped its config on the floor and silently fell
+  // through to the managed/env path.
+  if (e?.apiKey || e?.provider === 'local') {
     const d = EMBED_DEFAULTS[e.provider] ?? EMBED_DEFAULTS.openai
-    return { apiKey: e.apiKey, baseUrl: e.baseUrl || d.baseUrl, model: e.model || d.model }
+    return { apiKey: e.apiKey ?? '', baseUrl: e.baseUrl || d.baseUrl, model: e.model || d.model }
   }
   // Ours, set in the admin panel (falls back to the legacy EMBEDDINGS_* env).
   // Only for a user who opted into the managed model and can pay for it; the
@@ -908,6 +915,13 @@ export async function getEmbeddingsConfig(workspaceId: string, prisma: PrismaCli
   const managedEmb = await managedEmbeddingsFor(prisma, workspaceId)
   if (managedEmb) {
     return managedEmb
+  }
+  // Nothing configured — use the embedder that ships with the stack. It costs
+  // nothing and needs no key, so «not configured» has no reason to mean «no
+  // semantic memory». Set EMBEDDINGS_LOCAL_OFF=true to opt out (the service can
+  // be scaled to zero, but then every recall would try it and fail quietly).
+  if (process.env.EMBEDDINGS_LOCAL_OFF !== 'true') {
+    return { apiKey: '', ...EMBED_DEFAULTS.local }
   }
   return null
 }

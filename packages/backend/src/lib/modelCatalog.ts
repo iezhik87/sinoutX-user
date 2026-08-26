@@ -140,3 +140,49 @@ export async function listImageGenModels(): Promise<{ id: string; label: string 
     .map((m) => ({ id: m.id, label: m.name }))
     .sort((a, b) => a.label.localeCompare(b.label))
 }
+
+/**
+ * Models that turn text into a vector, asked of the provider itself.
+ * Shipping a fixed list rotted here too: both OpenRouter ids we offered
+ * (`openai/text-embedding-3-*`) have been retired, and OpenRouter now serves
+ * no embedding model at all — so an empty answer is the honest one, not a
+ * fallback to names that no longer resolve.
+ */
+export async function listEmbeddingModels(
+  provider: string, apiKey?: string, baseUrl?: string,
+): Promise<{ id: string; label: string }[]> {
+  const DEFAULT_BASE: Record<string, string> = {
+    openai: 'https://api.openai.com/v1',
+    openrouter: 'https://openrouter.ai/api/v1',
+    mistral: 'https://api.mistral.ai/v1',
+    together: 'https://api.together.xyz/v1',
+    local: 'http://embeddings:80/v1',
+  }
+  const base = (baseUrl || DEFAULT_BASE[provider] || '').replace(/\/$/, '')
+  if (!base) return []
+  try {
+    // The embedder in the stack serves exactly one model and has no /v1/models
+    // (it answers 404). It does report what it loaded at /info — and its name
+    // need not contain «embed», so the filter below would drop it anyway.
+    if (provider === 'local') {
+      const res = await fetch(`${base.replace(/\/v1$/, '')}/info`, { signal: AbortSignal.timeout(10_000) })
+      if (!res.ok) return []
+      const info = await res.json() as { model_id?: string; served_model_name?: string }
+      const id = info.served_model_name || info.model_id
+      return id ? [{ id, label: id }] : []
+    }
+
+    const res = await fetch(`${base}/models`, {
+      signal: AbortSignal.timeout(15_000),
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
+    })
+    if (!res.ok) return []
+    const data = await res.json() as { data?: { id: string; name?: string }[] }
+    return (data.data ?? [])
+      .filter((m) => /embed/i.test(m.id) || /embed/i.test(m.name ?? ''))
+      .map((m) => ({ id: m.id, label: m.name ?? m.id }))
+      .sort((a, b) => a.id.localeCompare(b.id))
+  } catch {
+    return []
+  }
+}
