@@ -3,13 +3,11 @@ import type { PrismaClient } from '@prisma/client'
 import { z } from 'zod'
 import { denyIfNotMember, denyIfNoProjectAccess, getProjectWorkspaceId } from '../../lib/requireAccess.js'
 import { listCatalog, listInstalled, installModule, uninstallModule, importManifest, importManifestFromUrl, getManifest, listMine, removeModuleProject } from '../../lib/modules/service.js'
-import { ocrProvidersPublic, type OcrConfig } from '../../lib/modules/vision.js'
+import { ocrProvidersPublic } from '../../lib/modules/vision.js'
 import { runMedicalScan, runReceiptScan } from '../../lib/modules/pipelines.js'
-import { getManagedVision } from '../../lib/managed.js'
-import { managedVisionFor, canUseManaged } from '../../lib/managedAccess.js'
+import { resolveVisionOcr } from '../../lib/visionResolve.js'
 import { buildModulePdf, buildMedcardSummaryPdf } from '../../lib/modules/module-pdf.js'
 import { checkPipelineAccess, incrementPipelineUsage } from '../../lib/plans.js'
-import { encryptSecret, decryptSecret } from '../../lib/crypto.js'
 import { indexRecord, recallRecords } from '../../lib/embeddings.js'
 import { secretKeysOf, encodeSecrets, maskSecrets, maskRecord, revealSecret } from '../../lib/recordSecrets.js'
 import { getEmbeddingsConfig } from '../ai/ai.service.js'
@@ -505,52 +503,16 @@ export async function collectionsRoutes(app: FastifyInstance, prisma: PrismaClie
     return reply.send({ created, month: targetYM })
   })
 
-  // GET /projects/:projectId/ocr-config — OCR settings (no secret returned).
+  // GET /projects/:projectId/ocr-config — can this project recognise documents?
+  // Recognition is configured per user (Settings → AI) or per instance (admin),
+  // never here any more; the module screen only needs to know whether it works.
   app.get('/projects/:projectId/ocr-config', async (req, reply) => {
     const { projectId } = z.object({ projectId: z.string() }).parse(req.params)
-    const proj = await prisma.project.findUnique({ where: { id: projectId }, select: { workspaceId: true, settings: true } })
+    const proj = await prisma.project.findUnique({ where: { id: projectId }, select: { workspaceId: true } })
     if (!proj) return reply.status(404).send({ error: 'Not found' })
     if (await denyIfNotMember(prisma, proj.workspaceId, req.authUser!.id, reply, { allowViewer: true })) return
-    const ocr = ((proj.settings as Record<string, unknown>)?.ocr ?? {}) as Record<string, string>
-    // `managedFallback` tells the UI that recognition works even with no key here.
-    return reply.send({
-      provider: ocr.provider ?? 'openrouter', model: ocr.model ?? '', baseUrl: ocr.baseUrl ?? '',
-      hasKey: !!ocr.apiKey, managedFallback: !ocr.apiKey && (await canUseManaged(prisma, req.authUser!.id)).ok && !!getManagedVision(),
-    })
-  })
-
-  // PATCH /projects/:projectId/ocr-config — save OCR settings (key encrypted).
-  app.patch('/projects/:projectId/ocr-config', async (req, reply) => {
-    const { projectId } = z.object({ projectId: z.string() }).parse(req.params)
-    // `reset: true` forgets the module's own key entirely — recognition then
-    // falls back to the instance key, or stops, which is the honest outcome.
-    const body = z.object({
-      provider: z.string().optional(),
-      model: z.string().optional(),
-      baseUrl: z.string().optional(),
-      apiKey: z.string().optional(),
-      reset: z.boolean().optional(),
-    }).parse(req.body)
-    const proj = await prisma.project.findUnique({ where: { id: projectId }, select: { workspaceId: true, settings: true } })
-    if (!proj) return reply.status(404).send({ error: 'Not found' })
-    if (await denyIfNotMember(prisma, proj.workspaceId, req.authUser!.id, reply)) return
-    const cur = (proj.settings as Record<string, unknown>) ?? {}
-
-    if (body.reset) {
-      const next = { ...cur }
-      delete next.ocr
-      await prisma.project.update({ where: { id: projectId }, data: { settings: next as object } })
-      return reply.send({ ok: true, reset: true })
-    }
-
-    if (!body.provider || !body.model) return reply.status(400).send({ error: 'provider and model are required' })
-
-    const prev = (cur.ocr ?? {}) as Record<string, string>
-    const ocr: Record<string, string> = { provider: body.provider, model: body.model, baseUrl: body.baseUrl ?? '' }
-    if (body.apiKey) ocr.apiKey = encryptSecret(body.apiKey)!
-    else if (prev.apiKey) ocr.apiKey = prev.apiKey
-    await prisma.project.update({ where: { id: projectId }, data: { settings: { ...cur, ocr } as object } })
-    return reply.send({ ok: true })
+    const ocr = await resolveVisionOcr(prisma, proj.workspaceId, req.authUser!.id, 'check')
+    return reply.send({ available: !!ocr })
   })
 
   // POST /projects/:projectId/pipeline/:pipelineId — run a module's premium
@@ -564,22 +526,14 @@ export async function collectionsRoutes(app: FastifyInstance, prisma: PrismaClie
     const proj = await prisma.project.findUnique({ where: { id: projectId }, select: { workspaceId: true, settings: true, moduleId: true } })
     if (!proj) return reply.status(404).send({ error: 'Not found' })
     if (await denyIfNotMember(prisma, proj.workspaceId, req.authUser!.id, reply)) return
-    // The module's own key wins. Ours is offered only to a user who opted into
-    // the managed model, is not frozen and has a balance — his tokens are then
-    // charged to that balance.
-    const ocrRaw = ((proj.settings as Record<string, unknown>)?.ocr ?? {}) as Record<string, string>
-    const useOwn = !!(ocrRaw.apiKey && ocrRaw.model)
-    const managedOcr = useOwn ? null : await managedVisionFor(prisma, proj.workspaceId, req.authUser!.id, 'web')
-    if (!useOwn && !managedOcr) return reply.status(400).send({ error: 'ocr_not_configured' })
+    const ocr = await resolveVisionOcr(prisma, proj.workspaceId, req.authUser!.id, 'web')
+    if (!ocr) return reply.status(400).send({ error: 'ocr_not_configured' })
     // Tier-2 gating: Pro/Team (or instance owner) unlimited; free plan gets a few trials PER MODULE.
     const access = await checkPipelineAccess(prisma, proj.workspaceId, proj.moduleId)
     if (!access.ok) return reply.status(402).send({ error: 'premium_required', plan: access.plan })
     const chunks: Buffer[] = []
     for await (const c of data.file) chunks.push(c)
     const buffer = Buffer.concat(chunks)
-    const ocr: OcrConfig = useOwn
-      ? { provider: ocrRaw.provider, model: ocrRaw.model, baseUrl: ocrRaw.baseUrl, apiKey: decryptSecret(ocrRaw.apiKey)! }
-      : managedOcr!
     const fileArg = { buffer, mime: data.mimetype, filename: data.filename || 'document' }
     try {
       const result = pipelineId === 'receipt-scan'

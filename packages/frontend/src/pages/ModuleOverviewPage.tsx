@@ -1,16 +1,14 @@
-import { useRef, useState } from 'react'
+import { useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Loader2, LayoutDashboard, ClipboardList, Pill, ScanText, Settings, Download, Wallet, Target, FileText, CopyPlus, Upload } from 'lucide-react'
+import { Loader2, LayoutDashboard, ClipboardList, Pill, ScanText, Download, Wallet, Target, FileText, CopyPlus, Upload } from 'lucide-react'
 import { collectionApi, projectApi, moduleApi } from '@/api/client'
 import { Header } from '@/components/layout/Header'
-import { OcrSettingsModal } from '@/components/modules/OcrSettingsModal'
 import { renderIcon } from '@/components/common/EmojiPicker'
 import { useLanguageStore } from '@/stores/languageStore'
 import { pickLocalized } from '@/lib/localized'
 import { toast } from '@/stores/toastStore'
 import { useT } from '@/i18n'
-import { cn } from '@/lib/utils'
 
 export function ModuleOverviewPage() {
   const { projectId } = useParams<{ projectId: string }>()
@@ -19,7 +17,6 @@ export function ModuleOverviewPage() {
   const { language } = useLanguageStore()
   const tt = useT().collections
   const L = (en: string, ru: string, be: string) => (language === 'en' ? en : language === 'be' ? be : ru)
-  const [ocrOpen, setOcrOpen] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
   const { data: project } = useQuery({ queryKey: ['project', projectId], queryFn: () => projectApi.getById(projectId!), enabled: !!projectId })
@@ -35,11 +32,16 @@ export function ModuleOverviewPage() {
     : project?.name
 
   const scanPipeline = moduleInfo?.pipelines?.[0]
-  // Either the module has its own key, or the instance lends its own. Both mean
-  // «send me a receipt and I will read it», which is all this flag is asked.
-  const ocrConfigured = (!!ocrCfg?.hasKey && !!ocrCfg?.model) || !!ocrCfg?.managedFallback
+  // Whether recognition works at all — from the user's own key or the instance's.
+  // Where that key is configured is not this screen's business.
+  const ocrConfigured = !!ocrCfg?.available
   const ocrLocked = !!access && !access.premium && access.trialsLeft <= 0
   const upgradeMsg = L('Document recognition is a Pro feature', 'Распознавание документов — функция Pro', 'Распазнаванне дакументаў — функцыя Pro')
+  const notConfiguredMsg = L(
+    'Set up recognition in Settings → AI → Recognition',
+    'Настройте распознавание в Настройках → AI → Распознавание',
+    'Наладзьце распазнаванне ў Наладах → AI → Распазнаванне',
+  )
 
   const scanMut = useMutation({
     mutationFn: (file: File) => collectionApi.runScan(projectId!, file, scanPipeline?.id),
@@ -60,7 +62,7 @@ export function ModuleOverviewPage() {
     onError: (e: unknown) => {
       const msg = e instanceof Error ? e.message : String(e)
       if (msg.includes('premium_required')) { qc.invalidateQueries({ queryKey: ['pipeline-access', projectId] }); toast.error(`🔒 ${upgradeMsg}`) }
-      else if (msg.includes('ocr_not_configured')) { setOcrOpen(true); toast.error(L('Configure recognition', 'Настройте распознавание', 'Наладзьце распазнаванне')) }
+      else if (msg.includes('ocr_not_configured')) toast.error(notConfiguredMsg)
       else toast.error(msg)
     },
   })
@@ -131,15 +133,11 @@ export function ModuleOverviewPage() {
             {scanPipeline && <>
               <input ref={fileRef} type="file" accept="image/*,application/pdf" className="hidden"
                 onChange={(e) => { const f = e.target.files?.[0]; if (f) scanMut.mutate(f); e.target.value = '' }} />
-              <button onClick={() => (ocrLocked ? toast.error(`🔒 ${upgradeMsg}`) : ocrConfigured ? fileRef.current?.click() : setOcrOpen(true))} disabled={scanMut.isPending}
+              <button onClick={() => (ocrLocked ? toast.error(`🔒 ${upgradeMsg}`) : ocrConfigured ? fileRef.current?.click() : toast.error(notConfiguredMsg))} disabled={scanMut.isPending}
                 className="btn-primary text-sm px-3 py-1.5 flex items-center gap-2">
                 {scanMut.isPending ? <Loader2 size={15} className="animate-spin" /> : <ScanText size={15} />}
                 {pickLocalized(scanPipeline.label, language) || L('Scan a document', 'Распознать документ', 'Распазнаць дакумент')}
                 {ocrLocked ? ' 🔒' : (access && !access.premium && access.trialsLeft > 0 ? ` (${access.trialsLeft})` : '')}
-              </button>
-              <button onClick={() => setOcrOpen(true)} className="btn-ghost p-1.5 relative" title={L('OCR settings', 'Настройки распознавания', 'Налады распазнавання')}>
-                <Settings size={14} className="text-slate-500" />
-                <span className={cn('absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full', ocrConfigured ? 'bg-emerald-500' : 'bg-amber-500')} />
               </button>
             </>}
             {isMedcard && (
@@ -304,7 +302,6 @@ export function ModuleOverviewPage() {
           )}
         </div>
       </div>
-      {ocrOpen && <OcrSettingsModal projectId={projectId!} onClose={() => setOcrOpen(false)} />}
     </div>
   )
 }

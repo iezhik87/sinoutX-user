@@ -221,7 +221,7 @@ APP_URL=http://localhost:8090
 > a backup restores the records but cannot decrypt the values. Keep it somewhere
 > other than the archives.
 
-Optional: `SMTP_*` (password reset, email verification), `NOWPAYMENTS_*` (crypto billing).
+Optional: `SMTP_*` (password reset, email verification).
 
 ### 3. Start
 
@@ -264,7 +264,7 @@ Some tools sit behind a capability. As the sole owner you bypass all of them —
 |---|---|
 | `assistant_full` | Proactivity: scheduled skills, triggers |
 | `code_exec:python` | Python in the sandbox |
-| `code_exec:bash` | Bash — admins only on a cloud deployment |
+| `code_exec:bash` | Bash |
 | `code_exec:net` | Sandbox with internet access — admins only |
 | `vault:reveal` | The assistant may fetch and show a secret value |
 
@@ -350,8 +350,6 @@ See [DEPLOY.md](DEPLOY.md) for the full walkthrough (domain, TLS, reverse proxy)
 - [x] Telegram assistant: photos, PDFs, voice, buttons, proactive briefs
 - [x] Pluggable modules: Medical Record, Finance, Vault, Memory, Personal Growth
 - [x] Sandboxed code execution + capability gating
-- [x] In-app crypto billing (NOWPayments)
-- [ ] Billing: self-hosted one-time license + cloud pay-as-you-go
 - [x] Viber as a second messenger channel
 - [ ] Combo skills, and external MCP servers as a skill source
 - [ ] Mobile app (React Native)

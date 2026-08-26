@@ -1,7 +1,9 @@
 import type { FastifyInstance } from 'fastify'
 import type { PrismaClient } from '@prisma/client'
 import { z } from 'zod'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
+import { redis } from '../../lib/redis.js'
+import { completeManaged } from '../ai/ai.service.js'
 import { createAuthMiddleware } from '../../middleware/authenticate.js'
 import { hashPassword } from '../../lib/auth.js'
 import { sendVerificationEmail, isEmailConfigured } from '../../lib/email.js'
@@ -12,12 +14,14 @@ import { getOnline } from '../../lib/presence.js'
 import { writeAuditLog } from '../../lib/audit.js'
 import { issueLicenseKey } from '../../lib/license.js'
 import { config } from '../../config/index.js'
-import { fromMicroUsd, toMicroUsd, isPriced, marginPercent, pricingForAdmin, setPricingOverrides } from '../../lib/pricing.js'
+import { fromMicroUsd, toMicroUsd, isPriced, marginPercent, setPricingOverrides,
+  activePricingSlots, upsertModelPrice, DEFAULT_MARGIN_PERCENT } from '../../lib/pricing.js'
 import { resolveOpenRouterPrice, fetchOpenRouterModelList } from '../../lib/openrouterPricing.js'
 import type { ModelPrice } from '../../lib/pricing.js'
 import { adjust } from '../../lib/wallet.js'
 import { setBillingMode, isBillingEnabled } from '../../lib/billingMode.js'
 import { managedForAdmin, saveManaged, MANAGED_SLOTS } from '../../lib/managed.js'
+import { listCatalogModels, IMAGE_TOKENS_PER_PICTURE } from '../../lib/modelCatalog.js'
 
 async function requireOwnerOrAdmin(req: Parameters<ReturnType<typeof createAuthMiddleware>>[0], reply: Parameters<ReturnType<typeof createAuthMiddleware>>[1]) {
   const role = req.authUser?.role
@@ -284,7 +288,38 @@ export async function adminRoutes(app: FastifyInstance, prisma: PrismaClient) {
   // What is stored are OVERRIDES: the code's defaults fill every gap, so an
   // empty table behaves exactly like no table.
   app.get('/admin/pricing', { preHandler: [authenticate, requireOwnerOrAdmin] }, async (_req, reply) => {
-    return reply.send(pricingForAdmin())
+    const slots = activePricingSlots()
+
+    // Fill in whatever is missing, here and now: a model switched to in the slots
+    // above must arrive priced, without anyone opening a price table. Only models
+    // with no price yet are looked up, so this is normally a no-op.
+    for (const s of slots) {
+      if (!s.model) continue
+
+      if (s.slot === 'image') {
+        // Image models are billed per picture here, but a provider like
+        // OpenRouter prices them per output token. Report that price and turn it
+        // into a per-picture figure the admin can accept in one click — the
+        // token count per picture is a vendor convention, so it is offered as a
+        // suggestion rather than charged behind his back.
+        if (s.perImage !== null) continue
+        const cat = await listCatalogModels().catch(() => [])
+        const m = cat.find((x) => x.id === s.model)
+        if (m?.imageOutputPer1M) {
+          s.imageOutputPer1M = m.imageOutputPer1M
+          s.suggestedPerImage = (m.imageOutputPer1M * IMAGE_TOKENS_PER_PICTURE) / 1_000_000
+        }
+        continue
+      }
+
+      if (s.price) continue
+      const resolved = await resolveOpenRouterPrice(s.model).catch(() => null)
+      if (!resolved || 'ambiguous' in resolved) continue
+      await upsertModelPrice(prisma, s.model, resolved.price).catch(() => null)
+      s.price = resolved.price
+    }
+
+    return reply.send({ marginPercent: marginPercent(), slots, defaultMarginPercent: DEFAULT_MARGIN_PERCENT })
   })
 
   // GET /admin/pricing/openrouter/list — every model OpenRouter serves, for the
@@ -321,21 +356,39 @@ export async function adminRoutes(app: FastifyInstance, prisma: PrismaClient) {
   })
 
   app.patch('/admin/pricing', { preHandler: [authenticate, requireOwnerOrAdmin] }, async (req, reply) => {
-    const price = z.object({
-      input: z.number().min(0).max(1000),
-      cachedInput: z.number().min(0).max(1000),
-      output: z.number().min(0).max(1000),
-    })
+    // The table is no longer edited by hand — the margin is the one number that
+    // is a business decision rather than a fact about a provider. A single model
+    // price stays writable for the case automation cannot cover: a provider with
+    // no public catalogue, where the alternative is billing those tokens at zero.
     const body = z.object({
       marginPercent: z.number().min(0).max(1000).optional(),
-      models: z.record(price).optional(),
-      images: z.record(z.number().min(0).max(100)).optional(),
+      model: z.object({
+        id: z.string().min(1).max(200),
+        input: z.number().min(0).max(1000),
+        cachedInput: z.number().min(0).max(1000),
+        output: z.number().min(0).max(1000),
+      }).optional(),
+      // Image models are billed per picture, a separate table. An image model
+      // reached through OpenRouter has no per-picture price anywhere to read.
+      image: z.object({
+        id: z.string().min(1).max(200),
+        perImage: z.number().min(0).max(100),
+      }).optional(),
     }).parse(req.body)
+
+    const existing = await prisma.appSettings.findUnique({ where: { id: 'singleton' }, select: { pricing: true } })
+    const current = (existing?.pricing ?? {}) as { marginPercent?: number; models?: Record<string, ModelPrice>; images?: Record<string, number> }
+    const next = {
+      ...current,
+      ...(body.marginPercent !== undefined ? { marginPercent: body.marginPercent } : {}),
+      ...(body.model ? { models: { ...current.models, [body.model.id]: { input: body.model.input, cachedInput: body.model.cachedInput, output: body.model.output } } } : {}),
+      ...(body.image ? { images: { ...current.images, [body.image.id]: body.image.perImage } } : {}),
+    }
 
     const row = await prisma.appSettings.upsert({
       where: { id: 'singleton' },
-      create: { id: 'singleton', pricing: body as object },
-      update: { pricing: body as object },
+      create: { id: 'singleton', pricing: next as object },
+      update: { pricing: next as object },
       select: { pricing: true },
     })
 
@@ -345,29 +398,12 @@ export async function adminRoutes(app: FastifyInstance, prisma: PrismaClient) {
     await writeAuditLog(prisma, {
       action: 'admin.pricing_updated',
       userId: req.authUser!.id, userEmail: req.authUser!.email,
-      meta: { marginPercent: body.marginPercent, models: Object.keys(body.models ?? {}), images: Object.keys(body.images ?? {}) },
+      meta: { marginPercent: body.marginPercent, model: body.model?.id ?? body.image?.id },
       ip: req.ip,
     })
 
-    return reply.send(pricingForAdmin())
+    return reply.send({ marginPercent: marginPercent(), slots: activePricingSlots(), defaultMarginPercent: DEFAULT_MARGIN_PERCENT })
   })
-
-  // Merge one model's price into the stored overrides without clobbering the
-  // rest of the table. PATCH /admin/pricing above replaces the whole JSON
-  // blob because the frontend always sends a full snapshot; this is called
-  // with just a single model, so it must read-merge-write instead.
-  async function upsertPriceOverride(modelId: string, price: ModelPrice) {
-    const existing = await prisma.appSettings.findUnique({ where: { id: 'singleton' }, select: { pricing: true } })
-    const current = (existing?.pricing ?? {}) as { marginPercent?: number; models?: Record<string, ModelPrice>; images?: Record<string, number> }
-    const next = { ...current, models: { ...current.models, [modelId]: price } }
-    const row = await prisma.appSettings.upsert({
-      where: { id: 'singleton' },
-      create: { id: 'singleton', pricing: next as object },
-      update: { pricing: next as object },
-      select: { pricing: true },
-    })
-    setPricingOverrides(row.pricing as never)
-  }
 
   // ── Managed provider keys ────────────────────────────────────────────
   // The keys the INSTANCE pays with. Stored encrypted, cached in memory, and
@@ -419,7 +455,7 @@ export async function adminRoutes(app: FastifyInstance, prisma: PrismaClient) {
       const s = body[key]
       if (!s || s.provider !== 'openrouter' || !s.model) continue
       void resolveOpenRouterPrice(s.model)
-        .then((resolved) => resolved && !('ambiguous' in resolved) ? upsertPriceOverride(s.model!, resolved.price) : null)
+        .then((resolved) => resolved && !('ambiguous' in resolved) ? upsertModelPrice(prisma, s.model!, resolved.price) : null)
         .catch((e) => console.error('[pricing] auto-sync failed', s.model, e))
     }
 
@@ -431,6 +467,83 @@ export async function adminRoutes(app: FastifyInstance, prisma: PrismaClient) {
     })
 
     return reply.send(managedForAdmin())
+  })
+
+  // GET /admin/models — the live model catalogue (price + capabilities) joined
+  // with the operator's own ratings, so one screen answers «what should we run».
+  app.get('/admin/models', { preHandler: [authenticate, requireOwnerOrAdmin] }, async (req, reply) => {
+    const refresh = (req.query as { refresh?: string }).refresh === '1'
+    try {
+      const [models, row] = await Promise.all([
+        listCatalogModels(refresh),
+        prisma.appSettings.findUnique({ where: { id: 'singleton' }, select: { modelRatings: true } }),
+      ])
+      return reply.send({ models, ratings: (row?.modelRatings ?? {}) as Record<string, unknown> })
+    } catch (e) {
+      return reply.status(502).send({ error: e instanceof Error ? e.message : 'Каталог моделей недоступен' })
+    }
+  })
+
+  // POST /admin/models/describe — the model's description in the reader's own
+  // language. Providers write them in English only, so anything but English gets
+  // a translation, cached: the text changes about as often as the model itself.
+  app.post('/admin/models/describe', { preHandler: [authenticate, requireOwnerOrAdmin] }, async (req, reply) => {
+    const body = z.object({
+      modelId: z.string().min(1).max(200),
+      lang: z.enum(['ru', 'be', 'en']),
+    }).parse(req.body)
+
+    const models = await listCatalogModels().catch(() => [])
+    const model = models.find((m) => m.id === body.modelId)
+    if (!model) return reply.status(404).send({ error: 'Модель не найдена в каталоге' })
+    // English needs no round trip — it is what the provider already wrote.
+    if (body.lang === 'en' || !model.description.trim()) {
+      return reply.send({ text: model.description, translated: false })
+    }
+
+    // Keyed by the text, not just the model: a reworded description must not
+    // keep serving the translation of the old one.
+    const key = `model:desc:${body.lang}:${createHash('sha1').update(body.modelId + model.description).digest('hex')}`
+    const cached = await redis.get(key).catch(() => null)
+    if (cached) return reply.send({ text: cached, translated: true })
+
+    const target = body.lang === 'be' ? 'белорусский' : 'русский'
+    try {
+      const text = (await completeManaged(
+        `Ты переводишь описания AI-моделей на ${target} язык. Верни ТОЛЬКО перевод, без пояснений и кавычек. `
+        + 'Названия моделей, компаний и технические термины (tokens, context, API) оставляй как есть. Сохраняй абзацы.',
+        model.description,
+      )).trim()
+      if (!text) return reply.send({ text: model.description, translated: false })
+      await redis.set(key, text, 'EX', 30 * 86400).catch(() => null)
+      return reply.send({ text, translated: true })
+    } catch {
+      // No managed key, or the provider refused — show the original rather than
+      // an error: an English description beats an empty dialog.
+      return reply.send({ text: model.description, translated: false })
+    }
+  })
+
+  // PATCH /admin/models/rating — the operator's verdict on one model. Stars of 0
+  // forget it entirely, so a rating given by mistake leaves no trace behind.
+  app.patch('/admin/models/rating', { preHandler: [authenticate, requireOwnerOrAdmin] }, async (req, reply) => {
+    const body = z.object({
+      modelId: z.string().min(1).max(200),
+      stars: z.number().int().min(0).max(5),
+      note: z.string().max(500).optional(),
+    }).parse(req.body)
+
+    const row = await prisma.appSettings.findUnique({ where: { id: 'singleton' }, select: { modelRatings: true } })
+    const ratings = { ...((row?.modelRatings ?? {}) as Record<string, unknown>) }
+    if (body.stars === 0) delete ratings[body.modelId]
+    else ratings[body.modelId] = { stars: body.stars, note: body.note || undefined, ratedAt: new Date().toISOString() }
+
+    await prisma.appSettings.upsert({
+      where: { id: 'singleton' },
+      create: { id: 'singleton', modelRatings: ratings as object },
+      update: { modelRatings: ratings as object },
+    })
+    return reply.send({ ratings })
   })
 
   // GET /admin/usage — what the AI actually costs, per user, last 30 days.

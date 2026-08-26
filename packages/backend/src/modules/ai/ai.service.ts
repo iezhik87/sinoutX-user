@@ -62,6 +62,15 @@ export interface EmbeddingsProviderConfig {
   baseUrl?: string
 }
 
+// Document recognition (vision/OCR) — separate BYOK key. Provider is a free
+// string: the curated list lives in lib/modules/vision.ts (OCR_PROVIDERS).
+export interface VisionProviderConfig {
+  provider: string
+  apiKey?: string
+  model?: string
+  baseUrl?: string
+}
+
 export interface AISettings {
   provider: AIProvider
   temperature: number
@@ -74,6 +83,7 @@ export interface AISettings {
   imageGeneration?: ImageProviderConfig
   audioGeneration?: AudioProviderConfig
   embeddings?: EmbeddingsProviderConfig
+  vision?: VisionProviderConfig
   searchRegion?: string    // SearXNG region, e.g. "by-be", "ru-RU", "en-US"
   timezone?: string        // IANA tz, e.g. "Europe/Minsk" — for local task/event times
   // Legacy flat fields — kept for migration reads only
@@ -565,9 +575,12 @@ async function ocrScannedPdf(
   prisma: PrismaClient, workspaceId: string, userId: string | null,
   buffer: Buffer, pages: number | undefined, promptOverride?: string,
 ): Promise<{ text: string; pages?: number }> {
-  const ocr = await resolveWorkspaceOcr(prisma, workspaceId, userId)
+  // Loaded lazily: visionResolve imports getVisionSettings from this module, so a
+  // static import here would close the cycle at load time.
+  const { resolveVisionOcr } = await import('../../lib/visionResolve.js')
+  const ocr = await resolveVisionOcr(prisma, workspaceId, userId, 'chat')
   if (!ocr) {
-    throw new Error('Это скан PDF без текстового слоя, а распознавание (vision) не настроено. Добавьте OCR-ключ в настройках модуля или подключите vision-ключ на инстансе.')
+    throw new Error('Это скан PDF без текстового слоя, а распознавание (vision) не настроено. Настройте его в Настройках → AI → Распознавание документов.')
   }
   const { pdfPagesToImages } = await import('../../lib/pdfRaster.js')
   const images = await pdfPagesToImages(buffer, 20)
@@ -599,6 +612,17 @@ export async function getAISettings(workspaceId: string, prisma: PrismaClient): 
   const workspace = await prisma.workspace.findUnique({ where: { id: workspaceId }, select: { settings: true } })
   const ai = (((workspace?.settings ?? {}) as Record<string, unknown>).ai ?? {}) as Record<string, unknown>
   return parseAISettings(ai)
+}
+
+// The workspace owner's own document-recognition key, if he configured one.
+// Vision never lived in the legacy workspace blob, so there is nothing to fall
+// back to here — an absent slot simply means "no BYOK key", and the caller
+// moves on to the next source (see lib/visionResolve.ts).
+export async function getVisionSettings(workspaceId: string, prisma: PrismaClient): Promise<VisionProviderConfig | undefined> {
+  const ownerId = await getWorkspaceOwnerId(prisma, workspaceId)
+  if (!ownerId) return undefined
+  const settings = await getUserAISettings(ownerId, prisma)
+  return settings.vision
 }
 
 // Parse a stored `ai` settings blob into AISettings (merge defaults + decrypt keys).
@@ -653,6 +677,7 @@ function parseAISettings(ai: Record<string, unknown>): AISettings {
   result.imageGeneration = (ai.imageGeneration as ImageProviderConfig | undefined)
   result.audioGeneration = (ai.audioGeneration as AudioProviderConfig | undefined)
   result.embeddings      = (ai.embeddings as EmbeddingsProviderConfig | undefined)
+  result.vision          = (ai.vision as VisionProviderConfig | undefined)
 
   // Decrypt API keys at rest → callers receive plaintext.
   for (const p of Object.keys(result.providers) as AIProvider[]) {
@@ -661,6 +686,7 @@ function parseAISettings(ai: Record<string, unknown>): AISettings {
   if (result.imageGeneration?.apiKey) result.imageGeneration.apiKey = decryptSecret(result.imageGeneration.apiKey)
   if (result.audioGeneration?.apiKey) result.audioGeneration.apiKey = decryptSecret(result.audioGeneration.apiKey)
   if (result.embeddings?.apiKey)      result.embeddings.apiKey      = decryptSecret(result.embeddings.apiKey)
+  if (result.vision?.apiKey)          result.vision.apiKey          = decryptSecret(result.vision.apiKey)
 
   return result
 }
@@ -671,9 +697,10 @@ export async function saveAISettings(
     provider?: AIProvider
     /** Wipe a provider's key, model and base URL, and stop using it. */
     resetProvider?: AIProvider
-    /** Forget the image / embeddings provider entirely. */
+    /** Forget the image / embeddings / vision provider entirely. */
     resetImage?: boolean
     resetEmbeddings?: boolean
+    resetVision?: boolean
     temperature?: number
     maxTokens?: number
     customSystemPrompt?: string
@@ -686,6 +713,7 @@ export async function saveAISettings(
     imageGeneration?: ImageProviderConfig
     audioGeneration?: AudioProviderConfig
     embeddings?: EmbeddingsProviderConfig
+    vision?: VisionProviderConfig
   },
   prisma: PrismaClient,
 ) {
@@ -723,6 +751,16 @@ export async function saveAISettings(
         apiKey: patch.embeddings.apiKey ?? current.embeddings?.apiKey,
       },
     } : {}),
+    ...(patch.vision !== undefined ? {
+      vision: {
+        ...current.vision,
+        ...patch.vision,
+        // A key is only valid on the provider it was issued for: carrying it
+        // over to a different one would silently save a key that can't auth.
+        apiKey: patch.vision.apiKey
+          ?? (current.vision?.provider === patch.vision.provider ? current.vision?.apiKey : undefined),
+      },
+    } : {}),
   }
 
   // Merge per-provider config if provided
@@ -741,6 +779,7 @@ export async function saveAISettings(
   }
   if (patch.resetImage) updated.imageGeneration = undefined
   if (patch.resetEmbeddings) updated.embeddings = undefined
+  if (patch.resetVision) updated.vision = undefined
 
   // Encrypt API keys before persisting (decrypted again on read).
   const encProviders = {} as typeof updated.providers
@@ -755,6 +794,9 @@ export async function saveAISettings(
     : undefined
   const encEmbeddings = updated.embeddings
     ? { ...updated.embeddings, apiKey: encryptSecret(updated.embeddings.apiKey) }
+    : undefined
+  const encVision = updated.vision
+    ? { ...updated.vision, apiKey: encryptSecret(updated.vision.apiKey) }
     : undefined
 
   // Store clean — no legacy flat fields
@@ -772,6 +814,7 @@ export async function saveAISettings(
     imageGeneration:    encImage,
     audioGeneration:    encAudio,
     embeddings:         encEmbeddings,
+    vision:             encVision,
   }
 
   await prisma.user.update({
@@ -805,6 +848,37 @@ export async function completeOnce(workspaceId: string, system: string, user: st
     signal: AbortSignal.timeout(60_000),
   })
   if (!res.ok) throw new Error(`Provider error ${res.status}: ${(await res.text()).slice(0, 300)}`)
+  const json = await res.json() as { choices?: { message?: { content?: string } }[] }
+  return json.choices?.[0]?.message?.content ?? ''
+}
+
+/**
+ * One completion on the INSTANCE's own key, for instance-level work that belongs
+ * to no workspace (translating the model catalogue, for one). `completeOnce`
+ * cannot serve this: it resolves a workspace's provider, and the managed
+ * provider keeps its key outside that map, so it would fail with «not configured».
+ */
+export async function completeManaged(system: string, user: string): Promise<string> {
+  const managed = getManagedAi()
+  if (!managed?.apiKey) throw new Error('Managed AI key is not configured')
+  const { provider, model, apiKey } = managed
+  const baseUrl = managed.baseUrl || providerBaseUrl(provider as AISettings['provider'])
+
+  if (provider === 'anthropic') {
+    const client = new Anthropic({ apiKey })
+    const msg = await client.messages.create({
+      model, max_tokens: 2048, temperature: 0.2, system, messages: [{ role: 'user', content: user }],
+    })
+    return msg.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map((b) => b.text).join('')
+  }
+  if (!baseUrl) throw new Error('Managed AI base URL is not configured')
+  const res = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({ model, temperature: 0.2, max_tokens: 2048, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }),
+    signal: AbortSignal.timeout(60_000),
+  })
+  if (!res.ok) throw new Error(`Provider error ${res.status}: ${(await res.text()).slice(0, 200)}`)
   const json = await res.json() as { choices?: { message?: { content?: string } }[] }
   return json.choices?.[0]?.message?.content ?? ''
 }
@@ -2271,24 +2345,6 @@ async function reconcileMemory(
     const supersede = idx.map((i) => hits[Number(i)]?.recordId).filter((x): x is string => !!x)
     return { action, supersede }
   } catch { return { action: 'add', supersede: [] } }
-}
-
-// Vision/OCR config for reading an image in a workspace: prefer a user OCR key
-// set on any module here, else the instance's shared vision key (metered to the
-// user). Null when neither is available — the agent simply cannot see images.
-async function resolveWorkspaceOcr(
-  prisma: PrismaClient, workspaceId: string, userId: string | null,
-): Promise<OcrConfig | null> {
-  const modules = await prisma.project.findMany({
-    where: { workspaceId, isModule: true }, select: { settings: true },
-  })
-  for (const p of modules) {
-    const ocr = ((p.settings as Record<string, unknown>)?.ocr ?? {}) as Record<string, string>
-    if (ocr.apiKey && ocr.model) {
-      return { provider: ocr.provider, model: ocr.model, baseUrl: ocr.baseUrl, apiKey: decryptSecret(ocr.apiKey)! }
-    }
-  }
-  return managedVisionFor(prisma, workspaceId, userId, 'chat')
 }
 
 async function executeTool(
@@ -3893,6 +3949,7 @@ async function executeTool(
           truncated: result.text.length >= maxLen,
         }
       } catch (err) {
+        console.error('[read_document_url]', url, err instanceof Error ? err.message : err)
         return { error: `Read document failed: ${err instanceof Error ? err.message : String(err)}` }
       }
     }
@@ -3919,9 +3976,10 @@ async function executeTool(
         // the agent can actually "see" a receipt or photo and reason over it.
         // Same capability the module receipt/document scanners use.
         if ((attachment.mimeType ?? '').startsWith('image/')) {
-          const ocr = await resolveWorkspaceOcr(prisma, attachment.workspaceId, context?.userId ?? null)
+          const { resolveVisionOcr } = await import('../../lib/visionResolve.js')
+          const ocr = await resolveVisionOcr(prisma, attachment.workspaceId, context?.userId ?? null, 'chat')
           if (!ocr) {
-            return { error: 'Не удалось прочитать изображение: не настроено распознавание (vision). Добавьте OCR-ключ в настройках модуля или подключите vision-ключ на инстансе.' }
+            return { error: 'Не удалось прочитать изображение: не настроено распознавание (vision). Настройте его в Настройках → AI → Распознавание документов.' }
           }
           const visionPrompt = (input.prompt as string)
             || 'Прочитай это изображение и верни ВЕСЬ распознанный текст дословно. Если это чек, счёт или квитанция — дополнительно перечисли позиции с ценами и итоговую сумму. Только распознанное содержимое, без комментариев.'
@@ -3955,6 +4013,7 @@ async function executeTool(
           truncated: result.text.length >= maxLen,
         }
       } catch (err) {
+        console.error('[read_attachment]', attachmentId, err instanceof Error ? err.message : err)
         return { error: `Read attachment failed: ${err instanceof Error ? err.message : String(err)}` }
       }
     }

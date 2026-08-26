@@ -685,6 +685,28 @@ export function BlockEditor({
     }
   }, [linkInput.open])
 
+  /**
+   * Insert at the position the slash command was typed at. A modal can stay open
+   * for a minute while an image generates, and the document moves on meanwhile —
+   * autosave, a collaborator, another cursor. A stale position makes
+   * insertContentAt throw, and the insert then silently does nothing while the
+   * generated file already sits in Files, which is exactly what it looked like.
+   */
+  const insertAtSaved = useCallback(
+    (content: Record<string, unknown>) => {
+      if (!editor) return
+      const raw = savedPosRef.current ?? editor.state.selection.from
+      const pos = Math.max(0, Math.min(raw, editor.state.doc.content.size))
+      try {
+        editor.chain().focus().insertContentAt(pos, content).run()
+      } catch {
+        // Last resort: put it at the current cursor rather than lose it.
+        editor.chain().focus().insertContent(content).run()
+      }
+    },
+    [editor],
+  )
+
   const handleSlashCommand = useCallback(
     (cmd: { command: (e: typeof editor) => void }) => {
       if (!editor) return
@@ -1094,11 +1116,7 @@ export function BlockEditor({
       {imageInsertOpen && (
         <ImageInsertModal
           projectId={projectId}
-          onInsert={(url) => {
-            if (!editor) return
-            const pos = savedPosRef.current ?? editor.state.selection.from
-            editor.chain().focus().insertContentAt(pos, { type: 'image', attrs: { src: url } }).run()
-          }}
+          onInsert={(url) => insertAtSaved({ type: 'image', attrs: { src: url } })}
           onClose={() => setImageInsertOpen(false)}
         />
       )}
@@ -1107,11 +1125,7 @@ export function BlockEditor({
       {aiImageOpen && (
         <AiImageModal
           projectId={projectId}
-          onInsert={(url) => {
-            if (!editor) return
-            const pos = savedPosRef.current ?? editor.state.selection.from
-            editor.chain().focus().insertContentAt(pos, { type: 'image', attrs: { src: url } }).run()
-          }}
+          onInsert={(url) => insertAtSaved({ type: 'image', attrs: { src: url } })}
           onClose={() => setAiImageOpen(false)}
         />
       )}
@@ -1121,11 +1135,7 @@ export function BlockEditor({
       {/* ── AI audio generation modal ─────────────────────────── */}
       {aiAudioOpen && (
         <AiAudioModal
-          onInsert={(url) => {
-            if (!editor) return
-            const pos = savedPosRef.current ?? editor.state.selection.from
-            editor.chain().focus().insertContentAt(pos, { type: 'audioBlock', attrs: { src: url, title: 'AI Audio' } }).run()
-          }}
+          onInsert={(url) => insertAtSaved({ type: 'audioBlock', attrs: { src: url, title: 'AI Audio' } })}
           onClose={() => setAiAudioOpen(false)}
         />
       )}
@@ -1134,11 +1144,7 @@ export function BlockEditor({
       {barcodeOpen && (
         <BarcodeModal
           initialTab={barcodeInitTab}
-          onInsert={(dataUrl) => {
-            if (!editor) return
-            const pos = savedPosRef.current ?? editor.state.selection.from
-            editor.chain().focus().insertContentAt(pos, { type: 'image', attrs: { src: dataUrl } }).run()
-          }}
+          onInsert={(dataUrl) => insertAtSaved({ type: 'image', attrs: { src: dataUrl } })}
           onClose={() => setBarcodeOpen(false)}
         />
       )}
@@ -1148,13 +1154,11 @@ export function BlockEditor({
         <PageLinkModal
           projectId={projectId}
           onSelect={(page) => {
-            if (!editor) return
-            const pos = savedPosRef.current ?? editor.state.selection.from
-            editor.chain().focus().insertContentAt(pos, {
+            insertAtSaved({
               type: 'text',
               marks: [{ type: 'link', attrs: { href: `/pages/${page.id}` } }],
               text: stripLeadingEmoji(page.title) || t.embed.untitled,
-            }).run()
+            })
             setPageLinkOpen(false)
           }}
           onClose={() => setPageLinkOpen(false)}
@@ -1166,9 +1170,7 @@ export function BlockEditor({
         <NoteEmbedModal
           workspaceId={workspaceId}
           onSelect={(noteId) => {
-            if (!editor) return
-            const pos = savedPosRef.current ?? editor.state.selection.from
-            editor.chain().focus().insertContentAt(pos, { type: 'noteEmbed', attrs: { noteId, height: 200 } }).run()
+            insertAtSaved({ type: 'noteEmbed', attrs: { noteId, height: 200 } })
             setNoteEmbedOpen(false)
           }}
           onClose={() => setNoteEmbedOpen(false)}
@@ -1180,9 +1182,7 @@ export function BlockEditor({
         <PageEmbedModal
           projectId={projectId}
           onSelect={(pageId) => {
-            if (!editor) return
-            const pos = savedPosRef.current ?? editor.state.selection.from
-            editor.chain().focus().insertContentAt(pos, { type: 'pageEmbed', attrs: { pageId, height: 200 } }).run()
+            insertAtSaved({ type: 'pageEmbed', attrs: { pageId, height: 200 } })
             setPageEmbedOpen(false)
           }}
           onClose={() => setPageEmbedOpen(false)}

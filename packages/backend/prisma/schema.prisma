@@ -677,6 +677,11 @@ model AppSettings {
   /// Merged over the code defaults, so an empty table behaves as no table.
   pricing         Json    @default("{}")
 
+  /// The operator's OWN verdict on a model, which no provider API reports:
+  /// { "<modelId>": { stars: 1..5, note?: string, ratedAt: ISO } }.
+  /// Paired with the live price it gives a value ranking that reflects real use.
+  modelRatings    Json    @default("{}") @map("model_ratings")
+
   /// null = follow DEPLOYMENT_MODE from the environment. true/false overrides it
   /// from the admin panel, so turning billing on does not require a redeploy.
   billingEnabled  Boolean? @map("billing_enabled")

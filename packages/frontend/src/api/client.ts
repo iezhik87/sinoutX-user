@@ -1380,6 +1380,14 @@ export interface EmbeddingsProviderConfig {
   baseUrl?: string
 }
 
+/** Document recognition. Provider is open: the list comes from /modules/ocr-providers. */
+export interface VisionProviderConfig {
+  provider: string
+  apiKey?: string
+  model?: string
+  baseUrl?: string
+}
+
 export interface AISettings {
   provider: AIProvider
   temperature: number
@@ -1392,6 +1400,7 @@ export interface AISettings {
   imageGeneration?: ImageProviderConfig
   audioGeneration?: AudioProviderConfig
   embeddings?: EmbeddingsProviderConfig
+  vision?: VisionProviderConfig
   searchRegion?: string
   timezone?: string
 }
@@ -1399,9 +1408,10 @@ export interface AISettings {
 export interface AISettingsPatch {
   /** Wipe this provider's key/model/baseUrl and stop using it. */
   resetProvider?: AIProvider
-  /** Forget the image / embeddings provider entirely. */
+  /** Forget the image / embeddings / vision provider entirely. */
   resetImage?: boolean
   resetEmbeddings?: boolean
+  resetVision?: boolean
   provider?: AIProvider
   temperature?: number
   maxTokens?: number
@@ -1415,6 +1425,7 @@ export interface AISettingsPatch {
   imageGeneration?: ImageProviderConfig
   audioGeneration?: AudioProviderConfig
   embeddings?: EmbeddingsProviderConfig
+  vision?: VisionProviderConfig
 }
 
 export interface ToolMeta {
@@ -1508,6 +1519,12 @@ export const aiSettingsApi = {
   testEmbeddingsConnection: (params: { provider: EmbeddingProvider; apiKey?: string; baseUrl?: string; model?: string }, workspaceId?: string) =>
     api.post<{ ok: boolean; error?: string; message?: string }>(
       `/ai/settings/test-embeddings${workspaceId ? `?workspaceId=${workspaceId}` : ''}`, params
+    ).then((r) => r.data),
+
+  /** Without `model`: the provider's live vision-model list. With it: also a real check. */
+  testVisionConnection: (params: { provider: string; apiKey?: string; baseUrl?: string; model?: string; slot?: 'vision' }, workspaceId?: string) =>
+    api.post<{ ok: boolean; error?: string; models?: { id: string; label: string }[] }>(
+      `/ai/settings/test-vision${workspaceId ? `?workspaceId=${workspaceId}` : ''}`, params
     ).then((r) => r.data),
 
   clearMemory: () => api.post<{ cleared: number }>('/ai/memory/clear').then((r) => r.data),
@@ -1867,13 +1884,9 @@ export const moduleApi = {
 }
 
 export interface OcrProvider { key: string; label: string; custom: boolean; models: { id: string; label: string }[] }
+/** Whether recognition works here at all — it is configured in AI settings, not per project. */
 export interface OcrConfigDto {
-  provider: string
-  model: string
-  baseUrl: string
-  hasKey: boolean
-  /** The instance has a shared vision key: recognition works even with no key here. */
-  managedFallback?: boolean
+  available: boolean
 }
 export interface ModulePipeline { id: string; target?: string; label?: Localized }
 export interface ModuleInfo { moduleId: string | null; pipelines: ModulePipeline[] }
@@ -1926,8 +1939,6 @@ export const collectionApi = {
     api.post<{ logins: number; cards: number; secrets: number; skipped: number }>(`/modules/vault/import`, { workspaceId, data }).then((r) => r.data),
   pipelineAccess: (projectId: string) => api.get<{ ok: boolean; premium: boolean; trialsLeft: number; plan: string }>(`/projects/${projectId}/pipeline-access`).then((r) => r.data),
   getOcrConfig: (projectId: string) => api.get<OcrConfigDto>(`/projects/${projectId}/ocr-config`).then((r) => r.data),
-  saveOcrConfig: (projectId: string, data: { provider?: string; model?: string; baseUrl?: string; apiKey?: string; reset?: boolean }) =>
-    api.patch(`/projects/${projectId}/ocr-config`, data).then((r) => r.data),
   runScan: (projectId: string, file: File, pipelineId = 'medical-scan') => {
     const fd = new FormData(); fd.append('file', file)
     return api.post<{ kind: 'lab' | 'imaging' | 'encounter' | 'document' | 'receipt' | 'statement' | 'none'; indicators?: number; analyses?: number; medications?: number; diagnoses?: number; transactions?: number; collectionKey?: string }>(`/projects/${projectId}/pipeline/${pipelineId}`, fd, { headers: { 'Content-Type': 'multipart/form-data' } }).then((r) => r.data)

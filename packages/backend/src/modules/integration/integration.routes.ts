@@ -14,9 +14,9 @@ import { runMedicalScan, runReceiptScan } from '../../lib/modules/pipelines.js'
 import { checkPipelineAccess, incrementPipelineUsage, canUploadFile } from '../../lib/plans.js'
 import { maybeWarnStorage } from '../../lib/storageAlert.js'
 import { type OcrConfig } from '../../lib/modules/vision.js'
-import { decryptSecret } from '../../lib/crypto.js'
+import { resolveVisionOcr } from '../../lib/visionResolve.js'
 import { toStorableImage } from '../../lib/images.js'
-import { managedVisionFor, workspaceOwnerId } from '../../lib/managedAccess.js'
+import { workspaceOwnerId } from '../../lib/managedAccess.js'
 import { tgApi, telegramAdapter, formatForTelegram } from './channels/telegram.js'
 import { viberAdapter, viberApi, verifyViberSignature, setViberWebhook, getViberAccountInfo } from './channels/viber.js'
 import { capsOf, type ChannelAdapter, type ChannelButton } from './channels/types.js'
@@ -475,26 +475,20 @@ function taskButtons(taskId: string, lang: 'ru' | 'en' | 'be'): ChannelButton[] 
 // attachment (source). Returns a reply, or null if the message has no media.
 // Find an installed module in the workspace that has a configured lab-ocr
 // pipeline (e.g. Medical Record). Returns the project + decrypted OCR config.
-// Find an installed module that declares the given pipeline AND has OCR configured.
+// Where a scan of this kind should be filed: the installed module that declares
+// the pipeline. WHICH key reads it is a separate question, answered centrally by
+// resolveVisionOcr — a module no longer carries a key of its own.
 async function findOcrTarget(prisma: PrismaClient, workspaceId: string, pipelineId: string, userId: string | null, source: string): Promise<{ projectId: string; moduleId: string | null; ocr: OcrConfig } | null> {
-  const projects = await prisma.project.findMany({ where: { workspaceId, isModule: true, moduleId: { not: null } }, select: { id: true, moduleId: true, settings: true } })
-  // The module's own key wins. Ours is the fallback, and only for a user who
-  // opted into the managed model, is not frozen and has a balance — his tokens
-  // are then charged like any other.
-  const managed = await managedVisionFor(prisma, workspaceId, userId, source)
-  let fallback: { projectId: string; moduleId: string | null } | null = null
+  const projects = await prisma.project.findMany({ where: { workspaceId, isModule: true, moduleId: { not: null } }, select: { id: true, moduleId: true } })
 
   for (const p of projects) {
     const m = await getManifest(prisma, p.moduleId!)
     if (!(m?.ai?.pipelines ?? []).some((pl) => pl.id === pipelineId)) continue
-    const ocr = (p.settings as Record<string, unknown>)?.ocr as Record<string, string> | undefined
-    if (ocr?.apiKey && ocr?.model) {
-      return { projectId: p.id, moduleId: p.moduleId, ocr: { provider: ocr.provider, model: ocr.model, baseUrl: ocr.baseUrl, apiKey: decryptSecret(ocr.apiKey)! } }
-    }
-    fallback ??= { projectId: p.id, moduleId: p.moduleId }
+    const ocr = await resolveVisionOcr(prisma, workspaceId, userId, source)
+    if (!ocr) return null
+    return { projectId: p.id, moduleId: p.moduleId, ocr }
   }
 
-  if (fallback && managed) return { ...fallback, ocr: managed }
   return null
 }
 

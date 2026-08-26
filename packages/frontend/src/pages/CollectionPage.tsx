@@ -3,7 +3,6 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Loader2, Plus, Trash2, Table2, X, Paperclip, LineChart as LineChartIcon, Settings, ScanText, Eye, EyeOff, Copy, Check } from 'lucide-react'
 import { AddCollectionModal, SchemaEditorModal } from '@/components/modules/SchemaEditor'
-import { OcrSettingsModal } from '@/components/modules/OcrSettingsModal'
 import { toast } from '@/stores/toastStore'
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts'
 import { collectionApi, uploadApi, attachmentContentUrl, type ModuleCollection, type CollectionField, type CollectionRecord } from '@/api/client'
@@ -34,16 +33,18 @@ export function CollectionPage() {
   const [viewKey, setViewKey] = useState<string | null>(null)
   const [schemaOpen, setSchemaOpen] = useState(false)
   const [addColOpen, setAddColOpen] = useState(false)
-  const [ocrOpen, setOcrOpen] = useState(false)
   const ocrFileRef = useRef<HTMLInputElement>(null)
 
   const { data: moduleInfo } = useQuery({ queryKey: ['module-info', projectId], queryFn: () => collectionApi.moduleInfo(projectId!), enabled: !!projectId })
   const labPipeline = moduleInfo?.pipelines?.[0]
   const { data: ocrCfg } = useQuery({ queryKey: ['ocr-config', projectId], queryFn: () => collectionApi.getOcrConfig(projectId!), enabled: !!projectId })
   const { data: access } = useQuery({ queryKey: ['pipeline-access', projectId], queryFn: () => collectionApi.pipelineAccess(projectId!), enabled: !!projectId })
-  const ocrConfigured = !!ocrCfg?.hasKey && !!ocrCfg?.model
+  const ocrConfigured = !!ocrCfg?.available
   const ocrLocked = !!access && !access.premium && access.trialsLeft <= 0
   const upgradeMsg = language === 'en' ? 'Document recognition is a Pro feature' : 'Распознавание документов — функция Pro'
+  const notConfiguredMsg = language === 'en'
+    ? 'Set up recognition in Settings → AI → Recognition'
+    : 'Настройте распознавание в Настройках → AI → Распознавание'
   const ocrMut = useMutation({
     mutationFn: (file: File) => collectionApi.runScan(projectId!, file, labPipeline?.id),
     onSuccess: (r) => {
@@ -63,7 +64,7 @@ export function CollectionPage() {
     onError: (e: unknown) => {
       const msg = e instanceof Error ? e.message : String(e)
       if (msg.includes('premium_required')) { qc.invalidateQueries({ queryKey: ['pipeline-access', projectId] }); toast.error(`🔒 ${upgradeMsg}`) }
-      else if (msg.includes('ocr_not_configured')) { setOcrOpen(true); toast.error('Настройте модель распознавания') }
+      else if (msg.includes('ocr_not_configured')) toast.error(notConfiguredMsg)
       else toast.error(msg)
     },
   })
@@ -282,15 +283,11 @@ export function CollectionPage() {
               <>
                 <input ref={ocrFileRef} type="file" accept="image/*,application/pdf" className="hidden"
                   onChange={(e) => { const f = e.target.files?.[0]; if (f) ocrMut.mutate(f); e.target.value = '' }} />
-                <button onClick={() => (ocrLocked ? toast.error(`🔒 ${upgradeMsg}`) : ocrConfigured ? ocrFileRef.current?.click() : setOcrOpen(true))} disabled={ocrMut.isPending}
+                <button onClick={() => (ocrLocked ? toast.error(`🔒 ${upgradeMsg}`) : ocrConfigured ? ocrFileRef.current?.click() : toast.error(notConfiguredMsg))} disabled={ocrMut.isPending}
                   className="btn-ghost text-sm px-2.5 py-1.5 flex items-center gap-1.5" title={pickLocalized(labPipeline.label, language)}>
                   {ocrMut.isPending ? <Loader2 size={15} className="animate-spin" /> : <ScanText size={15} />}
                   {pickLocalized(labPipeline.label, language) || (language === 'en' ? 'Scan' : 'Распознать')}
                   {ocrLocked ? ' 🔒' : (access && !access.premium && access.trialsLeft > 0 ? ` (${access.trialsLeft})` : '')}
-                </button>
-                <button onClick={() => setOcrOpen(true)} className="btn-ghost p-1.5 relative" title={language === 'en' ? 'OCR settings' : 'Настройки распознавания'}>
-                  <Settings size={14} className="text-slate-500" />
-                  <span className={cn('absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full', ocrConfigured ? 'bg-emerald-500' : 'bg-amber-500')} />
                 </button>
               </>
             )}
@@ -397,7 +394,6 @@ export function CollectionPage() {
           onSaved={() => { qc.invalidateQueries({ queryKey: ['collection-records', collectionId] }); setEditing(null) }}
         />
       )}
-      {ocrOpen && <OcrSettingsModal projectId={projectId!} onClose={() => setOcrOpen(false)} />}
       {schemaOpen && <SchemaEditorModal collection={collection} collections={collections} projectId={projectId!} onClose={() => setSchemaOpen(false)} />}
       {addColOpen && <AddCollectionModal projectId={projectId!} onClose={() => setAddColOpen(false)} onCreated={(id) => navigate(`/projects/${projectId}/c/${id}`)} />}
     </div>

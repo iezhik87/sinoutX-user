@@ -40,10 +40,14 @@ export function AiImageModal({ onInsert, onClose, projectId }: AiImageModalProps
       const { url } = await aiApi.generateImage(prompt.trim(), currentWorkspaceId ?? undefined, projectId)
       setPreviewUrl(url)
     } catch (e) {
-      // Surface the provider's actual complaint (bad model, auth, balance, params)
-      // instead of a generic "try again" that hides what fal.ai/OpenAI reported.
-      const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error
-      setError(msg ? String(msg) : t.editor.aiImage.errorGeneration)
+      // Surface the provider's actual complaint (bad model, auth, balance, geo
+      // restriction) instead of a generic "try again" that hides it. Fastify's
+      // own 500 answers carry `message`, not `error`, and a timeout carries
+      // neither — so fall through all three before giving up.
+      const err = e as { response?: { status?: number; data?: { error?: string; message?: string } }; message?: string }
+      const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message
+      const status = err?.response?.status
+      setError(msg ? `${msg}${status ? ` (HTTP ${status})` : ''}` : t.editor.aiImage.errorGeneration)
     } finally {
       setLoading(false)
     }

@@ -1,293 +1,292 @@
-# Модули SinoutX — концепция и руководство
+# SinoutX modules — concept and authoring guide
 
-> Статус: концепция (Фаза 1 в разработке). Это проектный документ + руководство
-> по созданию модулей. Код-термины — английские; UI-метки локализуются.
+> Status: the engine ships (registries, catalogue, install, table/form views).
+> This is both the design document and the guide to writing a module. Code terms
+> are English; UI labels are localised.
 
-## 1. Идея в одном абзаце
+## 1. The idea in one paragraph
 
-**Модуль** — это подключаемое вертикальное решение поверх SinoutX (Медкарта,
-CRM, Авто-сервис, Юр-дела…). Технически модуль — это **декларативный
-JSON-манифест**, который создаёт в воркспейсе специальный проект с набором
-**Реестров** (`Collection`) — типизированных наборов записей — и стандартных
-**Видов** для их отображения. Никакого кода для базового модуля не нужно:
-движок рисует виды и предоставляет CRUD/AI generic-ом. Это и есть «единая
-концепция организации внутреннего пространства».
+A **module** is a pluggable vertical solution on top of SinoutX — a medical
+record, a CRM, car maintenance, legal matters. Technically it is a
+**declarative JSON manifest** that creates a special project in a workspace
+holding a set of **registries** (`Collection`) — typed sets of records — and
+standard **views** to display them. A basic module needs no code at all: the
+engine draws the views and provides CRUD and AI generically. This is what "a
+single way to organise your internal space" means in practice.
 
 ```
 Workspace
-└── Project (isModule=true, moduleId)        ← экземпляр модуля
-    ├── Collection «Анализы»                  ← Реестр (типизированные записи)
-    │   ├── Field date / panel / …            ← схема полей (JSON)
-    │   ├── Record … Record …                 ← записи (JSONB data)
-    │   └── View таблица / форма / график     ← как показывать
-    ├── Collection «Приёмы»
-    └── Page «Обзор» (опц. свободный дашборд)
+└── Project (isModule=true, moduleId)        ← a module instance
+    ├── Collection "Lab results"              ← registry (typed records)
+    │   ├── Field date / panel / …            ← field schema (JSON)
+    │   ├── Record … Record …                 ← records (JSONB data)
+    │   └── View table / form / chart         ← how to show them
+    ├── Collection "Visits"
+    └── Page "Overview" (optional free-form dashboard)
 ```
 
-## 2. Принципы
+## 2. Principles
 
-1. **Один примитив на всё** — Реестр (`Collection`) c типизированными полями.
-   Любой модуль = набор Реестров + Видов. Один ментальный паттерн.
-2. **Декларативность** — модуль описывается манифестом, а не кодом. Любой
-   пользователь может создать модуль (Tier 1).
-3. **Переиспользование** — экземпляр модуля = обычный `Project` с флагом
-   `isModule`. Бесплатно получаем сайдбар, изоляцию воркспейса, шаринг,
-   AI-контекст, права.
-4. **Определение ≠ данные** — схема приходит из манифеста (версионируется),
-   записи принадлежат пользователю. Обновление модуля **никогда** не трогает
-   записи (миграции схемы только аддитивные).
-5. **AI почти даром** — generic-инструменты над Реестрами + доменные подсказки
-   модуля. Ассистент наполняет данные из чата без спец-кода.
-6. **Self-hosted + BYOK** — чувствительные данные (медицина, юр.) не покидают
-   сервер пользователя; AI работает на его ключе. Главное преимущество.
+1. **One primitive for everything** — the registry (`Collection`) with typed
+   fields. Every module is a set of registries and views. One mental pattern.
+2. **Declarative** — a module is described by a manifest, not by code. Any user
+   can build one (Tier 1).
+3. **Reuse** — a module instance is an ordinary `Project` carrying the
+   `isModule` flag. Sidebar, workspace isolation, sharing, AI context and
+   permissions all come for free.
+4. **Definition ≠ data** — the schema comes from the manifest and is versioned;
+   the records belong to the user. Updating a module **never** touches records
+   (schema migrations are additive only).
+5. **AI almost for free** — generic tools over registries plus the module's own
+   domain hints. The assistant fills in data straight from chat, with no
+   special-purpose code.
+6. **Self-hosted + BYOK** — sensitive data (medical, legal) never leaves the
+   user's own server, and the AI runs on their key. That is the main advantage.
 
-## 3. Модель данных
+## 3. Data model
 
-| Сущность | Назначение | Ключевые поля |
+| Entity | Purpose | Key fields |
 |---|---|---|
-| `Collection` (Реестр) | Типизированный набор записей | `projectId, moduleId?, key, name(i18n), icon, fields(JSON), position` |
-| `CollectionRecord` (Запись) | Строка данных | `collectionId, data(JSONB), createdAt, updatedAt, createdBy` |
-| `CollectionView` (Вид) | Как отображать реестр | `collectionId, key, type, name(i18n), config(JSON), position` |
-| `Module` (реестр установленных) | Манифест + версия + статус | `moduleId, version, manifest(JSON), enabled, scope` |
+| `Collection` (registry) | A typed set of records | `projectId, moduleId?, key, name(i18n), icon, fields(JSON), position` |
+| `CollectionRecord` (record) | One row of data | `collectionId, data(JSONB), createdAt, updatedAt, createdBy` |
+| `CollectionView` (view) | How to display a registry | `collectionId, key, type, name(i18n), config(JSON), position` |
+| `Module` (installed catalogue) | Manifest + version + status | `moduleId, version, manifest(JSON), enabled, scope` |
 
-- **Поля** живут внутри `Collection.fields` (JSON), отдельной таблицы нет.
-- **Данные записи** — JSONB по ключам полей. Фильтры/сортировки — по JSONB;
-  при росте добавим индексы/генерируемые колонки.
-- **Экземпляр модуля** = `Project { isModule: true, moduleId }`. Проект-модуль
-  показывает виды Реестров вместо дефолтных `pages/tasks` (+ опц. обычные
-  страницы для заметок/дашборда).
+- **Fields** live inside `Collection.fields` (JSON); there is no separate table.
+- **Record data** is JSONB keyed by field key. Filtering and sorting go through
+  JSONB; as volume grows we will add indexes or generated columns.
+- **A module instance** is `Project { isModule: true, moduleId }`. Such a project
+  shows registry views instead of the default pages/tasks, optionally alongside
+  ordinary pages for notes or a dashboard.
 
-## 4. Манифест модуля
+## 4. The module manifest
 
-Минимальный, человекочитаемый JSON. Это же — формальная «структура для
-создания» (валидируется JSON-схемой, см. §8).
+Minimal, human-readable JSON. This doubles as the formal "structure to build
+from" and is validated against a JSON schema — see §8.
 
 ```jsonc
 {
-  "id": "medical-record",            // уникальный slug
+  "id": "medical-record",            // unique slug
   "version": "1.0.0",                // semver
-  "name":        { "ru": "Медкарта", "en": "Medical Record" },
-  "description": { "ru": "Личный медархив: анализы, приёмы, показатели и тренды." },
+  "name":        { "en": "Medical Record", "ru": "Медкарта" },
+  "description": { "en": "A personal medical archive: lab results, visits, indicators and trends." },
   "icon": "lucide:HeartPulse",
   "author": "SinoutX",
-  "disclaimer": { "ru": "Не является медицинской консультацией. Личный архив + ассистент." },
+  "disclaimer": { "en": "Not medical advice. A personal archive plus an assistant." },
 
   "collections": [
     {
       "key": "analyses",
-      "name": { "ru": "Анализы", "en": "Lab results" },
+      "name": { "en": "Lab results", "ru": "Анализы" },
       "icon": "lucide:FlaskConical",
       "fields": [
-        { "key": "date",  "label": { "ru": "Дата" },     "type": "date",   "required": true },
-        { "key": "panel", "label": { "ru": "Панель" },   "type": "select",
-          "options": [ { "value": "cbc", "label": { "ru": "ОАК" } },
-                       { "value": "biochem", "label": { "ru": "Биохимия" } } ] },
-        { "key": "lab",   "label": { "ru": "Лаборатория" }, "type": "text" },
-        { "key": "file",  "label": { "ru": "Скан" },      "type": "file" },
-        { "key": "notes", "label": { "ru": "Заметки" },   "type": "longtext" }
+        { "key": "date",  "label": { "en": "Date" },  "type": "date", "required": true },
+        { "key": "panel", "label": { "en": "Panel" }, "type": "select",
+          "options": [ { "value": "cbc", "label": { "en": "CBC" } },
+                       { "value": "biochem", "label": { "en": "Biochemistry" } } ] },
+        { "key": "lab",   "label": { "en": "Laboratory" }, "type": "text" },
+        { "key": "file",  "label": { "en": "Scan" },       "type": "file" },
+        { "key": "notes", "label": { "en": "Notes" },      "type": "longtext" }
       ],
       "views": [
-        { "key": "all", "type": "table", "name": { "ru": "Все" },
+        { "key": "all", "type": "table", "name": { "en": "All" },
           "config": { "columns": ["date", "panel", "lab"], "sort": [{ "field": "date", "dir": "desc" }] } },
-        { "key": "card", "type": "form", "name": { "ru": "Карточка" } }
+        { "key": "card", "type": "form", "name": { "en": "Card" } }
       ]
     },
     {
       "key": "indicators",
-      "name": { "ru": "Показатели", "en": "Indicators" },
+      "name": { "en": "Indicators", "ru": "Показатели" },
       "icon": "lucide:Activity",
       "fields": [
-        { "key": "analysis", "label": { "ru": "Анализ" }, "type": "relation",
+        { "key": "analysis", "label": { "en": "Lab result" }, "type": "relation",
           "relation": { "collection": "analyses" } },
-        { "key": "name",   "label": { "ru": "Показатель" }, "type": "text", "required": true },
-        { "key": "value",  "label": { "ru": "Значение" },   "type": "number" },
-        { "key": "unit",   "label": { "ru": "Ед." },         "type": "text" },
-        { "key": "refLow", "label": { "ru": "Норма от" },    "type": "number" },
-        { "key": "refHigh","label": { "ru": "Норма до" },    "type": "number" },
-        { "key": "date",   "label": { "ru": "Дата" },        "type": "date" }
+        { "key": "name",   "label": { "en": "Indicator" }, "type": "text", "required": true },
+        { "key": "value",  "label": { "en": "Value" },     "type": "number" },
+        { "key": "unit",   "label": { "en": "Unit" },      "type": "text" },
+        { "key": "refLow", "label": { "en": "Ref. from" }, "type": "number" },
+        { "key": "refHigh","label": { "en": "Ref. to" },   "type": "number" },
+        { "key": "date",   "label": { "en": "Date" },      "type": "date" }
       ],
       "views": [
-        { "key": "all",   "type": "table", "name": { "ru": "Все" },
+        { "key": "all",   "type": "table", "name": { "en": "All" },
           "config": { "columns": ["date", "name", "value", "unit"], "sort": [{ "field": "date", "dir": "desc" }] } },
-        { "key": "trend", "type": "chart", "name": { "ru": "Тренды" },   // Фаза 2
+        { "key": "trend", "type": "chart", "name": { "en": "Trends" },   // phase 2
           "config": { "x": "date", "y": "value", "series": "name" } }
       ]
     },
     {
       "key": "visits",
-      "name": { "ru": "Приёмы", "en": "Visits" },
+      "name": { "en": "Visits", "ru": "Приёмы" },
       "icon": "lucide:Stethoscope",
       "fields": [
-        { "key": "date",      "label": { "ru": "Дата" },    "type": "date", "required": true },
-        { "key": "doctor",    "label": { "ru": "Врач" },    "type": "text" },
-        { "key": "diagnosis", "label": { "ru": "Диагноз" }, "type": "text" },
-        { "key": "notes",     "label": { "ru": "Заметки" }, "type": "longtext" }
+        { "key": "date",      "label": { "en": "Date" },      "type": "date", "required": true },
+        { "key": "doctor",    "label": { "en": "Doctor" },    "type": "text" },
+        { "key": "diagnosis", "label": { "en": "Diagnosis" }, "type": "text" },
+        { "key": "notes",     "label": { "en": "Notes" },     "type": "longtext" }
       ],
-      "views": [ { "key": "all", "type": "table", "name": { "ru": "Все" },
+      "views": [ { "key": "all", "type": "table", "name": { "en": "All" },
         "config": { "columns": ["date", "doctor", "diagnosis"], "sort": [{ "field": "date", "dir": "desc" }] } } ]
     }
   ],
 
   "ai": {
     "systemHints": {
-      "ru": "Это личный медицинский архив. Помогай вносить анализы (analyses) и их показатели (indicators), отмечать тренды, фиксировать приёмы (visits). Никогда не ставь диагнозы и не давай медрекомендаций — только структурируй данные и обращай внимание на отклонения от референса."
+      "en": "This is a personal medical archive. Help enter lab results (analyses) and their indicators, note trends, and record visits. Never diagnose and never give medical advice — only structure the data and point out values outside the reference range."
     }
   },
 
   "seed": {
-    "analyses": [ { "date": "2026-05-01", "panel": "cbc", "lab": "Инвитро" } ]
+    "analyses": [ { "date": "2026-05-01", "panel": "cbc", "lab": "Example Lab" } ]
   }
 }
 ```
 
-## 5. Типы полей
+## 5. Field types
 
-| `type` | Описание | Доп. ключи |
+| `type` | Description | Extra keys |
 |---|---|---|
-| `text` | Короткая строка | — |
-| `longtext` | Многострочный текст | — |
-| `number` | Число | `unit?` |
-| `date` | Дата | — |
-| `datetime` | Дата+время | — |
-| `select` | Один из вариантов | `options: [{value,label(i18n)}]` |
-| `multiselect` | Несколько вариантов | `options` |
-| `checkbox` | Да/нет | — |
-| `relation` | Ссылка на запись другого реестра | `relation: { collection, multiple? }` |
-| `file` | Вложение (переиспользует `Attachment`) | — |
+| `text` | Short string | — |
+| `longtext` | Multi-line text | — |
+| `number` | Number | `unit?` |
+| `date` | Date | — |
+| `datetime` | Date and time | — |
+| `select` | One of several options | `options: [{value,label(i18n)}]` |
+| `multiselect` | Several options | `options` |
+| `checkbox` | Yes/no | — |
+| `relation` | A link to a record in another registry | `relation: { collection, multiple? }` |
+| `file` | Attachment (reuses `Attachment`) | — |
 
-Общие ключи поля: `key` (уникален в реестре), `label(i18n)`, `required?`,
-`default?`, `help(i18n)?`.
+Keys every field shares: `key` (unique within the registry), `label(i18n)`,
+`required?`, `default?`, `help(i18n)?`.
 
-## 6. Типы видов
+## 6. View types
 
-| `type` | Фаза | Назначение | `config` |
+| `type` | Phase | Purpose | `config` |
 |---|---|---|---|
-| `table` | 1 | Список с инлайн-правкой, сортировкой, фильтрами | `columns[], sort[], filters[]` |
-| `form` | 1 | Карточка/форма одной записи | `sections?[]`, порядок полей |
-| `chart` | 2 | Тренды по времени | `x, y, series` |
-| `board` | 2 | Канбан-группировка | `groupBy` (select/relation) |
-| `calendar` | 2 | По полю-дате | `dateField` |
-| `gallery` | 2 | Плитки (по file) | `cover` |
+| `table` | 1 | List with inline editing, sorting and filters | `columns[], sort[], filters[]` |
+| `form` | 1 | A card or form for a single record | `sections?[]`, field order |
+| `chart` | 2 | Trends over time | `x, y, series` |
+| `board` | 2 | Kanban grouping | `groupBy` (select/relation) |
+| `calendar` | 2 | By a date field | `dateField` |
+| `gallery` | 2 | Tiles (by file) | `cover` |
 
-## 6.1. Каталог и установка
+## 6.1. Catalogue and installation
 
-Модули **не зашиты** в приложение — они подключаются. Источники каталога:
+Modules are **not baked into** the application — they are plugged in. The
+catalogue has these sources:
 
-- **Встроенные (официальные)** — манифесты-файлы в
-  `packages/backend/src/data/modules/*.json`. На старте синхронизируются в
-  реестр `Module` (upsert по `id+version`).
-- **Импортированные** — пользователь/админ загружает свой манифест (JSON) →
-  валидация → запись в `Module`. Два способа:
-  - **по URL** (`POST /modules/import-url { url }`) — ссылка на `module.json`
-    в репозитории модуля. GitHub-ссылка вида `…/blob/…` автоматически
-    конвертируется в raw. Анти-SSRF (`isSafeWebhookUrl`), таймаут 10с, лимит 512КБ.
-  - **вставкой JSON** (`POST /modules/import { manifest }`).
-- **Удалённая галерея/маркетплейс** — позже (Фаза 3).
+- **Built-in (official)** — manifest files under
+  `packages/backend/src/data/modules/*.json`. They are synced into the `Module`
+  registry at startup (upsert by `id+version`).
+- **Imported** — a user or admin uploads their own JSON manifest, which is
+  validated and written to `Module`. Two ways:
+  - **by URL** (`POST /modules/import-url { url }`) — a link to `module.json`
+    in the module's repository. A GitHub `…/blob/…` link is converted to raw
+    automatically. SSRF-guarded (`isSafeWebhookUrl`), 10 s timeout, 512 KB limit.
+  - **by pasting JSON** (`POST /modules/import { manifest }`).
+- **A remote gallery / marketplace** — later (phase 3).
 
-### Модуль как отдельный репозиторий
+### A module as its own repository
 
-Декларативный модуль самодостаточен — это один JSON. Рекомендуемый layout
-репозитория модуля:
+A declarative module is self-contained — a single JSON file. The recommended
+repository layout:
 
 ```
 my-module/
-  module.json     # манифест (см. §4) — единственный обязательный файл
-  README.md       # описание, скриншоты
-  icon.png        # опц.
+  module.json     # the manifest (see §4) — the only required file
+  README.md       # description, screenshots
+  icon.png        # optional
 ```
 
-Установка как единицы: в «Модули» → «Импорт» → вставить ссылку на `module.json`
-(напр. `https://github.com/user/my-module/blob/main/module.json`). Ядро скачает,
-проверит по JSON-схеме и добавит в каталог; дальше — обычная установка в воркспейс.
+Installing it as a unit: go to **Modules → Import** and paste the link to
+`module.json` (e.g. `https://github.com/user/my-module/blob/main/module.json`).
+The core downloads it, validates it against the JSON schema and adds it to the
+catalogue; from there it installs into a workspace like any other module.
 
-**Граница безопасности:** сторонние модули — это ТОЛЬКО данные (манифест).
-Они НЕ возят исполняемый код. Доменные AI-пайплайны (OCR и т.п.) — это
-**first-party возможности ядра**, на которые манифест лишь ссылается по id
-(`ai.pipelines: [{ id: "lab-ocr" }]`), а сам обработчик живёт в ядре и гейтится
-как premium. Это исключает исполнение чужого кода на сервере (Фаза 3).
+**The security boundary:** third-party modules are ONLY data — a manifest. They
+carry no executable code. Domain AI pipelines (OCR and the like) are
+**first-party core capabilities** that a manifest merely references by id
+(`ai.pipelines: [{ id: "lab-ocr" }]`); the handler itself lives in the core and
+is gated as premium. This rules out running someone else's code on the server.
 
-**Витрина «Модули»** (отдельный раздел в приложении): карточки доступных
-модулей (иконка, имя, описание, версия, дисклеймер) и кнопка **«Установить»**.
+**The Modules storefront** is a separate section in the application: cards for
+the available modules (icon, name, description, version, disclaimer) and an
+**Install** button.
 
-**«Установить» = развернуть в текущем воркспейсе:** создаётся проект-модуль
-(`Project.isModule`), реестры и виды из манифеста, опционально `seed`.
-Установленный модуль виден как проект в сайдбаре. Один и тот же модуль можно
-установить в нескольких воркспейсах (у каждого свои данные).
+**"Install" means "unfold it into the current workspace":** a module project is
+created (`Project.isModule`) along with the registries and views from the
+manifest, and optionally the `seed`. The installed module shows up as a project
+in the sidebar. The same module can be installed in several workspaces, each
+with its own data.
 
-Кто устанавливает: владелец воркспейса (per-workspace). Импорт своих манифестов
-в общий каталог — владелец/админ инстанса.
+Who installs: the workspace owner, per workspace. Importing your own manifests
+into the shared catalogue is for the instance owner or an admin.
 
-`Module` (реестр доступных модулей, instance-level):
+`Module` (the catalogue of available modules, instance-level):
 `{ moduleId, version, manifest(JSON), source: 'builtin'|'imported', createdAt }`.
-Признак «установлен в воркспейсе» = наличие `Project{isModule, moduleId}` в нём.
+"Installed in this workspace" simply means a `Project{isModule, moduleId}`
+exists there.
 
-## 7. Жизненный цикл
+## 7. Lifecycle
 
-1. **register** — манифест попадает в каталог `Module` (встроенный синк или
-   импорт файла), валидация по JSON-схеме.
-2. **install** (в воркспейсе) — из витрины «Модули» по кнопке «Установить»:
-   создаётся проект-модуль + Реестры + Виды; `seed` опционально.
-3. **update** — приходит новая версия манифеста: схема мигрируется **аддитивно**
-   (новые поля/реестры/виды), записи пользователя не трогаются. Удаление/смена
-   типа поля — только через явную миграцию с подтверждением.
-4. **disable** — проект-модуль скрывается, данные сохраняются.
-5. **uninstall** — удаление данных только с явным подтверждением.
+1. **register** — the manifest reaches the `Module` catalogue (built-in sync or
+   file import) and is validated against the JSON schema.
+2. **install** (into a workspace) — from the Modules storefront via Install: a
+   module project, its registries and views are created; `seed` is optional.
+3. **update** — a new manifest version arrives: the schema migrates
+   **additively** (new fields, registries, views) and the user's records are
+   left alone. Dropping a field or changing its type requires an explicit,
+   confirmed migration.
+4. **disable** — the module project is hidden; the data stays.
+5. **uninstall** — data is removed only on explicit confirmation.
 
-**Железное правило:** определение (из модуля) и данные (записи) разделены —
-обновление модуля не может потерять данные.
+**The hard rule:** the definition (from the module) and the data (the records)
+are separate — updating a module cannot lose data.
 
-## 8. JSON-схема манифеста
+## 8. Manifest JSON schema
 
-Файл: `packages/backend/src/data/modules/manifest.schema.json` (Фаза 1).
-Используется и для валидации при install, и как контракт для авторов модулей.
-(Черновик ключевых ограничений: `id` — `^[a-z0-9-]+$`, `version` — semver,
-`collections[].key` уникальны, `fields[].type` ∈ перечню §5, `relation.collection`
-ссылается на существующий `key`.)
+File: `packages/backend/src/data/modules/manifest.schema.json`. It serves both
+as install-time validation and as the contract for module authors. Key
+constraints: `id` matches `^[a-z0-9-]+$`, `version` is semver,
+`collections[].key` are unique, `fields[].type` is one of §5, and
+`relation.collection` points at an existing `key`.
 
-## 9. AI-интеграция
+## 9. AI integration
 
-Generic-инструменты (Фаза 1), работают над любым Реестром:
+Generic tools that work over any registry:
 
-- `list_collections(projectId)` — какие реестры есть и их схема.
-- `query_records(collectionId, filters?, sort?, limit?)` — чтение.
+- `list_collections(projectId)` — which registries exist, and their schema.
+- `query_records(collectionId, filters?, sort?, limit?)` — reading.
 - `create_record(collectionId, data)` / `update_record(recordId, data)` /
-  `delete_record(recordId)` — запись.
+  `delete_record(recordId)` — writing.
 
-Плюс `ai.systemHints` модуля подмешиваются в системный промпт, когда ассистент
-работает в проекте-модуле. Итог: *«запиши анализ от 1.05: гемоглобин 140 г/л»*
-→ ассистент сам создаёт записи. **OCR фото/PDF → показатели — это Tier 2**
-(премиум-пайплайн, Фаза 3).
+On top of that, the module's `ai.systemHints` are mixed into the system prompt
+whenever the assistant works inside a module project. The result: *"log the lab
+result from 1 May: haemoglobin 140 g/l"* and the assistant creates the records
+itself. **OCR of a photo or PDF into indicators is Tier 2** — a premium
+pipeline.
 
-## 10. Как создать свой модуль (Tier 1, без кода)
+## 10. Building your own module (Tier 1, no code)
 
-1. Скопируй шаблон манифеста (этот файл, §4).
-2. Опиши свои Реестры: `key`, `name`, `fields` (типы — §5).
-3. Добавь Виды (Фаза 1: `table` и `form`).
-4. По желанию — `ai.systemHints` (что ассистенту знать о домене) и `seed`.
-5. Проверь по JSON-схеме (§8), импортируй в Администрирование → Модули.
+1. Copy the manifest template from §4.
+2. Describe your registries: `key`, `name`, `fields` (types in §5).
+3. Add views (`table` and `form` are available today).
+4. Optionally add `ai.systemHints` — what the assistant should know about the
+   domain — and a `seed`.
+5. Validate against the JSON schema (§8) and import it under Modules → Import.
 
-**Tier 2 (премиум):** доменные AI-пайплайны/действия (OCR анализов, юр-парсинг)
-— поставляются официально, оплачиваются как add-on.
+**Tier 2 (premium):** domain AI pipelines and actions (lab-result OCR, legal
+parsing) ship officially and are paid for as an add-on.
 
-## 11. План Фазы 1 (MVP движка)
+## 11. Roadmap
 
-- [ ] **Данные:** Prisma — `Collection`, `CollectionRecord`, `CollectionView`,
-      `Module`; флаги `Project.isModule/moduleId`; миграция.
-- [ ] **Манифест:** JSON-схема + валидатор; синк встроенных манифестов в `Module`
-      на старте; сервис install (скаффолд проекта-модуля + реестров + видов + seed)
-      + uninstall; update (аддитивная миграция).
-- [ ] **Бэкенд-роуты:** каталог модулей (list доступных, import-файла, install
-      в воркспейс, uninstall); реестры (list по проекту); записи CRUD + query.
-- [ ] **Витрина «Модули»:** карточки каталога + кнопка «Установить»; импорт
-      манифеста; установленный модуль = проект в сайдбаре.
-- [ ] **AI-тулы:** `list_collections/query_records/create_record/update_record/
-      delete_record`; подмешивание `systemHints` в контекст проекта-модуля.
-- [ ] **Фронт:** проект-модуль в сайдбаре (виды реестров); **Вид Таблица**
-      (список, инлайн-правка, добавление, сортировка) + **Вид Форма/Карточка**;
-      рендереры по типам полей; пикер relation; импорт манифеста в админке.
-- [ ] **Эталон:** манифест «Медкарта-lite» (`analyses + indicators + visits`,
-      table+form) + сиды.
-- [ ] **Качество:** i18n (ru/en/be), `tsc` чисто обоих пакетов, e2e-смоук.
+Delivered: the registry engine (`Collection`, `CollectionRecord`,
+`CollectionView`, `Module`), the manifest schema and validator, install /
+uninstall / additive update, the Modules storefront with import by URL or paste,
+the table and form views, the generic AI tools, and a Medical Record module as
+the reference implementation.
 
-**Фаза 2:** виды chart/board/calendar/gallery, UI-фильтры, конструктор без JSON.
-**Фаза 3:** Tier-2 пайплайны (OCR), галерея модулей, версионные обновления, premium.
+**Next:** the chart, board, calendar and gallery views; UI filters; a builder
+that needs no JSON. **After that:** Tier-2 pipelines (OCR), a module gallery,
+versioned updates and premium gating.

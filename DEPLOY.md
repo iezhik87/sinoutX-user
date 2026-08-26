@@ -3,8 +3,8 @@
 ## Requirements
 - Ubuntu/Debian server with Docker and Docker Compose
 - Nginx Proxy Manager (already running)
-- A domain pointed at the server's IP (e.g. `sinout.dasp.top` for the
-  landing page and `app.sinout.dasp.top` for the app)
+- A domain pointed at the server's IP (e.g. `example.com` for the
+  landing page and `app.example.com` for the app)
 
 ---
 
@@ -60,8 +60,8 @@ ENCRYPTION_KEY=CHOOSE_A_RANDOM_KEY_MIN_16_CHARS
 MCP_API_KEY=CHOOSE_A_KEY
 
 # CORS and app URL
-CORS_ORIGIN=https://app.sinout.dasp.top
-APP_URL=https://app.sinout.dasp.top
+CORS_ORIGIN=https://app.example.com
+APP_URL=https://app.example.com
 
 # SearXNG (can be left as-is)
 SEARXNG_SECRET=sinout_searxng_secret_key_2024
@@ -124,23 +124,23 @@ The stack exposes two ports on the host:
 
 Create two Proxy Hosts in NPM (usually at `http://IP:81`):
 
-### Landing → `sinout.dasp.top`
-- **Domain Names:** `sinout.dasp.top`
+### Landing → `example.com`
+- **Domain Names:** `example.com`
 - **Scheme:** `http`
 - **Forward Hostname / IP:** `127.0.0.1`
 - **Forward Port:** `8091`
 - **SSL:** Request a new certificate, Force SSL ✓, HTTP/2 ✓
 
-### App → `app.sinout.dasp.top`
-- **Domain Names:** `app.sinout.dasp.top`
+### App → `app.example.com`
+- **Domain Names:** `app.example.com`
 - **Scheme:** `http`
 - **Forward Hostname / IP:** `127.0.0.1`
 - **Forward Port:** `8090`
 - **Websockets Support:** ✓ (required — collab server + AI chat SSE)
 - **SSL:** Request a new certificate, Force SSL ✓, HTTP/2 ✓
 
-After this the landing is at `https://sinout.dasp.top` and the app at
-`https://app.sinout.dasp.top`.
+After this the landing is at `https://example.com` and the app at
+`https://app.example.com`.
 
 ### Landing videos are not in git
 
@@ -161,7 +161,7 @@ ranges of the old file into the new one and report that the video is damaged.
 
 ## 5. First sign-in
 
-Open `https://app.sinout.dasp.top` — the registration page appears.
+Open `https://app.example.com` — the registration page appears.
 
 **The first registered user automatically becomes OWNER** (and is never
 limited by plan quotas).

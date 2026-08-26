@@ -19,16 +19,14 @@ export interface VisionFile { base64: string; mime: string }
 
 interface ProviderInfo { label: string; baseUrl: string; anthropic?: boolean; models: { id: string; label: string }[] }
 
-// Curated vision-capable models per provider (cheap-first).
+// Providers we can talk to. `models` is only a LAST-RESORT fallback for when the
+// provider's own catalogue cannot be reached — a hard-coded list goes stale
+// silently (ours did: three of four ids had been retired, and recognition failed
+// with «no endpoints for model»). The live list from listVisionModels() wins.
 export const OCR_PROVIDERS: Record<string, ProviderInfo> = {
   openrouter: {
     label: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1',
-    models: [
-      { id: 'openai/gpt-4o-mini', label: 'GPT-4o mini' },
-      { id: 'google/gemini-2.0-flash-001', label: 'Gemini 2.0 Flash' },
-      { id: 'anthropic/claude-3.5-haiku', label: 'Claude 3.5 Haiku' },
-      { id: 'qwen/qwen-2-vl-7b-instruct', label: 'Qwen2-VL 7B' },
-    ],
+    models: [{ id: 'openai/gpt-4o-mini', label: 'GPT-4o mini' }],
   },
   openai: {
     label: 'OpenAI', baseUrl: 'https://api.openai.com/v1',
@@ -36,11 +34,11 @@ export const OCR_PROVIDERS: Record<string, ProviderInfo> = {
   },
   google: {
     label: 'Google Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    models: [{ id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' }, { id: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash' }],
+    models: [{ id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' }],
   },
   anthropic: {
     label: 'Anthropic', baseUrl: 'https://api.anthropic.com', anthropic: true,
-    models: [{ id: 'claude-3-5-haiku-20241022', label: 'Claude 3.5 Haiku' }, { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' }],
+    models: [{ id: 'claude-3-5-haiku-20241022', label: 'Claude 3.5 Haiku' }],
   },
   custom: { label: 'Custom', baseUrl: '', models: [] },
 }
@@ -48,6 +46,63 @@ export const OCR_PROVIDERS: Record<string, ProviderInfo> = {
 // Public (no-secret) provider list for the UI.
 export function ocrProvidersPublic() {
   return Object.entries(OCR_PROVIDERS).map(([key, p]) => ({ key, label: p.label, models: p.models, custom: key === 'custom' }))
+}
+
+/**
+ * The provider's OWN list of models that can read an image, fetched live.
+ * A key is optional where the catalogue is public (OpenRouter, Google); OpenAI
+ * and Anthropic need one. Falls back to OCR_PROVIDERS[provider].models only when
+ * the provider cannot be reached, so a stale id can never be the default answer.
+ */
+export async function listVisionModels(
+  provider: string, apiKey?: string, baseUrl?: string,
+): Promise<{ id: string; label: string }[]> {
+  const info = OCR_PROVIDERS[provider]
+  const fallback = info?.models ?? []
+  const timeout = AbortSignal.timeout(15_000)
+  const auth = apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined
+
+  try {
+    if (provider === 'openrouter') {
+      const res = await fetch('https://openrouter.ai/api/v1/models', { signal: timeout, headers: auth })
+      if (!res.ok) return fallback
+      const data = await res.json() as { data?: { id: string; name?: string; architecture?: { input_modalities?: string[] } }[] }
+      const vision = (data.data ?? [])
+        .filter((m) => m.architecture?.input_modalities?.includes('image'))
+        // `:batch` variants answer asynchronously — useless for reading a document now.
+        .filter((m) => !m.id.includes(':batch'))
+        .map((m) => ({ id: m.id, label: m.name ?? m.id }))
+      return vision.length ? vision.sort((a, b) => a.label.localeCompare(b.label)) : fallback
+    }
+
+    if (provider === 'anthropic') {
+      if (!apiKey) return fallback
+      const res = await fetch('https://api.anthropic.com/v1/models?limit=100', {
+        signal: timeout, headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      })
+      if (!res.ok) return fallback
+      const data = await res.json() as { data?: { id: string; display_name?: string }[] }
+      // Every current Claude model reads images; the catalogue states no modality.
+      const models = (data.data ?? []).map((m) => ({ id: m.id, label: m.display_name ?? m.id }))
+      return models.length ? models : fallback
+    }
+
+    // OpenAI-compatible: OpenAI itself, Google's OpenAI endpoint, or a custom gateway.
+    const base = (baseUrl || info?.baseUrl || '').replace(/\/$/, '')
+    if (!base) return fallback
+    const res = await fetch(`${base}/models`, { signal: timeout, headers: auth })
+    if (!res.ok) return fallback
+    const data = await res.json() as { data?: { id: string }[] }
+    let ids = (data.data ?? []).map((m) => m.id)
+    // These catalogues list embeddings, TTS and image generators too, and say
+    // nothing about modality — keep the families known to accept an image.
+    if (provider === 'openai') ids = ids.filter((id) => /^(gpt-4o|gpt-4\.|gpt-5|o[13])/.test(id) && !/audio|realtime|transcribe|tts/.test(id))
+    if (provider === 'google') ids = ids.filter((id) => id.includes('gemini') && !/embedding|imagen|tts/.test(id))
+    const models = ids.map((id) => ({ id: id.replace(/^models\//, ''), label: id.replace(/^models\//, '') }))
+    return models.length ? models.sort((a, b) => a.label.localeCompare(b.label)) : fallback
+  } catch {
+    return fallback
+  }
 }
 
 // Unified extraction: accepts images (vision) and/or already-extracted text
@@ -75,7 +130,11 @@ export async function runExtraction(
       headers: { 'content-type': 'application/json', 'x-api-key': cfg.apiKey, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({ model: cfg.model, max_tokens: 4000, messages: [{ role: 'user', content }] }),
     })
-    if (!res.ok) throw new Error(`Vision API ${res.status}: ${(await res.text()).slice(0, 300)}`)
+    if (!res.ok) {
+      const body = (await res.text()).slice(0, 300)
+      console.error('[vision] anthropic', res.status, body)
+      throw new Error(`Vision API ${res.status}: ${body}`)
+    }
     const data = await res.json() as { content?: { text?: string }[]; usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number } }
     if (onUsage && data.usage) onUsage({
       inputTokens: data.usage.input_tokens ?? 0,
@@ -94,15 +153,32 @@ export async function runExtraction(
   const userContent: unknown = images.length
     ? [{ type: 'text', text: head + prompt }, ...images.map((f) => ({ type: 'image_url', image_url: { url: `data:${f.mime};base64,${f.base64}` } }))]
     : `${head}${prompt}`
-  const res = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST', signal: timeout,
-    headers: { 'content-type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
-    body: JSON.stringify({ model: cfg.model, max_tokens: 4000, messages: [{ role: 'user', content: userContent }] }),
-  })
-  if (!res.ok) throw new Error(`Vision API ${res.status}: ${(await res.text()).slice(0, 300)}`)
+  let res: Response
+  try {
+    res = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST', signal: timeout,
+      headers: { 'content-type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
+      body: JSON.stringify({ model: cfg.model, max_tokens: 4000, messages: [{ role: 'user', content: userContent }] }),
+    })
+  } catch (e) {
+    console.error('[vision]', cfg.provider, baseUrl, 'fetch failed:', e instanceof Error ? e.message : e)
+    throw new Error(`Vision API недоступен (${cfg.provider}): ${e instanceof Error ? e.message : String(e)}`)
+  }
+  if (!res.ok) {
+    const body = (await res.text()).slice(0, 300)
+    console.error('[vision]', cfg.provider, baseUrl, res.status, body)
+    throw new Error(`Vision API ${res.status}: ${body}`)
+  }
   const data = await res.json() as {
-    choices?: { message?: { content?: string } }[]
+    choices?: { message?: { content?: string }; finish_reason?: string }[]
     usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number }; prompt_cache_hit_tokens?: number }
+  }
+  // A model that declines ("I can't help with that") answers 200/finish=stop with
+  // a couple of lines — indistinguishable from success unless it is called out.
+  const content = data.choices?.[0]?.message?.content ?? ''
+  if (images.length && content.length < 100) {
+    console.warn('[vision]', cfg.provider, cfg.model, `images=${images.length}`,
+      `finish=${data.choices?.[0]?.finish_reason}`, `suspiciously short answer (${content.length} chars) — model may have refused`)
   }
   if (onUsage && data.usage) {
     // `prompt_tokens` includes cached ones — subtract, or a cache hit is billed

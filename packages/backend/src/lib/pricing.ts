@@ -12,7 +12,7 @@
 // old row keeps the price that actually applied.
 
 import type { PrismaClient } from '@prisma/client'
-import { getManagedAi, getManagedVision, getManagedEmbeddings } from './managed.js'
+import { getManagedAi, getManagedVision, getManagedEmbeddings, getManagedImage } from './managed.js'
 
 export interface ModelPrice {
   /** Fresh input, per 1M tokens. */
@@ -153,44 +153,92 @@ export async function primePricing(prisma: PrismaClient): Promise<void> {
 /** Model ids this instance can actually be billed for right now, straight from
  *  "Ключи SinoutX" — the ONE place that decides what runs. Image gen is priced
  *  per picture in a separate table, not here. */
-function activeModelIds(): string[] {
-  const ids: string[] = []
-  const ai = getManagedAi(); if (ai?.model) ids.push(ai.model)
-  const vision = getManagedVision(); if (vision?.model) ids.push(vision.model)
-  const emb = getManagedEmbeddings(); if (emb?.model) ids.push(emb.model)
-  return ids
+
+
+// ─── Prices of what is actually running ───────────────────────────────────────
+
+export type PricingSlotId = 'ai' | 'vision' | 'embeddings' | 'image'
+
+export interface PricingSlot {
+  slot: PricingSlotId
+  provider: string | null
+  model: string | null
+  /** Per 1M tokens. Null means we have no price — those tokens bill as zero. */
+  price: ModelPrice | null
+  /** Per picture; the image slot is billed that way, not by tokens. */
+  perImage: number | null
+  /** Image slot only: what the provider charges per 1M image-output tokens. */
+  imageOutputPer1M?: number | null
+  /** Image slot only: that price turned into one picture, as a suggestion. */
+  suggestedPerImage?: number | null
 }
 
 /**
- * Everything the admin panel shows: defaults merged with his edits — but an
- * UNTOUCHED shipped default the instance cannot possibly be billed for (a
- * different provider is configured, nothing runs on it) is left out, not
- * merely dimmed. It is exactly this kind of dead entry — present, plausible-
- * looking, and wrong — that hid the Luna id mismatch in the first place.
- *
- * Two things are never filtered, on purpose: a custom row the admin typed in
- * himself (he put it there deliberately, active or not), and a shipped
- * default he actually edited (the edit is real intent — hiding it here would
- * silently drop it the next time anything on this tab gets saved, since only
- * what is visible in the form is what gets persisted).
+ * One row per configured slot — nothing else. The price table used to be a list
+ * the admin curated by hand, which drifted from what the instance actually ran:
+ * rows for models nobody used, and no row for the model that had just been
+ * switched to. What runs is decided in the slots above; this only reports what
+ * it costs.
  */
-export function pricingForAdmin() {
-  const active = activeModelIds()
-  const configured = active.length > 0
-  const all = MODEL_PRICES()
-  const models = configured
-    ? Object.fromEntries(Object.entries(all).filter(([id, price]) => {
-        if (active.includes(id)) return true
-        const def = DEFAULT_MODEL_PRICES[id]
-        if (!def) return true // not a shipped default at all — the admin's own row
-        return def.input !== price.input || def.cachedInput !== price.cachedInput || def.output !== price.output
-      }))
-    : all // nothing configured yet (fresh instance) — show every shipped default, we don't know which will matter
+export function activePricingSlots(): PricingSlot[] {
+  const prices = MODEL_PRICES()
+  const images = IMAGE_PRICES()
+  const ai = getManagedAi()
+  const vision = getManagedVision()
+  const emb = getManagedEmbeddings()
+  const img = getManagedImage()
 
-  return {
-    marginPercent: marginPercent(),
-    models,
-    images: IMAGE_PRICES(),
-    defaults: { models: DEFAULT_MODEL_PRICES, images: DEFAULT_IMAGE_PRICES, marginPercent: DEFAULT_MARGIN_PERCENT },
-  }
+  const tokens = (slot: PricingSlotId, provider: string | null, model?: string): PricingSlot => ({
+    slot,
+    provider,
+    model: model ?? null,
+    price: model ? (prices[model] ?? null) : null,
+    perImage: null,
+  })
+
+  return [
+    tokens('ai', ai?.provider ?? null, ai?.model),
+    tokens('vision', vision?.provider ?? null, vision?.model),
+    // The embeddings slot stores no provider name — only a base URL and a model.
+    tokens('embeddings', null, emb?.model),
+    {
+      slot: 'image',
+      provider: img?.provider ?? null,
+      model: img?.model ?? null,
+      price: null,
+      perImage: img?.model ? (images[img.model] ?? null) : null,
+    },
+  ]
+}
+
+/**
+ * Merge ONE model's price into the stored overrides. The admin PATCH replaces
+ * the whole blob (the form sends a full snapshot); everything automatic writes
+ * a single model and must not clobber the rest, hence read-merge-write.
+ */
+export async function upsertModelPrice(prisma: PrismaClient, modelId: string, price: ModelPrice): Promise<void> {
+  const existing = await prisma.appSettings.findUnique({ where: { id: 'singleton' }, select: { pricing: true } })
+  const current = (existing?.pricing ?? {}) as { marginPercent?: number; models?: Record<string, ModelPrice>; images?: Record<string, number> }
+  const next = { ...current, models: { ...current.models, [modelId]: price } }
+  const row = await prisma.appSettings.upsert({
+    where: { id: 'singleton' },
+    create: { id: 'singleton', pricing: next as object },
+    update: { pricing: next as object },
+    select: { pricing: true },
+  })
+  setPricingOverrides(row.pricing as never)
+}
+
+/** Same read-merge-write as upsertModelPrice, for the per-picture table. */
+export async function upsertImagePrice(prisma: PrismaClient, modelId: string, perImage: number): Promise<void> {
+  const existing = await prisma.appSettings.findUnique({ where: { id: 'singleton' }, select: { pricing: true } })
+  const current = (existing?.pricing ?? {}) as { marginPercent?: number; models?: Record<string, ModelPrice>; images?: Record<string, number> }
+  const next = { ...current, images: { ...current.images, [modelId]: perImage } }
+  const row = await prisma.appSettings.upsert({
+    where: { id: 'singleton' },
+    create: { id: 'singleton', pricing: next as object },
+    update: { pricing: next as object },
+    select: { pricing: true },
+  })
+  setPricingOverrides(row.pricing as never)
 }

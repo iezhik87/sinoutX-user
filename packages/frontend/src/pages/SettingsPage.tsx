@@ -6,11 +6,11 @@ import { ProviderConnect } from '@/components/settings/ProviderConnect'
 import {
   Bot, Trash2, Download, Upload, Loader2, Plus, Check, X,
   MessageCircle, Phone, Hash, Webhook, Key, Eye, EyeOff, Copy, DatabaseBackup,
-  Cpu, ToggleLeft, ToggleRight, Settings2, Search,
+  Cpu, ToggleLeft, ToggleRight, Settings2, Search, ScanText,
   Moon, Sun, Leaf, ImagePlus, Coffee, Sunrise, ShieldCheck, HelpCircle,
   FileInput, FolderOpen, ArrowRight, AlertCircle, CheckCircle2,
 } from 'lucide-react'
-import { integrationApi, backupApi, aiSettingsApi, searchApi, importApi, projectApi, twoFactorApi, type ImportResult, type IntegrationType, type Integration, type AIProvider, type ImageProvider, type AISettings, type AISettingsPatch, type EmbeddingProvider, type ToolMeta, walletApi, type Wallet } from '@/api/client'
+import { integrationApi, backupApi, aiSettingsApi, searchApi, importApi, projectApi, twoFactorApi, moduleApi, type ImportResult, type IntegrationType, type Integration, type AIProvider, type ImageProvider, type AISettings, type AISettingsPatch, type EmbeddingProvider, type ToolMeta, walletApi, type Wallet } from '@/api/client'
 import { authApi, type ApiKeyItem } from '@/api/auth'
 import { CustomToolsManager } from '@/components/ai/CustomToolsManager'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
@@ -801,7 +801,7 @@ function AIAssistantTab({ workspaceId }: { workspaceId: string }) {
   const getToolName = (name: string) =>
     isBe ? (TOOL_NAME_BE[name] ?? name) : name
   const [saved, setSaved] = useState(false)
-  const [aiSubTab, setAiSubTab] = useState<'language' | 'image' | 'audio' | 'embeddings'>('language')
+  const [aiSubTab, setAiSubTab] = useState<'language' | 'image' | 'audio' | 'embeddings' | 'vision'>('language')
   // Per-provider show/hide key toggle
   // Per-provider test status
   // Per-provider dynamic models (from connection test)
@@ -814,6 +814,13 @@ function AIAssistantTab({ workspaceId }: { workspaceId: string }) {
   const { data: modelsData } = useQuery({
     queryKey: ['ai-models'],
     queryFn: () => aiSettingsApi.getModels(),
+  })
+
+  // The curated vision provider/model list — one source, served from the backend
+  // (lib/modules/vision.ts), shared with the admin panel's managed vision slot.
+  const { data: ocrProviders = [] } = useQuery({
+    queryKey: ['ocr-providers'],
+    queryFn: moduleApi.ocrProviders,
   })
 
   // The wallet decides whether the managed model may be switched on at all —
@@ -859,6 +866,12 @@ function AIAssistantTab({ workspaceId }: { workspaceId: string }) {
     provider: serverSettings?.embeddings?.provider,
     model: serverSettings?.embeddings?.model,
     baseUrl: serverSettings?.embeddings?.baseUrl,
+  }
+  const visionCurrent = {
+    hasKey: !!serverSettings?.vision?.apiKey,
+    provider: serverSettings?.vision?.provider,
+    model: serverSettings?.vision?.model,
+    baseUrl: serverSettings?.vision?.baseUrl,
   }
   // Switching ON costs money on a billing instance; switching OFF never does —
   // leaving for your own key must always be possible, empty balance or not.
@@ -1030,7 +1043,8 @@ function AIAssistantTab({ workspaceId }: { workspaceId: string }) {
           { id: 'language', icon: <Bot size={13} />, label: isRu ? 'Языковая модель' : 'Language Model' },
           { id: 'image',    icon: <ImagePlus size={13} />, label: isRu ? 'Изображение' : 'Image' },
           { id: 'embeddings', icon: <Cpu size={13} />, label: language === 'en' ? 'Embeddings' : language === 'be' ? 'Эмбеддынгі' : 'Эмбеддинги' },
-        ] as { id: 'language' | 'image' | 'audio' | 'embeddings'; icon: React.ReactNode; label: string }[]).map((tab) => (
+          { id: 'vision', icon: <ScanText size={13} />, label: language === 'en' ? 'Recognition' : language === 'be' ? 'Распазнаванне' : 'Распознавание' },
+        ] as { id: 'language' | 'image' | 'audio' | 'embeddings' | 'vision'; icon: React.ReactNode; label: string }[]).map((tab) => (
           <button
             key={tab.id}
             onClick={() => setAiSubTab(tab.id)}
@@ -1062,6 +1076,20 @@ function AIAssistantTab({ workspaceId }: { workspaceId: string }) {
         />
       )}
 
+      {/* Document recognition — BYOK. The model list is curated, so no Connect step. */}
+      {!managedMode && aiSubTab === 'vision' && (
+        <ProviderConnect
+          title={language === 'en' ? 'Document recognition' : language === 'be' ? 'Распазнаванне дакументаў' : 'Распознавание документов'}
+          providers={ocrProviders.map((p) => p.key)}
+          current={visionCurrent}
+          staticModels={(pv) => ocrProviders.find((p) => p.key === pv)?.models ?? []}
+          listModels={(x) => aiSettingsApi.testVisionConnection({ provider: x.provider, apiKey: x.apiKey, baseUrl: x.baseUrl }, workspaceId)}
+          verify={(x) => aiSettingsApi.testVisionConnection({ provider: x.provider, apiKey: x.apiKey, baseUrl: x.baseUrl, model: x.model }, workspaceId)}
+          save={(x) => saveSlot({ vision: { provider: x.provider, apiKey: x.apiKey, model: x.model, baseUrl: x.baseUrl } })}
+          reset={() => saveSlot({ resetVision: true })}
+        />
+      )}
+
       {/* Language model — BYOK. Managed mode hides this entirely (handled above). */}
       {!managedMode && aiSubTab === 'language' && (
         <ProviderConnect
@@ -1084,7 +1112,7 @@ function AIAssistantTab({ workspaceId }: { workspaceId: string }) {
           current={imgCurrent}
           keyless={(pv) => pv === 'pollinations'}
           staticModels={(pv) => (modelsData?.imageModels?.[pv as ImageProvider] ?? []).map((o) => ({ id: o.id, label: o.label }))}
-          listModels={(x) => aiSettingsApi.testImageConnection({ provider: x.provider as ImageProvider, apiKey: x.apiKey, baseUrl: x.baseUrl }, workspaceId).then((r) => ({ ok: r.ok, error: r.error }))}
+          listModels={(x) => aiSettingsApi.testImageConnection({ provider: x.provider as ImageProvider, apiKey: x.apiKey, baseUrl: x.baseUrl }, workspaceId).then((r) => ({ ok: r.ok, error: r.error, models: r.models }))}
           save={(x) => saveSlot({ imageGeneration: { provider: x.provider as ImageProvider, apiKey: x.apiKey, model: x.model, baseUrl: x.baseUrl } })}
           reset={() => saveSlot({ resetImage: true })}
         />

@@ -181,11 +181,24 @@ export function getManagedVision(): { provider: string; model: string; apiKey: s
 }
 
 /** Embeddings on our key: DB first, then the legacy EMBEDDINGS_* env vars. */
+/** Where a provider answers, when no base URL was typed in. */
+const EMBEDDINGS_BASE_URLS: Record<string, string> = {
+  openai:     'https://api.openai.com/v1',
+  openrouter: 'https://openrouter.ai/api/v1',
+  together:   'https://api.together.xyz/v1',
+  mistral:    'https://api.mistral.ai/v1',
+}
+
 export function getManagedEmbeddings(): { apiKey: string; baseUrl: string; model: string } | null {
   if (cache.embeddings.apiKey) {
     return {
       apiKey: cache.embeddings.apiKey,
-      baseUrl: cache.embeddings.baseUrl || 'https://api.openai.com/v1',
+      // The slot records WHICH provider was chosen — honour it. Defaulting to
+      // OpenAI regardless sent an OpenRouter key to api.openai.com, which
+      // answered 403 and left every embedding silently unwritten.
+      baseUrl: cache.embeddings.baseUrl
+        || EMBEDDINGS_BASE_URLS[cache.embeddings.provider ?? '']
+        || 'https://api.openai.com/v1',
       model: cache.embeddings.model || 'text-embedding-3-small',
     }
   }

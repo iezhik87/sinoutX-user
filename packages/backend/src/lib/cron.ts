@@ -12,8 +12,9 @@ import { outboundChannels, notifyChannels } from '../modules/integration/channel
 import { chargeMonth } from './subscription.js'
 import { isBillingEnabled } from './billingMode.js'
 import { expireStalePendingTopups } from './wallet.js'
-import { usd, MODEL_PRICES } from './pricing.js'
+import { usd, MODEL_PRICES, activePricingSlots, upsertModelPrice } from './pricing.js'
 import { resolveOpenRouterPrice } from './openrouterPricing.js'
+import { listCatalogModels } from './modelCatalog.js'
 import { parseAssembled } from '../modules/ai/ai.customtools.js'
 import { indexRecord, recallRecords } from './embeddings.js'
 import { promises as fs } from 'fs'
@@ -811,7 +812,13 @@ async function processSubscriptions(prisma: PrismaClient) {
 const PRICE_DRIFT_THRESHOLD = 0.15 // 15% — provider prices wiggle a little; don't cry wolf over rounding.
 
 async function checkOpenRouterPriceDrift(prisma: PrismaClient) {
-  const candidates = Object.entries(MODEL_PRICES())
+  // Only what the instance actually runs. The price table is no longer a list
+  // someone curates — it follows the slots, so re-pricing anything else would
+  // be work on rows nobody is billed for.
+  const prices = MODEL_PRICES()
+  const candidates = activePricingSlots()
+    .filter((s) => s.model && s.slot !== 'image')
+    .map((s) => [s.model!, prices[s.model!] ?? null] as const)
   if (!candidates.length) return
 
   const drift = (was: number, now: number) => (was > 0 ? Math.abs(now - was) / was : now > 0 ? 1 : 0)
@@ -821,7 +828,19 @@ async function checkOpenRouterPriceDrift(prisma: PrismaClient) {
     if (!resolved || 'ambiguous' in resolved) continue // not on OpenRouter, or not uniquely resolvable — nothing safe to compare
     const live = resolved.price
 
+    // No stored price at all — adopt the live one and move on, nothing to compare.
+    if (!old) {
+      await upsertModelPrice(prisma, modelId, live).catch(() => null)
+      console.log(`[cron] price learned: ${modelId} = ${live.input}/${live.output}`)
+      continue
+    }
+
     if (drift(old.input, live.input) < PRICE_DRIFT_THRESHOLD && drift(old.output, live.output) < PRICE_DRIFT_THRESHOLD) continue
+
+    // Follow the provider automatically: leaving the old number in place means
+    // selling below cost until someone notices. The admin sets the margin; the
+    // cost itself is a fact, not a decision.
+    await upsertModelPrice(prisma, modelId, live).catch(() => null)
 
     // Once per model per day — a price that stays moved doesn't need a fresh alert every night.
     if (await redis.set(`pricing:drift:${modelId}`, '1', 'EX', 86400, 'NX') !== 'OK') continue
@@ -835,7 +854,7 @@ async function checkOpenRouterPriceDrift(prisma: PrismaClient) {
         userId: a.id,
         type: 'system',
         title: `💲 Цена модели ${modelId} ${dir}`,
-        body: `В прайсе у нас: $${old.input.toFixed(2)} / $${old.output.toFixed(2)} за 1M (вход/выход). Сейчас на OpenRouter${via}: $${live.input.toFixed(2)} / $${live.output.toFixed(2)}. Обновите в Админке → Биллинг → Цены, чтобы не продавать себе в убыток.`,
+        body: `Было: $${old.input.toFixed(2)} / $${old.output.toFixed(2)} за 1M (вход/выход). Стало${via}: $${live.input.toFixed(2)} / $${live.output.toFixed(2)}. Цена обновлена автоматически — проверьте наценку в Админке → Модель SinoutX, если маржа стала неприемлемой.`,
         link: '/admin',
       }).catch(() => {})
     }
@@ -860,6 +879,11 @@ export function startCronJobs(prisma: PrismaClient) {
   // Daily at 03:10 UTC — quiet hours, and far from the hourly batch above.
   cron.schedule('10 3 * * *', async () => {
     await processSubscriptions(prisma).catch((e) => console.error('[cron] subscriptions error:', e))
+    // Pull the catalogue first: the drift check below prices models against it,
+    // and a day-old cache would compare against yesterday's numbers.
+    await listCatalogModels(true)
+      .then((ms) => console.log(`[cron] model catalogue refreshed: ${ms.length} models`))
+      .catch((e) => console.error('[cron] catalogue refresh error:', e))
     await checkOpenRouterPriceDrift(prisma).catch((e) => console.error('[cron] price drift check error:', e))
   })
 

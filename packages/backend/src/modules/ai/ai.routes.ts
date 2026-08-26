@@ -507,6 +507,29 @@ export async function aiRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
   })
 
   // GET /ai/audio/:filename — serve AI-generated audio from MinIO
+  // GET /ai/image/:filename — serve a generated picture. It had no route at all:
+  // generation uploaded the file, registered the attachment (so it appeared in
+  // Files) and returned this path, which then 404'd. The <img> preview fell into
+  // onError and reported «generation failed» for a picture that had in fact been
+  // generated. Public by unguessable UUID, like the audio route below, because
+  // <img src> cannot carry an auth header — see the exemption in app.ts.
+  fastify.get('/ai/image/:filename', async (req, reply) => {
+    const { filename } = req.params as { filename: string }
+    // The name goes straight into an object key — keep it to what we generate.
+    if (!/^[A-Za-z0-9._-]+$/.test(filename)) return reply.status(400).send({ error: 'Bad filename' })
+    const key = `ai-images/${filename}`
+    try {
+      const { minio, BUCKET } = await import('../../lib/storage.js')
+      const stat   = await minio.statObject(BUCKET, key)
+      const stream = await minio.getObject(BUCKET, key)
+      reply.header('Content-Type', stat.metaData?.['content-type'] ?? 'image/jpeg')
+      reply.header('Cache-Control', 'public, max-age=31536000, immutable')
+      return reply.send(stream)
+    } catch {
+      return reply.status(404).send({ error: 'Not found' })
+    }
+  })
+
   fastify.get('/ai/audio/:filename', async (req, reply) => {
     const { filename } = req.params as { filename: string }
     const key = `ai-audio/${filename}`

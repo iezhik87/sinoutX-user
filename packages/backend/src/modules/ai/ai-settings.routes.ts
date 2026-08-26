@@ -4,8 +4,9 @@ import { z } from 'zod'
 import { createHmac } from 'crypto'
 import { getUserAISettings, saveAISettings, AI_DEFAULTS, completeOnce, embeddingsCfgFromParts, type AIProvider } from './ai.service.js'
 import { embed } from '../../lib/embeddings.js'
+import { listVisionModels, runExtraction } from '../../lib/modules/vision.js'
 import { config } from '../../config/index.js'
-import { getManagedAi, managedSummary } from '../../lib/managed.js'
+import { getManagedAi, getManagedVision, getManagedImage, getManagedEmbeddings, managedSummary } from '../../lib/managed.js'
 import { getCustomTools, saveCustomTools, maskCustomTool, executeCustomTool, SKILL_BUILDER_SYSTEM, buildAssemblyUserMessage, parseAssembled, type CustomTool } from './ai.customtools.js'
 import { TOOL_CATALOG } from './ai.tools.js'
 import { denyIfNotMember, denyIfNotAdmin } from '../../lib/requireAccess.js'
@@ -38,6 +39,7 @@ const aiSettingsSchema = z.object({
   resetProvider:      providerEnum.optional(),
   resetImage:         z.boolean().optional(),
   resetEmbeddings:    z.boolean().optional(),
+  resetVision:        z.boolean().optional(),
   temperature:        z.number().min(0).max(2).optional(),
   maxTokens:          z.number().min(256).max(32768).optional(),
   customSystemPrompt: z.string().optional(),
@@ -71,9 +73,43 @@ const aiSettingsSchema = z.object({
     model:    z.string().optional(),
     baseUrl:  z.string().optional(),
   }).optional(),
+  // Document recognition (vision/OCR). Provider stays a free string: the curated
+  // list lives in lib/modules/vision.ts and is served from /modules/ocr-providers,
+  // so repeating it as an enum here would be a second copy to keep in sync.
+  vision: z.object({
+    provider: z.string().min(1).max(64),
+    apiKey:   z.string().optional(),
+    model:    z.string().optional(),
+    baseUrl:  z.string().optional(),
+  }).optional(),
   searchRegion: z.string().optional(),
   timezone: z.string().optional(),
 })
+
+// The provider's own wording is a JSON dump aimed at a developer. Say what went
+// wrong and what to do about it; keep the original only when we don't recognise it.
+function humanVisionError(raw: string): string {
+  const s = raw.toLowerCase()
+  if (s.includes('401') || s.includes('unauthorized') || s.includes('user not found') || s.includes('invalid api key')) {
+    return 'Ключ не принят провайдером. Проверьте, что скопировали его целиком и он не удалён в личном кабинете.'
+  }
+  if (s.includes('no endpoints') || s.includes('404') || s.includes('not a valid model') || s.includes('model_not_found')) {
+    return 'Эта модель недоступна у провайдера. Выберите другую из списка.'
+  }
+  if (s.includes('402') || s.includes('insufficient') || s.includes('credit') || s.includes('quota') || s.includes('billing')) {
+    return 'Провайдер отклонил запрос из-за нехватки средств или исчерпанной квоты. Пополните баланс.'
+  }
+  if (s.includes('429') || s.includes('rate limit')) {
+    return 'Провайдер временно ограничил частоту запросов. Попробуйте через минуту.'
+  }
+  if (s.includes('403') || s.includes('forbidden') || s.includes('region') || s.includes('country')) {
+    return 'Провайдер отказал в доступе — возможно, модель недоступна в вашем регионе.'
+  }
+  if (s.includes('timeout') || s.includes('abort')) {
+    return 'Провайдер не ответил вовремя. Проверьте доступ к интернету с сервера и попробуйте снова.'
+  }
+  return raw.slice(0, 300)
+}
 
 function maskKey(k: string | undefined): string {
   if (!k) return ''
@@ -103,9 +139,12 @@ export async function aiSettingsRoutes(app: FastifyInstance, prisma: PrismaClien
     const maskedEmb = settings.embeddings
       ? { ...settings.embeddings, apiKey: maskKey(settings.embeddings.apiKey) }
       : undefined
+    const maskedVis = settings.vision
+      ? { ...settings.vision, apiKey: maskKey(settings.vision.apiKey) }
+      : undefined
     const customTools = (await getCustomTools(workspaceId, prisma)).map(maskCustomTool)
     return reply.send({
-      settings: { ...settings, providers: maskProviders(settings.providers), imageGeneration: maskedImg, audioGeneration: maskedAud, embeddings: maskedEmb },
+      settings: { ...settings, providers: maskProviders(settings.providers), imageGeneration: maskedImg, audioGeneration: maskedAud, embeddings: maskedEmb, vision: maskedVis },
       defaults: AI_DEFAULTS,
       catalog: TOOL_CATALOG,
       customTools,
@@ -140,7 +179,12 @@ export async function aiSettingsRoutes(app: FastifyInstance, prisma: PrismaClien
       embeddings = { ...embeddings, apiKey: undefined }
     }
 
-    const updated = await saveAISettings(req.authUser!.id, { ...body, providerConfig, imageGeneration, audioGeneration, embeddings }, prisma)
+    let vision = body.vision
+    if (vision?.apiKey && /^\*+.{0,6}$/.test(vision.apiKey)) {
+      vision = { ...vision, apiKey: undefined }
+    }
+
+    const updated = await saveAISettings(req.authUser!.id, { ...body, providerConfig, imageGeneration, audioGeneration, embeddings, vision }, prisma)
     await writeAuditLog(prisma, { action: 'ai_settings.updated', workspaceId, userId: req.authUser!.id, ip: req.ip })
     const maskedImg = updated.imageGeneration
       ? { ...updated.imageGeneration, apiKey: maskKey(updated.imageGeneration.apiKey) }
@@ -151,7 +195,10 @@ export async function aiSettingsRoutes(app: FastifyInstance, prisma: PrismaClien
     const maskedEmbUpd = updated.embeddings
       ? { ...updated.embeddings, apiKey: maskKey(updated.embeddings.apiKey) }
       : undefined
-    return reply.send({ ok: true, settings: { ...updated, providers: maskProviders(updated.providers), imageGeneration: maskedImg, audioGeneration: maskedAudUpd, embeddings: maskedEmbUpd } })
+    const maskedVisUpd = updated.vision
+      ? { ...updated.vision, apiKey: maskKey(updated.vision.apiKey) }
+      : undefined
+    return reply.send({ ok: true, settings: { ...updated, providers: maskProviders(updated.providers), imageGeneration: maskedImg, audioGeneration: maskedAudUpd, embeddings: maskedEmbUpd, vision: maskedVisUpd } })
   })
 
   // ── Custom tools (user-defined HTTP navыки) ─────────────────────────────────
@@ -239,15 +286,26 @@ export async function aiSettingsRoutes(app: FastifyInstance, prisma: PrismaClien
       apiKey:   z.string().optional(),
       baseUrl:  z.string().optional(),
       model:    z.string().optional(),
+      slot:     z.enum(['ai', 'vision']).optional(),
     }).parse(req.body)
 
     const { provider, baseUrl, model } = body
 
-    // If the key looks masked (sent back from GET), resolve the real key from DB
+    // If the key looks masked (sent back from GET), resolve the real key from DB.
+    // A BLANK key means the same thing on reopening a saved slot: the form never
+    // shows a stored key, so «Change» must fall back to it to list models again.
     let apiKey = body.apiKey
-    if (workspaceId && apiKey && /^\*+.{0,6}$/.test(apiKey)) {
+    if (apiKey && /^\*+.{0,6}$/.test(apiKey)) apiKey = undefined
+    if (workspaceId && !apiKey) {
       const stored = await getUserAISettings(req.authUser!.id, prisma)
-      apiKey = stored.providers?.[provider as AIProvider]?.apiKey ?? apiKey
+      apiKey = stored.providers?.[provider as AIProvider]?.apiKey
+    }
+    // Admin managed-slot flow (no workspaceId): "Connect" with a blank key means
+    // "keep testing the already-saved one" — without this, changing only the
+    // model forces re-pasting a working key just to see the model list again.
+    if (!workspaceId && !apiKey && body.slot) {
+      const managed = body.slot === 'vision' ? getManagedVision() : getManagedAi()
+      if (managed?.provider === provider) apiKey = managed.apiKey
     }
 
     try {
@@ -484,12 +542,20 @@ export async function aiSettingsRoutes(app: FastifyInstance, prisma: PrismaClien
     const body = z.object({
       provider: imageProviderEnum,
       apiKey:   z.string().optional(),
+      slot:     z.literal('image').optional(),
     }).parse(req.body)
 
+    // A masked key means «unchanged», a blank one means «use the stored one»:
+    // reopening a saved slot must list models without retyping the key.
     let apiKey = body.apiKey
-    if (workspaceId && apiKey && /^\*+.{0,6}$/.test(apiKey)) {
+    if (apiKey && /^\*+.{0,6}$/.test(apiKey)) apiKey = undefined
+    if (workspaceId && !apiKey) {
       const stored = await getUserAISettings(req.authUser!.id, prisma)
-      apiKey = stored.imageGeneration?.apiKey ?? apiKey
+      if (stored.imageGeneration?.provider === body.provider) apiKey = stored.imageGeneration.apiKey
+    }
+    if (!workspaceId && !apiKey && body.slot === 'image') {
+      const managed = getManagedImage()
+      if (managed?.provider === body.provider) apiKey = managed.apiKey
     }
 
     try {
@@ -522,24 +588,14 @@ export async function aiSettingsRoutes(app: FastifyInstance, prisma: PrismaClien
         })
         if (res.status === 401 || res.status === 403) return reply.send({ ok: false, error: 'OpenRouter: неверный API ключ' })
         if (!res.ok) return reply.send({ ok: false, error: `OpenRouter: HTTP ${res.status}` })
-        const data = await res.json() as { data?: Array<{ id: string; name: string; modality?: string; supported_parameters?: string[] }> }
+        const data = await res.json() as { data?: Array<{ id: string; name?: string; architecture?: { output_modalities?: string[] } }> }
+        // Ask the model what it EMITS. The previous test guessed from the name
+        // («image», «flux», «dall-e»…), which happens to be right today and
+        // silently misses the first image model named something else.
         const models = (data.data ?? [])
-          .filter((m) => {
-            const id = m.id.toLowerCase()
-            const name = (m.name ?? '').toLowerCase()
-            const modality = (m.modality ?? '').toLowerCase()
-            const params = m.supported_parameters ?? []
-            return modality.includes('->image') ||
-              modality === 'image' ||
-              params.includes('image_gen') ||
-              id.includes('image') ||
-              id.startsWith('black-forest-labs/') ||
-              name.includes('image') ||
-              id.includes('flux') ||
-              id.includes('dall-e') ||
-              id.includes('stable-diffusion') ||
-              id.includes('sdxl')
-          })
+          .filter((m) => m.architecture?.output_modalities?.includes('image'))
+          // The auto-routers claim every modality but choose a model per request.
+          .filter((m) => !m.id.startsWith('openrouter/'))
           .sort((a, b) => a.id.localeCompare(b.id))
           .map((m) => ({ id: m.id, label: m.name ?? m.id }))
         return reply.send({ ok: true, models, message: `OpenRouter подключён. Найдено ${models.length} image-моделей.` })
@@ -594,6 +650,52 @@ export async function aiSettingsRoutes(app: FastifyInstance, prisma: PrismaClien
     }
   })
 
+  // POST /ai/settings/test-vision — the provider's live vision-model list, and,
+  // when a model is named, a real call to prove that key + model actually work.
+  // Both in one round trip: the settings screen needs the list to offer, and the
+  // Save button must never store a combination that cannot read a document.
+  app.post('/ai/settings/test-vision', async (req, reply) => {
+    const { workspaceId } = z.object({ workspaceId: z.string().optional() }).parse(req.query)
+    if (workspaceId && await denyIfNotMember(prisma, workspaceId, req.authUser!.id, reply)) return
+    const body = z.object({
+      provider: z.string().min(1).max(64),
+      apiKey:   z.string().optional(),
+      baseUrl:  z.string().optional(),
+      model:    z.string().optional(),
+      slot:     z.literal('vision').optional(),
+    }).parse(req.body)
+
+    // The form never re-sends a key it only ever showed masked; fall back to the
+    // one already stored — for a user, his own; for an admin, the instance's.
+    let apiKey = body.apiKey
+    if (apiKey && /^\*+.{0,6}$/.test(apiKey)) apiKey = undefined
+    if (!apiKey && workspaceId) {
+      const stored = await getUserAISettings(req.authUser!.id, prisma)
+      if (stored.vision?.provider === body.provider) apiKey = stored.vision.apiKey
+    }
+    if (!apiKey && !workspaceId && body.slot === 'vision') {
+      const managed = getManagedVision()
+      if (managed?.provider === body.provider) apiKey = managed.apiKey
+    }
+
+    const models = await listVisionModels(body.provider, apiKey, body.baseUrl)
+
+    // Listing only — the screen is still being filled in.
+    if (!body.model) return reply.send({ ok: true, models })
+
+    if (!apiKey) return reply.send({ ok: false, error: 'Нужен API-ключ', models })
+    try {
+      // A text-only probe: it reaches the same endpoint the recogniser will use,
+      // so a dead key (401) or a retired model id (404) surfaces here, at Save,
+      // instead of when the user sends his first document.
+      await runExtraction({ provider: body.provider, model: body.model, apiKey, baseUrl: body.baseUrl }, {}, 'ping')
+      return reply.send({ ok: true, models })
+    } catch (e) {
+      const raw = e instanceof Error ? e.message : String(e)
+      return reply.send({ ok: false, error: humanVisionError(raw), models })
+    }
+  })
+
   // POST /ai/settings/test-embeddings — test the embeddings provider
   app.post('/ai/settings/test-embeddings', async (req, reply) => {
     const { workspaceId } = z.object({ workspaceId: z.string().optional() }).parse(req.query)
@@ -603,12 +705,19 @@ export async function aiSettingsRoutes(app: FastifyInstance, prisma: PrismaClien
       apiKey:   z.string().optional(),
       baseUrl:  z.string().optional(),
       model:    z.string().optional(),
+      slot:     z.literal('embeddings').optional(),
     }).parse(req.body)
 
+    // Same rule as the other slots: blank = fall back to what is stored.
     let apiKey = body.apiKey
-    if (workspaceId && apiKey && /^\*+.{0,6}$/.test(apiKey)) {
+    if (apiKey && /^\*+.{0,6}$/.test(apiKey)) apiKey = undefined
+    if (workspaceId && !apiKey) {
       const stored = await getUserAISettings(req.authUser!.id, prisma)
-      apiKey = stored.embeddings?.apiKey ?? apiKey
+      if (stored.embeddings?.provider === body.provider) apiKey = stored.embeddings.apiKey
+    }
+    if (!workspaceId && !apiKey && body.slot === 'embeddings') {
+      const managed = getManagedEmbeddings()
+      if (managed) apiKey = managed.apiKey
     }
     if (!apiKey) return reply.send({ ok: false, error: 'API ключ обязателен' })
 

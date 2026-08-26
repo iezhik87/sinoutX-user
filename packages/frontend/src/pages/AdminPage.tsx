@@ -1,9 +1,10 @@
-import { useState, useEffect, useRef, Fragment } from 'react'
+import { useState, useEffect, useMemo, useRef, Fragment } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Users, Settings, Shield, Trash2, UserCheck, UserX, Key, Save, RefreshCw, Check, UserPlus, X, Eye, EyeOff, Copy, ClipboardList, Loader2, Database, Download, Upload, RotateCcw, Clock, Activity, Cpu, MemoryStick, Network, HardDrive, AlertTriangle, Coins } from 'lucide-react'
+import { Users, Settings, Shield, Trash2, UserCheck, UserX, Key, Save, RefreshCw, Check, UserPlus, X, Eye, EyeOff, Copy, ClipboardList, Loader2, Database, Download, Upload, RotateCcw, Clock, Activity, Cpu, MemoryStick, Network, HardDrive, AlertTriangle, Coins, Bot, Star } from 'lucide-react'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
-import { api } from '@/api/client'
+import { api, moduleApi } from '@/api/client'
 import { ProviderConnect } from '@/components/settings/ProviderConnect'
+import { Modal } from '@/components/common/Modal'
 import { useAuthStore } from '@/stores/authStore'
 import { Header } from '@/components/layout/Header'
 import { cn } from '@/lib/utils'
@@ -146,19 +147,30 @@ interface AdminAuditItem {
 
 // ─── API ──────────────────────────────────────────────────────────────────────
 
-interface ModelPrice { input: number; cachedInput: number; output: number }
-interface PricingView {
-  marginPercent: number
-  models: Record<string, ModelPrice>
-  images: Record<string, number>
-  defaults: { models: Record<string, ModelPrice>; images: Record<string, number>; marginPercent: number }
-}
 
 interface ModelOpt { id: string; label: string }
 type ModelsResponse = Record<string, ModelOpt[]> & {
   managed: { available: boolean; model: string; provider?: string }
   imageModels: Record<string, ModelOpt[]>
 }
+
+export interface CatalogModel {
+  id: string
+  name: string
+  vendor: string
+  promptPer1M: number | null
+  completionPer1M: number | null
+  contextLength: number
+  maxOutput: number | null
+  vision: boolean
+  tools: boolean
+  reasoning: boolean
+  created: number
+  description: string
+  tags: string[]
+}
+interface ModelRating { stars: number; note?: string; ratedAt?: string }
+interface CatalogView { models: CatalogModel[]; ratings: Record<string, ModelRating> }
 
 interface ManagedSlotView { hasKey: boolean; provider?: string; model?: string; baseUrl?: string }
 interface ManagedView { ai: ManagedSlotView; image: ManagedSlotView; vision: ManagedSlotView; embeddings: ManagedSlotView }
@@ -170,18 +182,22 @@ const adminApi = {
   updateManaged: (patch: ManagedPatch) => api.patch<ManagedView>('/admin/managed', patch).then((r) => r.data),
   getModels: () => api.get<ModelsResponse>('/ai/settings/models').then((r) => r.data),
   getPricing: () => api.get<PricingView>('/admin/pricing').then((r) => r.data),
-  updatePricing: (p: { marginPercent: number; models: Record<string, ModelPrice>; images: Record<string, number> }) =>
+  updatePricing: (p: { marginPercent?: number; model?: { id: string; input: number; cachedInput: number; output: number }; image?: { id: string; perImage: number } }) =>
     api.patch<PricingView>('/admin/pricing', p).then((r) => r.data),
-  getOpenRouterPrice: (model: string) =>
-    api.get<{ price: ModelPrice; resolvedId: string }>('/admin/pricing/openrouter', { params: { model } }).then((r) => r.data),
-  getOpenRouterModelList: () =>
-    api.get<{ models: { id: string; label: string }[] }>('/admin/pricing/openrouter/list').then((r) => r.data.models),
-  testProvider: (params: { provider: string; apiKey?: string; baseUrl?: string; model?: string }) =>
+  testProvider: (params: { provider: string; apiKey?: string; baseUrl?: string; model?: string; slot?: 'ai' | 'vision' }) =>
     api.post<{ ok: boolean; error?: string; message?: string; models?: ModelOpt[] }>('/ai/settings/test', params).then((r) => r.data),
-  testImage: (params: { provider: string; apiKey?: string; baseUrl?: string; model?: string }) =>
-    api.post<{ ok: boolean; error?: string; message?: string }>('/ai/settings/test-image', params).then((r) => r.data),
-  testEmbeddings: (params: { provider: string; apiKey?: string; baseUrl?: string; model?: string }) =>
+  testImage: (params: { provider: string; apiKey?: string; baseUrl?: string; model?: string; slot?: 'image' }) =>
+    api.post<{ ok: boolean; error?: string; message?: string; models?: ModelOpt[] }>('/ai/settings/test-image', params).then((r) => r.data),
+  testEmbeddings: (params: { provider: string; apiKey?: string; baseUrl?: string; model?: string; slot?: 'embeddings' }) =>
     api.post<{ ok: boolean; error?: string; message?: string }>('/ai/settings/test-embeddings', params).then((r) => r.data),
+  testVision: (params: { provider: string; apiKey?: string; baseUrl?: string; model?: string; slot?: 'vision' }) =>
+    api.post<{ ok: boolean; error?: string; models?: ModelOpt[] }>('/ai/settings/test-vision', params).then((r) => r.data),
+  getCatalog: (refresh?: boolean) =>
+    api.get<CatalogView>(`/admin/models${refresh ? '?refresh=1' : ''}`).then((r) => r.data),
+  rateModel: (modelId: string, stars: number, note?: string) =>
+    api.patch<{ ratings: Record<string, ModelRating> }>('/admin/models/rating', { modelId, stars, note }).then((r) => r.data),
+  describeModel: (modelId: string, lang: string) =>
+    api.post<{ text: string; translated: boolean }>('/admin/models/describe', { modelId, lang }).then((r) => r.data),
   getMonitoring: () => api.get<MonitoringData>('/admin/monitoring').then((r) => r.data),
   saveAlerts: (data: Partial<AlertThresholds>) => api.patch('/admin/monitoring/alerts', data).then((r) => r.data),
   getSettings: () => api.get<AppSettings>('/admin/settings').then((r) => r.data),
@@ -275,7 +291,7 @@ const ACTION_LABELS: Record<string, string> = {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-type Tab = 'users' | 'monitoring' | 'usage' | 'settings' | 'licenses' | 'audit' | 'backup'
+type Tab = 'users' | 'monitoring' | 'usage' | 'model' | 'settings' | 'licenses' | 'audit' | 'backup'
 
 const ROLE_COLORS = { OWNER: 'text-amber-400', ADMIN: 'text-primary-400', MEMBER: 'text-slate-400' }
 
@@ -300,6 +316,7 @@ export function AdminPage() {
     { id: 'users', label: a.tabs.users, icon: <Users size={16} /> },
     { id: 'monitoring', label: a.tabs.monitoring, icon: <Activity size={16} /> },
     { id: 'usage', label: a.tabs.usage, icon: <Coins size={16} /> },
+    { id: 'model', label: a.tabs.model, icon: <Bot size={16} /> },
     { id: 'settings', label: a.tabs.settings, icon: <Settings size={16} /> },
     { id: 'licenses', label: a.tabs.licenses, icon: <Key size={16} /> },
     { id: 'audit', label: a.tabs.audit, icon: <ClipboardList size={16} /> },
@@ -335,6 +352,7 @@ export function AdminPage() {
           {tab === 'users' && <UsersTab currentUserId={currentUser?.id ?? ''} currentRole={currentUser?.role ?? ''} />}
           {tab === 'monitoring' && <MonitoringTab />}
           {tab === 'usage' && <UsageTab />}
+          {tab === 'model' && <ModelTab />}
           {tab === 'settings' && <SettingsTab />}
           {tab === 'licenses' && <LicensesTab />}
           {tab === 'audit' && <AuditTab />}
@@ -787,271 +805,168 @@ function EditUserModal({ user, currentRole, onClose }: { user: AdminUser; curren
  * What is saved are OVERRIDES. Anything left at its shipped value is not stored,
  * so tomorrow's default reaches an instance that never touched the table.
  */
+interface PricingSlot {
+  slot: 'ai' | 'vision' | 'embeddings' | 'image'
+  provider: string | null
+  model: string | null
+  price: { input: number; cachedInput: number; output: number } | null
+  perImage: number | null
+  imageOutputPer1M?: number | null
+  suggestedPerImage?: number | null
+}
+interface PricingView {
+  marginPercent: number
+  slots: PricingSlot[]
+  defaultMarginPercent: number
+}
+
+/**
+ * What the instance runs, and what it costs. These rows are not a list anyone
+ * curates: they follow the slots above, so switching a model brings its price
+ * in here and drops the previous one. The margin is the only number on this
+ * card that is a decision rather than a fact reported by a provider.
+ */
 function PricingCard() {
   const qc = useQueryClient()
   const pr = useT().admin.pricing
   const { data } = useQuery({ queryKey: ['admin-pricing'], queryFn: adminApi.getPricing })
-  // Fetched once and cached — backs the "add a model" picker below so an id is
-  // CHOSEN from the real OpenRouter catalog, not typed (a typo there is a
-  // silently-unpriced model, never an error anyone sees).
-  const { data: orModels } = useQuery({ queryKey: ['openrouter-model-list'], queryFn: adminApi.getOpenRouterModelList, staleTime: 5 * 60 * 1000 })
-  const [draft, setDraft] = useState<PricingView | null>(null)
+  const [margin, setMargin] = useState<number | null>(null)
   const [saved, setSaved] = useState(false)
-  const [newModel, setNewModel] = useState('')
-  const [newImage, setNewImage] = useState('')
-  const [refreshingId, setRefreshingId] = useState<string | null>(null)
-  const [refreshError, setRefreshError] = useState<string | null>(null)
-  // name -> the OpenRouter id the price actually came from, when it differs
-  // from the row's own name (e.g. row "deepseek-v4-pro" resolves via
-  // "deepseek/deepseek-v4-pro") — shown so the substitution is never silent.
-  const [resolvedVia, setResolvedVia] = useState<Record<string, string>>({})
+  const [manual, setManual] = useState<{ id: string; input: string; output: string; isImage: boolean } | null>(null)
 
-  const mutation = useMutation({
-    // Store only what differs from the shipped defaults. Persisting the whole
-    // table would freeze today's prices forever: tomorrow's default would never
-    // reach an instance that merely opened this screen once.
-    mutationFn: () => {
-      const d = data!.defaults
-      const models = Object.fromEntries(Object.entries(view.models).filter(([k, v]) => {
-        const def = d.models[k]
-        return !def || def.input !== v.input || def.cachedInput !== v.cachedInput || def.output !== v.output
-      }))
-      const images = Object.fromEntries(Object.entries(view.images).filter(([k, v]) => d.images[k] !== v))
-      return adminApi.updatePricing({ marginPercent: view.marginPercent, models, images })
-    },
+  const save = useMutation({
+    mutationFn: (patch: { marginPercent?: number; model?: { id: string; input: number; cachedInput: number; output: number }; image?: { id: string; perImage: number } }) =>
+      adminApi.updatePricing(patch),
     onSuccess: (fresh) => {
       qc.setQueryData(['admin-pricing'], fresh)
-      setDraft(null)
-      setSaved(true)
-      setTimeout(() => setSaved(false), 2000)
+      setMargin(null); setManual(null)
+      setSaved(true); setTimeout(() => setSaved(false), 2000)
     },
   })
 
   if (!data) return null
-  const view = draft ?? data
-  const dirty = draft !== null
+  const shownMargin = margin ?? data.marginPercent
+  const mult = 1 + shownMargin / 100
+  const configured = data.slots.filter((s) => s.model)
+  const unpricedRows = configured.filter((s) => (s.slot === 'image' ? s.perImage === null : s.price === null))
 
-  const edit = (fn: (v: PricingView) => PricingView) => setDraft(fn(view))
-  const num = (v: string) => Math.max(0, parseFloat(v.replace(',', '.')) || 0)
-
-  // Pull today's real price for one model from OpenRouter — fills the row, does
-  // NOT save. The admin still reviews and hits the main Save button below, same
-  // as any other edit here.
-  const refreshFromOpenRouter = async (name: string) => {
-    setRefreshingId(name)
-    setRefreshError(null)
-    try {
-      const { price, resolvedId } = await adminApi.getOpenRouterPrice(name)
-      edit((v) => ({ ...v, models: { ...v.models, [name]: price } }))
-      setResolvedVia((v) => (resolvedId !== name ? { ...v, [name]: resolvedId } : v))
-    } catch (e) {
-      const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error
-      setRefreshError(msg || `Не удалось получить цену для ${name}`)
-    } finally {
-      setRefreshingId(null)
-    }
-  }
-
-  const isDefault = (name: string) => {
-    const d = data.defaults.models[name]
-    const c = view.models[name]
-    return !!d && !!c && d.input === c.input && d.cachedInput === c.cachedInput && d.output === c.output
-  }
-
-  const priceInput = (value: number, onChange: (n: number) => void) => (
-    <input
-      type="number" step="0.001" min={0} value={value}
-      onChange={(e) => onChange(num(e.target.value))}
-      className="w-24 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 font-mono tabular-nums"
-    />
-  )
+  const money = (v: number) => (v < 1 ? `$${v.toFixed(3)}` : `$${v.toFixed(2)}`)
+  const field = 'bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200'
 
   return (
-    <div className="space-y-4">
+    <div className="bg-surface-800 border border-slate-700 rounded-xl p-4 space-y-4">
       <div>
-        <h3 className="text-sm font-medium text-slate-300">{pr.title}</h3>
-        <p className="text-xs text-slate-500 mt-1 max-w-lg">{pr.subtitle}</p>
+        <span className="text-sm text-slate-200">{pr.title}</span>
+        <p className="text-[11px] text-slate-500 mt-0.5">{pr.autoHint}</p>
       </div>
 
-      {/* Margin */}
-      <div className="bg-surface-800 border border-slate-700 rounded-xl p-4 flex flex-wrap items-center gap-3">
-        <span className="text-sm text-slate-200">{pr.margin}</span>
-        <input
-          type="number" min={0} max={1000} value={view.marginPercent}
-          onChange={(e) => edit((v) => ({ ...v, marginPercent: num(e.target.value) }))}
-          className="w-20 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-sm text-slate-200 tabular-nums"
-        />
-        <span className="text-sm text-slate-400">%</span>
-        <span className="text-[11px] text-slate-500 flex-1 min-w-[200px]">{pr.marginHint}</span>
-      </div>
-
-      {/* Token models */}
-      <div className="bg-surface-800 border border-slate-700 rounded-xl p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-slate-200">{pr.tokenModels}</span>
-          <span className="text-[11px] text-slate-500">{pr.perMillion}</span>
+      <div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-xs text-slate-400">{pr.margin}</span>
+          <input type="number" min={0} max={1000} value={shownMargin}
+            onChange={(e) => setMargin(Number(e.target.value))}
+            className={cn(field, 'w-20 tabular-nums')} />
+          <span className="text-xs text-slate-500">%</span>
+          {margin !== null && margin !== data.marginPercent && (
+            <button onClick={() => save.mutate({ marginPercent: margin })} disabled={save.isPending}
+              className="btn btn-primary text-xs px-3 py-1 flex items-center gap-1.5">
+              {save.isPending ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />} {pr.save}
+            </button>
+          )}
+          {saved && <span className="text-xs text-emerald-400">{pr.saved}</span>}
         </div>
+        <p className="text-[11px] text-slate-500 mt-1">{pr.marginHint}</p>
+      </div>
 
+      {configured.length === 0 ? (
+        <p className="text-xs text-slate-500">{pr.nothingConfigured}</p>
+      ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
-            <thead>
-              <tr className="text-slate-500">
-                <th className="text-left font-medium pb-1.5">{pr.model}</th>
-                <th className="text-right font-medium pb-1.5 px-2">{pr.input}</th>
-                <th className="text-right font-medium pb-1.5 px-2">{pr.cached}</th>
-                <th className="text-right font-medium pb-1.5 px-2">{pr.output}</th>
-                <th />
+            <thead className="text-slate-500">
+              <tr className="border-b border-slate-800">
+                <th className="text-left font-medium py-2 pr-3">{pr.slot}</th>
+                <th className="text-left font-medium py-2 px-2">{pr.model}</th>
+                <th className="text-right font-medium py-2 px-2 whitespace-nowrap">{pr.cost}</th>
+                <th className="text-right font-medium py-2 pl-2 whitespace-nowrap">{pr.charged}</th>
               </tr>
             </thead>
             <tbody>
-              {Object.entries(view.models).map(([name, price]) => (
-                <tr key={name} className="border-t border-slate-800/70">
-                  <td className="py-1.5 pr-2 font-mono text-slate-300">
-                    {name}
-                    {!isDefault(name) && <span className="ml-2 text-[10px] text-primary-400">{pr.custom}</span>}
-                    {/* The refresh below can pull a bare id's price via a resolved
-                        OpenRouter equivalent (deepseek-v4-pro → deepseek/deepseek-
-                        v4-pro) — say so, so the row's own name never silently
-                        stops meaning what it says. */}
-                    {resolvedVia[name] && (
-                      <div className="text-[10px] text-slate-500 font-normal">via {resolvedVia[name]}</div>
-                    )}
-                  </td>
-                  <td className="py-1.5 px-1 text-right">{priceInput(price.input, (n) => edit((v) => ({ ...v, models: { ...v.models, [name]: { ...price, input: n } } })))}</td>
-                  <td className="py-1.5 px-1 text-right">{priceInput(price.cachedInput, (n) => edit((v) => ({ ...v, models: { ...v.models, [name]: { ...price, cachedInput: n } } })))}</td>
-                  <td className="py-1.5 px-1 text-right">{priceInput(price.output, (n) => edit((v) => ({ ...v, models: { ...v.models, [name]: { ...price, output: n } } })))}</td>
-                  <td className="py-1.5 pl-2 text-right">
-                    <div className="flex items-center justify-end gap-2">
-                      {/* Shown for every row now — the backend resolves bare ids
-                          (no "/") via a suffix match against the OpenRouter
-                          catalog, so this works uniformly, not just for ids
-                          already shaped like "provider/model". */}
-                      <button
-                        onClick={() => refreshFromOpenRouter(name)}
-                        disabled={refreshingId === name}
-                        className="text-slate-600 hover:text-primary-400 disabled:opacity-50"
-                        title={pr.refreshFromOpenRouter}
-                      >
-                        <RefreshCw size={12} className={refreshingId === name ? 'animate-spin' : ''} />
-                      </button>
-                      {/* A shipped model cannot be deleted — only overridden. The row
-                          would come back on reload and the button would be a lie. */}
-                      {!data.defaults.models[name] && (
-                        <button
-                          onClick={() => edit((v) => { const m = { ...v.models }; delete m[name]; return { ...v, models: m } })}
-                          className="text-slate-600 hover:text-red-400"
-                          title={pr.remove}
-                        >
-                          <Trash2 size={12} />
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
+              {configured.map((s) => {
+                const label = s.slot === 'ai' ? pr.slotAi : s.slot === 'vision' ? pr.slotVision
+                  : s.slot === 'embeddings' ? pr.slotEmbeddings : pr.slotImage
+                const unpriced = s.slot === 'image' ? s.perImage === null : s.price === null
+                return (
+                  <tr key={s.slot} className="border-b border-slate-800/60 align-top">
+                    <td className="py-2 pr-3 text-slate-300 whitespace-nowrap">{label}</td>
+                    <td className="px-2 py-2">
+                      <div className="text-slate-200 font-mono text-[11px] break-all">{s.model}</div>
+                      {s.provider && <div className="text-[10px] text-slate-500">{s.provider}</div>}
+                    </td>
+                    <td className="px-2 py-2 text-right tabular-nums whitespace-nowrap">
+                      {s.slot === 'image' && s.perImage === null && s.imageOutputPer1M
+                        ? <span className="text-slate-300">{money(s.imageOutputPer1M)}<span className="text-slate-600"> {pr.perImageTokens}</span></span>
+                        : unpriced ? <span className="text-amber-400">{pr.unknown}</span>
+                          : s.slot === 'image' ? <span className="text-slate-300">{money(s.perImage!)} {pr.perImage}</span>
+                            : <span className="text-slate-300">{money(s.price!.input)} / {money(s.price!.output)}<span className="text-slate-600"> {pr.per1M}</span></span>}
+                    </td>
+                    <td className="pl-2 py-2 text-right tabular-nums whitespace-nowrap">
+                      {unpriced ? '—'
+                        : s.slot === 'image' ? <span className="text-emerald-400">{money(s.perImage! * mult)}</span>
+                          : <span className="text-emerald-400">{money(s.price!.input * mult)} / {money(s.price!.output * mult)}</span>}
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
+      )}
 
-        {refreshError && <p className="text-[11px] text-red-400">{refreshError}</p>}
-
-        <div className="flex gap-2">
-          <input
-            value={newModel}
-            onChange={(e) => setNewModel(e.target.value)}
-            placeholder={pr.addModel}
-            list="or-model-options"
-            className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-200 font-mono"
-          />
-          {/* Picked from the live OpenRouter catalog — typing still works (the
-              list only suggests), but a chosen id is a real one, not a guess. */}
-          <datalist id="or-model-options">
-            {(orModels ?? []).map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
-          </datalist>
-          <button
-            onClick={async () => {
-              const id = newModel.trim()
-              if (!id || view.models[id]) return
-              setNewModel('')
-              // Seed the row with a live price when the id resolves (exact or via
-              // the bare-id fallback) — zeros only when it truly isn't found, same
-              // as any other unpriced custom row.
-              const found = await adminApi.getOpenRouterPrice(id).catch(() => null)
-              edit((v) => ({ ...v, models: { ...v.models, [id]: found?.price ?? { input: 0, cachedInput: 0, output: 0 } } }))
-              if (found && found.resolvedId !== id) setResolvedVia((v) => ({ ...v, [id]: found.resolvedId }))
-            }}
-            disabled={!newModel.trim()}
-            className="btn btn-ghost text-xs px-3 border border-slate-700 disabled:opacity-40"
-          >
-            {pr.add}
-          </button>
-        </div>
-      </div>
-
-      {/* Images */}
-      <div className="bg-surface-800 border border-slate-700 rounded-xl p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-slate-200">{pr.imageModels}</span>
-          <span className="text-[11px] text-slate-500">{pr.perImage}</span>
-        </div>
-
-        <div className="space-y-1.5">
-          {Object.entries(view.images).map(([name, usd]) => (
-            <div key={name} className="flex items-center gap-2">
-              <span className="flex-1 font-mono text-xs text-slate-300 truncate">{name}</span>
-              {priceInput(usd, (n) => edit((v) => ({ ...v, images: { ...v.images, [name]: n } })))}
-              {data.defaults.images[name] === undefined ? (
-                <button
-                  onClick={() => edit((v) => { const im = { ...v.images }; delete im[name]; return { ...v, images: im } })}
-                  className="text-slate-600 hover:text-red-400"
-                >
-                  <Trash2 size={12} />
-                </button>
-              ) : <span className="w-3" />}
+      {/* Automation covers every provider that publishes a catalogue. Where one
+          does not, those tokens would bill as zero — so that row stays typeable. */}
+      {unpricedRows.length > 0 && (
+        <div className="space-y-2 border-t border-slate-800 pt-3">
+          <p className="text-[11px] text-amber-400">{pr.unknownHint}</p>
+          {manual ? (
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[11px] text-slate-400 font-mono">{manual.id}</span>
+              {manual.isImage && <span className="text-[10px] text-slate-500">{pr.suggestionHint}</span>}
+              <input placeholder={manual.isImage ? pr.perImage : pr.input} value={manual.input} onChange={(e) => setManual({ ...manual, input: e.target.value })} className={cn(field, 'w-24')} />
+              {!manual.isImage && (
+                <input placeholder={pr.output} value={manual.output} onChange={(e) => setManual({ ...manual, output: e.target.value })} className={cn(field, 'w-24')} />
+              )}
+              <button
+                onClick={() => save.mutate(manual.isImage
+                  ? { image: { id: manual.id, perImage: Number(manual.input) || 0 } }
+                  : { model: { id: manual.id, input: Number(manual.input) || 0, cachedInput: Number(manual.input) || 0, output: Number(manual.output) || 0 } })}
+                disabled={save.isPending || !manual.input || (!manual.isImage && !manual.output)}
+                className="btn btn-primary text-xs px-3 py-1 disabled:opacity-40">{pr.save}</button>
+              <button onClick={() => setManual(null)} className="text-[11px] text-slate-500 hover:text-slate-300">{pr.reset}</button>
             </div>
-          ))}
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {unpricedRows.map((s) => (
+                <button key={s.slot} onClick={() => setManual({
+                  id: s.model!,
+                  // One click away from a sane number instead of a blank field.
+                  input: s.suggestedPerImage ? s.suggestedPerImage.toFixed(4) : '',
+                  output: '', isImage: s.slot === 'image',
+                })}
+                  className="text-[11px] text-slate-400 hover:text-slate-200 underline underline-offset-2">
+                  {pr.setPriceFor} {s.model}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
-
-        <div className="flex gap-2">
-          <input
-            value={newImage}
-            onChange={(e) => setNewImage(e.target.value)}
-            placeholder={pr.addImage}
-            className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-200 font-mono"
-          />
-          <button
-            onClick={() => {
-              const id = newImage.trim()
-              if (!id || view.images[id] !== undefined) return
-              edit((v) => ({ ...v, images: { ...v.images, [id]: 0 } }))
-              setNewImage('')
-            }}
-            disabled={!newImage.trim()}
-            className="btn btn-ghost text-xs px-3 border border-slate-700 disabled:opacity-40"
-          >
-            {pr.add}
-          </button>
-        </div>
-      </div>
-
-      <div className="flex items-center gap-3">
-        <button
-          onClick={() => mutation.mutate()}
-          disabled={mutation.isPending || !dirty}
-          className="btn btn-primary text-sm px-4 py-2 disabled:opacity-40"
-        >
-          {mutation.isPending ? <Loader2 size={14} className="animate-spin" /> : pr.save}
-        </button>
-        {dirty && <button onClick={() => setDraft(null)} className="text-xs text-slate-500 hover:text-slate-300">{pr.reset}</button>}
-        {saved && <span className="text-xs text-emerald-400">{pr.saved}</span>}
-      </div>
+      )}
     </div>
   )
 }
 
 const MANAGED_LLM_PROVIDERS = ['deepseek', 'anthropic', 'openai', 'openrouter', 'groq', 'mistral', 'google', 'xai', 'together', 'ollama', 'custom'] as const
 const MANAGED_IMAGE_PROVIDERS = ['pollinations', 'openai', 'openrouter', 'flux', 'stability', 'fal', 'custom'] as const
-const MANAGED_VISION_PROVIDERS = ['openrouter', 'openai', 'google', 'anthropic', 'custom'] as const
 const MANAGED_EMBED_PROVIDERS = ['openai', 'openrouter', 'mistral', 'together', 'custom'] as const
 
 // A chat /models listing has no embedding models in it, so the choice is a
@@ -1086,10 +1001,17 @@ function ManagedKeysCard() {
   const qc = useQueryClient()
   const m = useT().admin.managed
   const { data } = useQuery({ queryKey: ['admin-managed'], queryFn: adminApi.getManaged })
+  // Same curated vision list the user's own BYOK slot offers — served from the
+  // backend so the two screens can never drift apart.
+  const { data: ocrProviders = [] } = useQuery({ queryKey: ['ocr-providers'], queryFn: moduleApi.ocrProviders })
   if (!data) return null
 
   const saveSlot = async (slot: keyof ManagedView, p: { provider: string; model: string; apiKey?: string; baseUrl?: string }) => {
-    const fresh = await adminApi.updateManaged({ [slot]: { provider: p.provider, model: p.model, apiKey: p.apiKey ?? '', baseUrl: p.baseUrl ?? '' } })
+    // apiKey must stay OMITTED (not '') when the field was left blank — the
+    // backend treats an explicit '' as "clear the key" and undefined as
+    // "leave it untouched". Coercing to '' here used to wipe the saved key
+    // on every save that didn't retype it.
+    const fresh = await adminApi.updateManaged({ [slot]: { provider: p.provider, model: p.model, ...(p.apiKey ? { apiKey: p.apiKey } : {}), baseUrl: p.baseUrl ?? '' } })
     qc.setQueryData(['admin-managed'], fresh)
     qc.invalidateQueries({ queryKey: ['ai-models'] })
     // The backend may have just auto-synced this model's live price (openrouter
@@ -1105,15 +1027,23 @@ function ManagedKeysCard() {
 
   // Connect = list the provider's models. LLM/vision/embeddings all answer the
   // generic /models; images have no such list, so a static one stands in.
-  const listChat = (p: { provider: string; apiKey?: string; baseUrl?: string }) => adminApi.testProvider(p)
+  // `slot` lets a blank key ("Connect" with nothing typed) fall back to the
+  // already-saved managed key for that slot on the backend — otherwise picking
+  // a different model for an already-configured slot would force re-pasting
+  // a working key just to see the model list again.
+  const listChat = (p: { provider: string; apiKey?: string; baseUrl?: string }) => adminApi.testProvider({ ...p, slot: 'ai' })
+  // Vision asks the provider which of its models can read an image, and proves
+  // the chosen one answers before the slot is saved.
+  const listVision = (p: { provider: string; apiKey?: string; baseUrl?: string }) => adminApi.testVision({ ...p, slot: 'vision' })
+  const verifyVision = (p: { provider: string; model: string; apiKey?: string; baseUrl?: string }) => adminApi.testVision({ ...p, slot: 'vision' })
   const listImage = async (p: { provider: string; apiKey?: string; baseUrl?: string }) => {
-    const r = await adminApi.testImage(p)
-    return { ok: r.ok, error: r.error }
+    const r = await adminApi.testImage({ ...p, slot: 'image' })
+    return { ok: r.ok, error: r.error, models: r.models }
   }
   // Verify the key with the real embeddings call, not a chat /models listing —
   // an embeddings key that cannot embed must fail here, not at first use.
   const listEmb = async (p: { provider: string; apiKey?: string; baseUrl?: string }) => {
-    const r = await adminApi.testEmbeddings(p)
+    const r = await adminApi.testEmbeddings({ ...p, slot: 'embeddings' })
     return { ok: r.ok, error: r.error }
   }
 
@@ -1129,9 +1059,10 @@ function ManagedKeysCard() {
         keyless={(p) => KEYLESS.has(p)} listModels={listChat}
         save={(x) => saveSlot('ai', x)} reset={() => resetSlot('ai')} />
 
-      <ProviderConnect title={m.slotVision} providers={MANAGED_VISION_PROVIDERS}
+      <ProviderConnect title={m.slotVision} providers={ocrProviders.map((p) => p.key)}
         current={{ hasKey: data.vision.hasKey, provider: data.vision.provider, model: data.vision.model, baseUrl: data.vision.baseUrl }}
-        listModels={listChat}
+        staticModels={(pv) => ocrProviders.find((p) => p.key === pv)?.models ?? []}
+        listModels={listVision} verify={verifyVision}
         save={(x) => saveSlot('vision', x)} reset={() => resetSlot('vision')} />
 
       <ProviderConnect title={m.slotImage} providers={MANAGED_IMAGE_PROVIDERS}
@@ -1143,6 +1074,323 @@ function ManagedKeysCard() {
         current={{ hasKey: data.embeddings.hasKey, provider: data.embeddings.provider, model: data.embeddings.model, baseUrl: data.embeddings.baseUrl }}
         listModels={listEmb} staticModels={(pv) => EMBED_MODELS[pv] ?? []}
         save={(x) => saveSlot('embeddings', x)} reset={() => resetSlot('embeddings')} />
+    </div>
+  )
+}
+
+// ─── Model catalogue ──────────────────────────────────────────────────────────
+
+type SortKey = 'value' | 'rating' | 'cheap' | 'context' | 'new' | 'name'
+/** «any» / «rated» / «unrated», or a minimum number of stars. */
+type RatingFilter = 'any' | 'rated' | 'unrated' | '5' | '4' | '3'
+
+/** Blended $/1M for a typical chat turn — far more prompt than completion. */
+function blendedPrice(m: CatalogModel): number | null {
+  if (m.promptPer1M === null || m.completionPer1M === null) return null
+  return m.promptPer1M * 0.7 + m.completionPer1M * 0.3
+}
+
+function fmtPrice(v: number | null, freeLabel: string): string {
+  if (v === null) return '—'
+  if (v === 0) return freeLabel
+  return v < 1 ? `$${v.toFixed(3)}` : `$${v.toFixed(2)}`
+}
+
+function Stars({ value, onPick, t }: { value: number; onPick: (n: number) => void; t: { rate: string; unrate: string } }) {
+  return (
+    <span className="inline-flex">
+      {[1, 2, 3, 4, 5].map((n) => (
+        <button
+          key={n}
+          // Clicking the star already set clears the rating — no separate «forget» control.
+          onClick={() => onPick(n === value ? 0 : n)}
+          title={n === value ? t.unrate : `${t.rate} ${n}`}
+          className={cn('px-0.5 transition-colors', n <= value ? 'text-amber-400' : 'text-slate-600 hover:text-slate-400')}
+        >
+          <Star size={13} fill={n <= value ? 'currentColor' : 'none'} />
+        </button>
+      ))}
+    </span>
+  )
+}
+
+type CatalogT = ReturnType<typeof useT>['admin']['catalog']
+
+/** The tag keys the backend derives, mapped onto the translated labels. */
+function tagLabel(key: string, c: CatalogT): string {
+  const map: Record<string, string> = {
+    text: c.tagText, vision: c.tagVision, audio: c.tagAudio, video: c.tagVideo,
+    tools: c.tagTools, reasoning: c.tagReasoning, coding: c.tagCoding,
+  }
+  return map[key] ?? key
+}
+
+function TagChips({ tags, c }: { tags: string[]; c: CatalogT }) {
+  return (
+    <span className="inline-flex flex-wrap gap-1">
+      {tags.map((t) => (
+        <span key={t} className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-[10px] text-slate-400">
+          {tagLabel(t, c)}
+        </span>
+      ))}
+    </span>
+  )
+}
+
+/** Everything the provider says about one model, for deciding whether to run it. */
+function ModelDetailModal({ model, stars, onRate, onClose, c }: {
+  model: CatalogModel
+  stars: number
+  onRate: (n: number) => void
+  onClose: () => void
+  c: CatalogT
+}) {
+  const { language } = useLanguageStore()
+  const [showOriginal, setShowOriginal] = useState(false)
+  // Providers write descriptions in English only. Fetch a translation for any
+  // other UI language; the original stays one click away.
+  const { data: desc, isLoading: loadingDesc } = useQuery({
+    queryKey: ['model-desc', model.id, language],
+    queryFn: () => adminApi.describeModel(model.id, language),
+    enabled: !!model.description,
+    staleTime: Infinity,
+  })
+  const shown = showOriginal || !desc?.translated
+    ? { text: model.description, translated: !!desc?.translated }
+    : { text: desc.text, translated: true }
+
+  const row = (label: string, value: string) => (
+    <div className="flex justify-between gap-4 py-1.5 border-b border-slate-800/60">
+      <span className="text-slate-500">{label}</span>
+      <span className="text-slate-300 tabular-nums text-right">{value}</span>
+    </div>
+  )
+  return (
+    <Modal open onClose={onClose} title={model.name}>
+      <div className="space-y-4 text-xs">
+        <div className="font-mono text-[11px] text-slate-500 break-all">{model.id}</div>
+
+        <div>
+          <div className="text-slate-400 mb-1.5">{c.purpose}</div>
+          <TagChips tags={model.tags} c={c} />
+          <p className="text-[10px] text-slate-600 mt-1.5">{c.purposeHint}</p>
+        </div>
+
+        <div>
+          {row(c.vendor, model.vendor)}
+          {row(c.colIn, fmtPrice(model.promptPer1M, c.free))}
+          {row(c.colOut, fmtPrice(model.completionPer1M, c.free))}
+          {row(c.colContext, model.contextLength ? `${Math.round(model.contextLength / 1000)}k` : '—')}
+          {row(c.maxOutput, model.maxOutput ? `${model.maxOutput.toLocaleString()}` : '—')}
+          {model.created > 0 && row(c.added, new Date(model.created * 1000).toLocaleDateString())}
+        </div>
+
+        <div>
+          <div className="flex items-center justify-between gap-2 mb-1.5">
+            <span className="text-slate-400">{c.about}</span>
+            {shown.translated && (
+              <button onClick={() => setShowOriginal((v) => !v)}
+                className="text-[10px] text-slate-500 hover:text-slate-300">
+                {showOriginal ? c.showTranslation : c.showOriginal}
+              </button>
+            )}
+          </div>
+          {loadingDesc ? (
+            <div className="flex items-center gap-2 text-slate-500"><Loader2 size={12} className="animate-spin" /> {c.translating}</div>
+          ) : (
+            <p className="text-slate-300 leading-relaxed whitespace-pre-line">
+              {shown.text || c.noDescription}
+            </p>
+          )}
+        </div>
+
+        <div className="flex items-center gap-3 pt-1">
+          <span className="text-slate-400">{c.colRating}</span>
+          <Stars value={stars} t={c} onPick={onRate} />
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+function ModelCatalogCard() {
+  const qc = useQueryClient()
+  const c = useT().admin.catalog
+  const [detail, setDetail] = useState<CatalogModel | null>(null)
+  const { data, isLoading, isError, error } = useQuery({ queryKey: ['admin-catalog'], queryFn: () => adminApi.getCatalog() })
+  const [q, setQ] = useState('')
+  const [vendor, setVendor] = useState('')
+  const [sort, setSort] = useState<SortKey>('value')
+  const [onlyVision, setOnlyVision] = useState(false)
+  const [onlyTools, setOnlyTools] = useState(false)
+  const [rating, setRating] = useState<RatingFilter>('any')
+
+  const rate = useMutation({
+    mutationFn: ({ id, stars }: { id: string; stars: number }) => adminApi.rateModel(id, stars),
+    onSuccess: (r) => qc.setQueryData(['admin-catalog'], (old: CatalogView | undefined) => old && { ...old, ratings: r.ratings }),
+  })
+  const refresh = useMutation({
+    mutationFn: () => adminApi.getCatalog(true),
+    onSuccess: (fresh) => qc.setQueryData(['admin-catalog'], fresh),
+  })
+
+  const models = data?.models ?? []
+  const ratings = data?.ratings ?? {}
+  const vendors = useMemo(() => [...new Set(models.map((m) => m.vendor))].sort(), [models])
+
+  const rows = useMemo(() => {
+    const needle = q.trim().toLowerCase()
+    const starsOf = (id: string) => ratings[id]?.stars ?? 0
+    const filtered = models.filter((m) => {
+      if (needle && !m.id.toLowerCase().includes(needle) && !m.name.toLowerCase().includes(needle)) return false
+      if (vendor && m.vendor !== vendor) return false
+      if (onlyVision && !m.vision) return false
+      if (onlyTools && !m.tools) return false
+      const st = starsOf(m.id)
+      if (rating === 'rated' && !st) return false
+      if (rating === 'unrated' && st) return false
+      if (rating !== 'any' && rating !== 'rated' && rating !== 'unrated' && st < Number(rating)) return false
+      return true
+    })
+    const val = (m: CatalogModel) => {
+      const stars = ratings[m.id]?.stars ?? 0
+      const price = blendedPrice(m)
+      // Unrated or unpriced models have no honest value score — they sort last
+      // rather than being given a number nobody measured.
+      if (!stars || price === null) return -1
+      // A free model is the best value there is, but it must stay a FINITE
+      // number: Infinity − Infinity is NaN, and one NaN unsettles the whole sort.
+      return price === 0 ? 1e9 * stars : stars / price
+    }
+    const byPrice = (m: CatalogModel) => blendedPrice(m) ?? Number.POSITIVE_INFINITY
+    return [...filtered].sort((a, b) => {
+      if (sort === 'value') return val(b) - val(a)
+      // Equal stars are broken by price, so the cheaper of two equals wins.
+      if (sort === 'rating') return (starsOf(b.id) - starsOf(a.id)) || (byPrice(a) - byPrice(b))
+      if (sort === 'cheap') return byPrice(a) - byPrice(b)
+      if (sort === 'context') return b.contextLength - a.contextLength
+      if (sort === 'new') return b.created - a.created
+      return a.name.localeCompare(b.name)
+    })
+  }, [models, ratings, q, vendor, sort, onlyVision, onlyTools, rating])
+
+  const sel = 'bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200'
+  const chip = (on: boolean) => cn('px-2.5 py-1.5 rounded-lg text-xs border transition-colors',
+    on ? 'bg-primary-600/80 text-white border-primary-500' : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-slate-200')
+
+  return (
+    <div className="bg-surface-800 border border-slate-700 rounded-xl p-4 space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <span className="text-sm text-slate-200">{c.title}</span>
+          <p className="text-[11px] text-slate-500 mt-0.5">{c.subtitle}</p>
+        </div>
+        <button onClick={() => refresh.mutate()} disabled={refresh.isPending}
+          className="btn-ghost text-xs px-2.5 py-1.5 flex items-center gap-1.5 text-slate-400 hover:text-slate-200">
+          {refresh.isPending ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />} {c.refresh}
+        </button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={c.search}
+          className={cn(sel, 'flex-1 min-w-[180px]')} />
+        <select value={vendor} onChange={(e) => setVendor(e.target.value)} className={cn(sel, 'appearance-none')}>
+          <option value="">{c.allVendors}</option>
+          {vendors.map((v) => <option key={v} value={v}>{v}</option>)}
+        </select>
+        <select value={sort} onChange={(e) => setSort(e.target.value as SortKey)} className={cn(sel, 'appearance-none')}>
+          <option value="value">{c.sortValue}</option>
+          <option value="rating">{c.sortRating}</option>
+          <option value="cheap">{c.sortCheap}</option>
+          <option value="context">{c.sortContext}</option>
+          <option value="new">{c.sortNew}</option>
+          <option value="name">{c.sortName}</option>
+        </select>
+        {/* One control for the rating: «rated / unrated» and a floor of stars are
+            the same question, and two separate widgets could contradict each other. */}
+        <select value={rating} onChange={(e) => setRating(e.target.value as RatingFilter)}
+          className={cn(sel, 'appearance-none', rating !== 'any' && 'border-primary-500 text-primary-300')}>
+          <option value="any">{c.ratingAny}</option>
+          <option value="rated">{c.ratingRated}</option>
+          <option value="5">5★</option>
+          <option value="4">4★+</option>
+          <option value="3">3★+</option>
+          <option value="unrated">{c.ratingUnrated}</option>
+        </select>
+        <button onClick={() => setOnlyVision((v) => !v)} className={chip(onlyVision)}>{c.onlyVision}</button>
+        <button onClick={() => setOnlyTools((v) => !v)} className={chip(onlyTools)}>{c.onlyTools}</button>
+      </div>
+
+      {isLoading ? (
+        <div className="py-8 flex justify-center"><Loader2 className="animate-spin text-slate-500" /></div>
+      ) : isError ? (
+        <p className="text-xs text-red-400 py-4">{error instanceof Error ? error.message : c.unavailable}</p>
+      ) : (
+        <>
+          <div className="text-[11px] text-slate-500">{c.found}: {rows.length} {c.of} {models.length}</div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="text-slate-500">
+                <tr className="border-b border-slate-800">
+                  <th className="text-left font-medium py-2 pr-3">{c.colModel}</th>
+                  <th className="text-right font-medium py-2 px-2 whitespace-nowrap">{c.colIn}</th>
+                  <th className="text-right font-medium py-2 px-2 whitespace-nowrap">{c.colOut}</th>
+                  <th className="text-right font-medium py-2 px-2">{c.colContext}</th>
+                  <th className="text-left font-medium py-2 px-2">{c.colCan}</th>
+                  <th className="text-left font-medium py-2 pl-2 whitespace-nowrap">{c.colRating}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.slice(0, 200).map((m) => {
+                  const stars = ratings[m.id]?.stars ?? 0
+                  return (
+                    <tr key={m.id} className="border-b border-slate-800/60 hover:bg-slate-800/30">
+                      {/* The row opens the details; only the stars stay interactive on their own. */}
+                      <td className="py-2 pr-3 cursor-pointer" onClick={() => setDetail(m)}>
+                        <div className="text-slate-200">{m.name}</div>
+                        <div className="text-[10px] text-slate-500 font-mono truncate max-w-[260px]" title={m.id}>{m.id}</div>
+                      </td>
+                      <td className="text-right px-2 tabular-nums text-slate-300 whitespace-nowrap cursor-pointer" onClick={() => setDetail(m)}>{fmtPrice(m.promptPer1M, c.free)}</td>
+                      <td className="text-right px-2 tabular-nums text-slate-300 whitespace-nowrap cursor-pointer" onClick={() => setDetail(m)}>{fmtPrice(m.completionPer1M, c.free)}</td>
+                      <td className="text-right px-2 tabular-nums text-slate-400 cursor-pointer" onClick={() => setDetail(m)}>{m.contextLength ? `${Math.round(m.contextLength / 1000)}k` : '—'}</td>
+                      <td className="px-2 py-2 cursor-pointer" onClick={() => setDetail(m)}>
+                        <TagChips tags={m.tags} c={c} />
+                      </td>
+                      <td className="pl-2 whitespace-nowrap">
+                        <Stars value={stars} t={c} onPick={(n) => rate.mutate({ id: m.id, stars: n })} />
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          {rows.length > 200 && (
+            <p className="text-[11px] text-slate-500">{c.truncated}</p>
+          )}
+        </>
+      )}
+
+      {detail && (
+        <ModelDetailModal
+          model={detail}
+          c={c}
+          stars={ratings[detail.id]?.stars ?? 0}
+          onRate={(n) => rate.mutate({ id: detail.id, stars: n })}
+          onClose={() => setDetail(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+/** Everything that defines the model SinoutX runs on, and what it costs. */
+function ModelTab() {
+  return (
+    <div className="space-y-6">
+      <ManagedKeysCard />
+      <PricingCard />
+      <ModelCatalogCard />
     </div>
   )
 }
@@ -1271,10 +1519,6 @@ function SettingsTab() {
         </label>
         {billingSaved && <p className="text-xs text-emerald-400">{b.saved}</p>}
       </div>
-
-      <ManagedKeysCard />
-
-      <PricingCard />
 
       {/* Registration */}
       <div className="space-y-4">
