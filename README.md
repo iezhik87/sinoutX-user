@@ -387,4 +387,6 @@ Each released version automatically converts to the **MIT License two
 years after its release date** (the FSL "Grant of Future License").
 
 For a commercial / Team license, managed hosting, or enterprise terms,
-contact **sinout@dasp.top**.
+contact **sinout@dasp.top**, or join the community chat on Telegram: https://t.me/sinoutX
+
+Bug reports and questions are welcome there — it is the fastest way to reach us.

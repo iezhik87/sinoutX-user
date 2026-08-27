@@ -84,10 +84,10 @@ api.interceptors.response.use(
           const lang = useLanguageStore.getState().language
           toast.error(
             lang === 'en'
-              ? `Storage full: ${used} of ${limit} MB. Buy a pack in Settings → Plan to keep uploading.`
+              ? `Storage full: ${used} of ${limit} MB, and the reserve on top of it is used up too. Buy a pack in Settings → Plan to keep uploading.`
               : lang === 'be'
-              ? `Месца скончылася: ${used} з ${limit} МБ. Купіце пакет у Налады → Тарыф.`
-              : `Место закончилось: ${used} из ${limit} МБ. Купите пакет в Настройки → Тариф, чтобы загружать дальше.`,
+              ? `Месца скончылася: ${used} з ${limit} МБ, запас звыш таксама вычарпаны. Купіце пакет у Налады → Тарыф.`
+              : `Место закончилось: ${used} из ${limit} МБ, запас сверх лимита тоже израсходован. Купите пакет в Настройки → Тариф, чтобы загружать дальше.`,
           )
         },
       )

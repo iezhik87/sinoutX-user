@@ -9,6 +9,7 @@ import type { PrismaClient } from '@prisma/client'
 import { config } from '../config/index.js'
 import { redis } from './redis.js'
 import { isBillingEnabled } from './billingMode.js'
+import { storageGraceMb } from './plans.js'
 import { notifyChannels } from '../modules/integration/channels/index.js'
 
 /** Warn when this much of the quota is gone. */
@@ -34,6 +35,10 @@ export async function maybeWarnStorage(
   if (limitMb <= 0) return                       // unlimited or unknown
   if (usedMb / limitMb < WARN_AT) return
 
+  // Two different messages, and they must not share a key: «running out» once,
+  // then «already over, living on the grace» once more when that happens.
+  const over = usedMb > limitMb
+
   const owner = await prisma.workspaceMember.findFirst({
     where: { workspaceId, role: 'OWNER' }, select: { userId: true },
   })
@@ -41,22 +46,36 @@ export async function maybeWarnStorage(
 
   // `NX` makes this the only place a warning is sent: whoever wins the race
   // sends it, everyone else silently does nothing.
-  const first = await redis.set(warnKey(owner.userId, limitMb), '1', 'EX', 60 * 60 * 24 * 30, 'NX')
-    .catch(() => null)
+  const key = over ? `${warnKey(owner.userId, limitMb)}:over` : warnKey(owner.userId, limitMb)
+  const first = await redis.set(key, '1', 'EX', 60 * 60 * 24 * 30, 'NX').catch(() => null)
   if (first !== 'OK') return
 
   const left = Math.max(0, limitMb - usedMb)
   const packMb = config.STORAGE_PACK_MB
   const packUsd = config.PRICE_STORAGE_PACK_USD.toFixed(2)
 
-  const title = lang === 'en' ? 'Storage almost full'
-    : lang === 'be' ? 'Месца амаль скончылася'
-    : 'Место заканчивается'
-  const body = lang === 'en'
-    ? `${usedMb} of ${limitMb} MB used, ${left} MB left. Buy a pack (+${packMb} MB for $${packUsd}/mo) or delete files — uploads stop when it runs out.`
-    : lang === 'be'
-    ? `Занята ${usedMb} з ${limitMb} МБ, свабодна ${left} МБ. Купіце пакет (+${packMb} МБ за $${packUsd}/мес) або выдаліце файлы — загрузка спыніцца, калі месца скончыцца.`
-    : `Занято ${usedMb} из ${limitMb} МБ, свободно ${left} МБ. Купите пакет (+${packMb} МБ за $${packUsd}/мес) или удалите файлы — загрузка остановится, когда место кончится.`
+  const graceMb = storageGraceMb(limitMb)
+  const graceLeft = Math.max(0, limitMb + graceMb - usedMb)
+
+  const title = over
+    ? (lang === 'en' ? 'Over your storage limit'
+      : lang === 'be' ? 'Месца перавышана'
+      : 'Место превышено')
+    : (lang === 'en' ? 'Storage almost full'
+      : lang === 'be' ? 'Месца амаль скончылася'
+      : 'Место заканчивается')
+
+  const body = over
+    ? (lang === 'en'
+      ? `${usedMb} of ${limitMb} MB used. Uploads keep working on a ${graceMb} MB reserve — about ${graceLeft} MB of it is left, then they stop. Buy a pack (+${packMb} MB for $${packUsd}/mo) or delete files.`
+      : lang === 'be'
+      ? `Занята ${usedMb} з ${limitMb} МБ. Загрузка яшчэ працуе на запасе ў ${graceMb} МБ — з яго засталося каля ${graceLeft} МБ, потым спыніцца. Купіце пакет (+${packMb} МБ за $${packUsd}/мес) або выдаліце файлы.`
+      : `Занято ${usedMb} из ${limitMb} МБ. Загрузка ещё работает на запасе в ${graceMb} МБ — от него осталось около ${graceLeft} МБ, потом остановится. Купите пакет (+${packMb} МБ за $${packUsd}/мес) или удалите файлы.`)
+    : (lang === 'en'
+      ? `${usedMb} of ${limitMb} MB used, ${left} MB left. Buy a pack (+${packMb} MB for $${packUsd}/mo) or delete files — after that a ${graceMb} MB reserve keeps you going for a while, then uploads stop.`
+      : lang === 'be'
+      ? `Занята ${usedMb} з ${limitMb} МБ, свабодна ${left} МБ. Купіце пакет (+${packMb} МБ за $${packUsd}/мес) або выдаліце файлы — далей ${graceMb} МБ запасу, потым загрузка спыніцца.`
+      : `Занято ${usedMb} из ${limitMb} МБ, свободно ${left} МБ. Купите пакет (+${packMb} МБ за $${packUsd}/мес) или удалите файлы — дальше есть запас ${graceMb} МБ, потом загрузка остановится.`)
 
   // In-app first: a web-only user has no messenger, and "upload refused" is the
   // worst moment to first learn the disk was filling up.

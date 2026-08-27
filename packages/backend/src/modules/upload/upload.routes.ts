@@ -39,7 +39,7 @@ export async function uploadRoutes(app: FastifyInstance, prisma: PrismaClient) {
 
     const storageCheck = await canUploadFile(prisma, workspaceId, buffer.byteLength)
     if (!storageCheck.ok) {
-      return reply.status(403).send({ error: 'plan_limit', resource: 'storage', limitMb: storageCheck.limitMb, usedMb: storageCheck.usedMb })
+      return reply.status(403).send({ error: 'plan_limit', resource: 'storage', limitMb: storageCheck.limitMb, usedMb: storageCheck.usedMb, graceMb: storageCheck.graceMb })
     }
 
     const ext = filename.split('.').pop() ?? 'bin'
@@ -127,7 +127,7 @@ export async function uploadRoutes(app: FastifyInstance, prisma: PrismaClient) {
 
     const storageCheck = await canUploadFile(prisma, workspaceId, buffer.byteLength)
     if (!storageCheck.ok) {
-      return reply.status(403).send({ error: 'plan_limit', resource: 'storage', limitMb: storageCheck.limitMb, usedMb: storageCheck.usedMb })
+      return reply.status(403).send({ error: 'plan_limit', resource: 'storage', limitMb: storageCheck.limitMb, usedMb: storageCheck.usedMb, graceMb: storageCheck.graceMb })
     }
 
     const ext = mimeType.split('/')[1]?.split('+')[0] ?? 'jpg'

@@ -215,7 +215,7 @@ export async function canAddMember(prisma: PrismaClient, workspaceId: string): P
 }
 
 // Check if workspace can upload a file of given size
-export async function canUploadFile(prisma: PrismaClient, workspaceId: string, fileSizeBytes: number): Promise<{ ok: boolean; limitMb: number; usedMb: number }> {
+export async function canUploadFile(prisma: PrismaClient, workspaceId: string, fileSizeBytes: number): Promise<{ ok: boolean; limitMb: number; usedMb: number; graceMb?: number }> {
   const owner = await getWorkspaceOwner(prisma, workspaceId)
   if (!owner) return { ok: true, limitMb: -1, usedMb: 0 }
   if (roleIsUnlimited(owner.role)) return { ok: true, limitMb: -1, usedMb: 0 } // owner/admin: no limits
@@ -236,11 +236,23 @@ export async function canUploadFile(prisma: PrismaClient, workspaceId: string, f
   const usedBytes = Number(result._sum.size ?? 0)
   const usedMb = Math.round(usedBytes / 1024 / 1024)
 
+  // A hard stop exactly at the limit turns «one byte over» into «buy a whole
+  // pack», which is a terrible trade for the user and a bad look for us. Allow a
+  // small overshoot instead — enough for the document in hand — and warn loudly.
+  // Past the grace it does stop: the disk is real and somebody pays for it.
+  const graceMb = storageGraceMb(limitMb)
   return {
-    ok: usedBytes + fileSizeBytes <= limitMb * 1024 * 1024,
+    ok: usedBytes + fileSizeBytes <= (limitMb + graceMb) * 1024 * 1024,
     limitMb,
     usedMb,
+    graceMb,
   }
+}
+
+/** How far over the limit an upload is still allowed. */
+export function storageGraceMb(limitMb: number): number {
+  if (limitMb <= 0) return 0
+  return Math.max(25, Math.round(limitMb * 0.1))
 }
 
 // Bulk per-user storage usage + effective limit for the admin Users view.
