@@ -13,6 +13,7 @@ import { writeAuditLog } from '../../lib/audit.js'
 import { credit, signupGrantMicroUsd } from '../../lib/wallet.js'
 import { isBillingEnabled } from '../../lib/billingMode.js'
 import { isSoloEdition } from '../../lib/edition.js'
+import { findUsableInvite, redeemInvitesFor } from '../../lib/invites.js'
 import { markFrozen } from '../../lib/frozen.js'
 import { config } from '../../config/index.js'
 
@@ -30,6 +31,8 @@ const registerSchema = z.object({
   name: z.string().min(1),
   password: z.string().min(8),
   inviteCode: z.string().optional(),
+  /** Personal invitation token from a colleague's email — see lib/invites.ts. */
+  invite: z.string().optional(),
 })
 
 export async function authRoutes(app: FastifyInstance, prisma: PrismaClient) {
@@ -45,11 +48,24 @@ export async function authRoutes(app: FastifyInstance, prisma: PrismaClient) {
 
     // Solo edition = один человек: после владельца регистрация закрыта наглухо.
     if (userCount > 0 && isSoloEdition()) {
+      // Even a valid invitation stops here: the solo edition is one person by
+      // definition, and a second account would quietly make it something else.
       return reply.status(403).send({ error: 'Registration is closed' })
     }
 
+    // A personal invitation is permission to register — and nothing more. It is
+    // checked before the instance-wide mode, because a closed instance is
+    // exactly where an invited colleague would otherwise be stuck.
+    const invite = body.invite ? await findUsableInvite(prisma, body.invite) : null
+    if (body.invite && !invite) {
+      return reply.status(403).send({ error: 'Invitation is invalid or expired' })
+    }
+    if (invite && invite.email !== body.email.trim().toLowerCase()) {
+      return reply.status(403).send({ error: 'This invitation was sent to a different email' })
+    }
+
     // Первый пользователь всегда может зарегистрироваться
-    if (userCount > 0) {
+    if (userCount > 0 && !invite) {
       // Читаем режим регистрации из БД (fallback на env для обратной совместимости)
       const settings = await prisma.appSettings.findUnique({ where: { id: 'singleton' } })
       const mode = settings?.registrationMode ?? (process.env.INVITE_CODE ? 'invite' : 'open')
@@ -89,6 +105,15 @@ export async function authRoutes(app: FastifyInstance, prisma: PrismaClient) {
     // sharing projects, not extra workspaces.
     await provisionPersonalWorkspace(prisma, user.id)
 
+    // Now, and only now, the invitations become access. Each is re-checked
+    // against the plan: invitations sent while a seat was free do not all land
+    // if it has since been taken.
+    // Every pending invitation for this address, not just the one in the link:
+    // someone may have been invited twice, or have signed up on their own.
+    const redeemed = await redeemInvitesFor(prisma, user.id, user.email).catch(() => [])
+    const joined = redeemed.filter((r) => r.granted).length
+    const refused = redeemed.length - joined
+
     // A grant, if the operator chose to give one (zero by default).
     if (config.WALLET_SIGNUP_GRANT_USD > 0) {
       await credit(prisma, user.id, signupGrantMicroUsd(), { kind: 'grant', note: 'signup' })
@@ -123,6 +148,9 @@ export async function authRoutes(app: FastifyInstance, prisma: PrismaClient) {
     return reply.status(201).send({
       token,
       user: { id: user.id, email: user.email, name: user.name, role: user.role },
+      // So the screen can say «you are in» — or explain the silence when a seat
+      // was taken between the invitation and the sign-up.
+      ...(redeemed.length ? { invites: { joined, refused } } : {}),
     })
   })
 

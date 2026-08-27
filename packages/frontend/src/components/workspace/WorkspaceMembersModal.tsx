@@ -37,13 +37,18 @@ export function WorkspaceMembersModal({ workspaceId, onClose }: { workspaceId: s
   const canManage = myRole === 'OWNER' || myRole === 'ADMIN'
 
   const [planLimitHit, setPlanLimitHit] = useState(false)
+  const [invited, setInvited] = useState<{ email: string; emailSent: boolean } | null>(null)
 
   const addMutation = useMutation({
     mutationFn: () => workspaceApi.addMember(workspaceId, { email, role: inviteRole }),
-    onSuccess: () => {
+    // 202 = no such account yet, so an invitation went out. Access appears when
+    // they register — the member list below will not change until then.
+    onSuccess: (res: { invited?: boolean; emailSent?: boolean } | undefined) => {
+      const to = email
       qc.invalidateQueries({ queryKey: ['workspace-members', workspaceId] })
       setEmail('')
       setPlanLimitHit(false)
+      setInvited(res?.invited ? { email: to, emailSent: res.emailSent !== false } : null)
     },
     onError: (err: unknown) => {
       const e = err as { response?: { data?: { error?: string; resource?: string } } }
@@ -106,6 +111,13 @@ export function WorkspaceMembersModal({ workspaceId, onClose }: { workspaceId: s
                 {t.workspace.members.invite}
               </button>
             </div>
+            {invited && (
+              <p className="mt-3 text-xs text-emerald-400/90">
+                {invited.emailSent
+                  ? `${t.auth.inviteSent} ${invited.email}. ${t.auth.inviteSentTail}`
+                  : `${invited.email} — ${t.auth.inviteNoMail}`}
+              </p>
+            )}
             {planLimitHit && (
               <div className="mt-3 flex items-start gap-2 rounded-lg border border-violet-500/30 bg-violet-500/10 px-3 py-2.5">
                 <Crown size={15} className="text-violet-300 flex-shrink-0 mt-0.5" />

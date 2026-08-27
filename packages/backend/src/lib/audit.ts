@@ -13,6 +13,7 @@ export type AuditAction =
   | 'workspace.updated'
   | 'workspace.deleted'
   | 'member.added'
+  | 'member.invited'
   | 'member.removed'
   | 'member.role_changed'
   // Projects

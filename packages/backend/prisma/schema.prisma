@@ -663,6 +663,32 @@ model LicenseKey {
   @@map("license_keys")
 }
 
+/// An invitation sent to someone who has no account yet. Access is NOT granted
+/// here — the row only records who was invited, to what, and by whom. Membership
+/// is created when the person registers and the invite is redeemed, and the plan
+/// limit is checked AGAIN at that moment: otherwise ten invites sent while one
+/// seat was free would all land.
+///
+/// No foreign keys on purpose: an invite outliving its workspace is harmless
+/// (redemption re-checks the target exists), and this keeps four other models
+/// free of back-relations they have no other use for.
+model Invite {
+  id          String    @id @default(cuid())
+  email       String
+  /// Exactly one of these is set — the two doors of access, same as membership.
+  workspaceId String?   @map("workspace_id")
+  projectId   String?   @map("project_id")
+  role        String    @default("MEMBER")
+  token       String    @unique
+  invitedBy   String    @map("invited_by")
+  expiresAt   DateTime  @map("expires_at")
+  acceptedAt  DateTime? @map("accepted_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@index([email])
+  @@map("invites")
+}
+
 model AppSettings {
   id              String  @id @default("singleton")
   registrationMode String @default("invite") @map("registration_mode") // "open" | "invite" | "closed"

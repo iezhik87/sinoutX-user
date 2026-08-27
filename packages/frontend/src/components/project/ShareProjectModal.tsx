@@ -24,6 +24,7 @@ export function ShareProjectModal({
   const [email, setEmail] = useState('')
   const [role, setRole] = useState<'VIEWER' | 'EDITOR'>('EDITOR')
   const [error, setError] = useState('')
+  const [invited, setInvited] = useState<{ email: string; emailSent: boolean } | null>(null)
 
   const { data: members = [], isLoading } = useQuery({
     queryKey: ['project-members', projectId],
@@ -33,11 +34,18 @@ export function ShareProjectModal({
 
   const shareMut = useMutation({
     mutationFn: () => projectApi.share(projectId, email.trim().toLowerCase(), role),
-    onSuccess: () => { setEmail(''); setError(''); qc.invalidateQueries({ queryKey: ['project-members', projectId] }) },
+    // 202 = there is no such account yet, so an invitation went out instead.
+    // Access appears when they register, not now — say so, or the empty member
+    // list reads as a failure.
+    onSuccess: (res: { invited?: boolean; emailSent?: boolean } | undefined) => {
+      const to = email.trim().toLowerCase()
+      setEmail(''); setError('')
+      setInvited(res?.invited ? { email: to, emailSent: res.emailSent !== false } : null)
+      qc.invalidateQueries({ queryKey: ['project-members', projectId] })
+    },
     onError: (e: { response?: { data?: { error?: string; message?: string } } }) => {
       const code = e.response?.data?.error
-      setError(code === 'no_such_user' ? L('No user with this email', 'Нет пользователя с таким email', 'Няма карыстальніка з гэтым email')
-        : code === 'already_member' ? L('Already has access', 'Уже есть доступ', 'Ужо мае доступ')
+      setError(code === 'already_member' ? L('Already has access', 'Уже есть доступ', 'Ужо мае доступ')
         : code === 'plan_limit' ? L('Collaboration needs a Team licence — the free edition is solo. Activate a Team key in Settings → Plan.', 'Совместная работа — по лицензии Team (бесплатная версия — соло). Активируйте ключ Team в Настройки → Тариф.', 'Сумесная праца — па ліцэнзіі Team (бясплатная версія — сола). Актывуйце ключ Team у Налады → Тарыф.')
         : (e.response?.data?.message ?? L('Failed to share', 'Не удалось поделиться', 'Не атрымалася')))
     },
@@ -79,6 +87,19 @@ export function ShareProjectModal({
           </button>
         </div>
         {error && <p className="text-xs text-red-400">{error}</p>}
+        {/* An invitation is not access yet — say when it becomes one, or the
+            unchanged list below reads as «nothing happened». */}
+        {invited && (
+          <p className="text-xs text-emerald-400/90">
+            {invited.emailSent
+              ? L(`Invitation sent to ${invited.email}. Access appears once they create an account.`,
+                  `Приглашение отправлено на ${invited.email}. Доступ появится, когда человек заведёт аккаунт.`,
+                  `Запрашэнне адпраўлена на ${invited.email}. Доступ з'явіцца, калі чалавек завядзе акаўнт.`)
+              : L(`Invited ${invited.email}, but email is not configured on this instance — send them the sign-up link yourself.`,
+                  `${invited.email} приглашён, но почта на инстансе не настроена — отправьте ссылку на регистрацию сами.`,
+                  `${invited.email} запрошаны, але пошта не наладжана — адпраўце спасылку на рэгістрацыю самі.`)}
+          </p>
+        )}
 
         <div>
           <p className="text-xs text-slate-500 mb-2">{L('People with access', 'У кого есть доступ', 'Хто мае доступ')}</p>

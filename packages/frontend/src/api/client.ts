@@ -211,7 +211,9 @@ export const workspaceApi = {
   listMembers: (workspaceId: string) =>
     api.get<WorkspaceMember[]>(`/workspaces/${workspaceId}/members`).then((r) => r.data),
   addMember: (workspaceId: string, data: { email?: string; userId?: string; role?: WorkspaceMemberRole }) =>
-    api.post<WorkspaceMember>(`/workspaces/${workspaceId}/members`, data).then((r) => r.data),
+    // 201 with the membership when the person already has an account; 202 with
+    // `invited` when an invitation was sent instead.
+    api.post<WorkspaceMember & { invited?: boolean; emailSent?: boolean }>(`/workspaces/${workspaceId}/members`, data).then((r) => r.data),
   updateMemberRole: (workspaceId: string, userId: string, role: WorkspaceMemberRole) =>
     api.patch<WorkspaceMember>(`/workspaces/${workspaceId}/members/${userId}`, { role }).then((r) => r.data),
   removeMember: (workspaceId: string, userId: string) =>

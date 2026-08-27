@@ -220,3 +220,30 @@ export async function sendWorkspaceInviteEmail(to: string, opts: {
     </div>`,
   })
 }
+
+/**
+ * Invitation for someone who has no account yet. The link carries the token, and
+ * the token is what lets them register on an instance whose registration is
+ * closed — so it must go to the address that was invited and nowhere else.
+ */
+export async function sendInviteToRegisterEmail(to: string, opts: {
+  targetName: string; inviterName: string; appUrl: string; token: string
+}, prisma?: PrismaClient): Promise<void> {
+  const cfg = await getSmtpConfig(prisma)
+  if (!cfg) return
+  const link = `${opts.appUrl.replace(/\/$/, '')}/register?invite=${encodeURIComponent(opts.token)}`
+  await createTransporter(cfg).sendMail({
+    from: cfg.from, to,
+    subject: `${opts.inviterName} приглашает вас в ${opts.targetName} — SinoutX`,
+    text: `${opts.inviterName} приглашает вас в "${opts.targetName}" в SinoutX.\n`
+      + `Чтобы получить доступ, заведите аккаунт по ссылке: ${link}\n`
+      + `Ссылка действует 14 дней и работает только для этого адреса.`,
+    html: `<div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;background:#0f172a;color:#e2e8f0;border-radius:12px">
+      <h2 style="margin:0 0 16px;color:#f1f5f9;font-size:20px">Вас приглашают к совместной работе</h2>
+      <p style="margin:0 0 8px;color:#94a3b8;line-height:1.6"><b style="color:#c4b5fd">${opts.inviterName}</b> приглашает вас в <b style="color:#f1f5f9">${opts.targetName}</b>.</p>
+      <p style="margin:0 0 8px;color:#94a3b8;line-height:1.6">Доступ откроется после того, как вы заведёте аккаунт — это займёт минуту.</p>
+      <a href="${link}" style="display:inline-block;margin-top:24px;padding:12px 24px;background:#7c3aed;color:#fff;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px">Создать аккаунт</a>
+      <p style="margin:20px 0 0;color:#64748b;font-size:12px;line-height:1.6">Ссылка действует 14 дней и работает только для адреса ${to}. Если вы не ждали приглашения — просто не переходите по ней.</p>
+    </div>`,
+  })
+}

@@ -10,6 +10,9 @@ import { z } from 'zod'
 import { denyIfNotMember, denyIfNoProjectAccess } from '../../lib/requireAccess.js'
 import { writeAuditLog } from '../../lib/audit.js'
 import { canShareProject, getWorkspaceOwner } from '../../lib/plans.js'
+import { createInvite } from '../../lib/invites.js'
+import { sendInviteToRegisterEmail, isEmailConfigured } from '../../lib/email.js'
+import { config } from '../../config/index.js'
 
 export async function projectRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
   const service = new ProjectService(prisma)
@@ -185,8 +188,32 @@ export async function projectRoutes(fastify: FastifyInstance, prisma: PrismaClie
     const { email, role } = z.object({ email: z.string().email(), role: z.enum(['VIEWER', 'EDITOR']).default('EDITOR') }).parse(req.body)
     if (await denyIfNoProjectAccess(prisma, id, req.authUser!.id, reply, { write: true })) return
     const target = await prisma.user.findUnique({ where: { email: email.toLowerCase() }, select: { id: true } })
-    if (!target) return reply.status(404).send({ error: 'no_such_user', message: 'No user with this email' })
     const project = await prisma.project.findUnique({ where: { id }, select: { workspaceId: true, name: true } })
+
+    // No account yet → invite. The seat is checked now so we do not promise what
+    // cannot be delivered, and AGAIN at redemption so the promise cannot be
+    // stretched by sending ten invites against one free seat.
+    if (!target) {
+      const owner = await getWorkspaceOwner(prisma, project!.workspaceId)
+      if (owner) {
+        const seat = await canShareProject(prisma, owner.id, '')
+        if (!seat.ok) return reply.status(402).send({ error: 'plan_limit', resource: 'members', limit: seat.limit, current: seat.current })
+      }
+      const invite = await createInvite(prisma, email, req.authUser!.id, { projectId: id, role })
+      const inviter = await prisma.user.findUnique({ where: { id: req.authUser!.id }, select: { name: true } })
+      const settings = await prisma.appSettings.findUnique({ where: { id: 'singleton' } })
+      if (await isEmailConfigured(prisma)) {
+        sendInviteToRegisterEmail(email.toLowerCase(), {
+          targetName: project!.name,
+          inviterName: inviter?.name ?? 'Администратор',
+          appUrl: settings?.appUrl ?? config.APP_URL ?? 'http://localhost:3012',
+          token: invite.token,
+        }, prisma).catch(() => {})
+      }
+      await writeAuditLog(prisma, { action: 'project.shared', workspaceId: project!.workspaceId, userId: req.authUser!.id, resourceType: 'project', resourceId: id, resourceName: `invite ${email}`, ip: req.ip })
+      return reply.status(202).send({ invited: true, email, emailSent: await isEmailConfigured(prisma) })
+    }
+
     // Don't create a redundant grant for someone already in the owning workspace.
     const alreadyWs = await prisma.workspaceMember.findUnique({ where: { workspaceId_userId: { workspaceId: project!.workspaceId, userId: target.id } }, select: { userId: true } })
     if (alreadyWs) return reply.status(409).send({ error: 'already_member', message: 'User already has access via the workspace' })

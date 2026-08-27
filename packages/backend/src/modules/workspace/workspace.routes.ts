@@ -2,8 +2,10 @@ import { FastifyInstance } from 'fastify'
 import { PrismaClient } from '@prisma/client'
 import { WorkspaceService } from './workspace.service.js'
 import { createAuthMiddleware } from '../../middleware/authenticate.js'
-import { sendWorkspaceInviteEmail, isEmailConfigured } from '../../lib/email.js'
+import { sendWorkspaceInviteEmail, sendInviteToRegisterEmail, isEmailConfigured } from '../../lib/email.js'
 import { canCreateWorkspace, canAddMember } from '../../lib/plans.js'
+import { createInvite } from '../../lib/invites.js'
+import { config } from '../../config/index.js'
 import { writeAuditLog } from '../../lib/audit.js'
 import { getPersonalWorkspaceId, provisionPersonalWorkspace } from '../../lib/personal.js'
 import {
@@ -109,7 +111,29 @@ export async function workspaceRoutes(fastify: FastifyInstance, prisma: PrismaCl
     } else if (email) {
       targetUser = await prisma.user.findUnique({ where: { email } })
     }
-    if (!targetUser) return reply.status(404).send({ error: 'User not found' })
+    // No account yet → invite them to make one. Access is granted at redemption,
+    // not here: the invite by itself opens nothing.
+    if (!targetUser) {
+      if (!email) return reply.status(404).send({ error: 'User not found' })
+      const seat = await canAddMember(prisma, id)
+      if (!seat.ok) {
+        return reply.status(403).send({ error: 'plan_limit', resource: 'members', limit: seat.limit, current: seat.current })
+      }
+      const invite = await createInvite(prisma, email, req.authUser!.id, { workspaceId: id, role })
+      const ws = await prisma.workspace.findUnique({ where: { id }, select: { name: true } })
+      const inviter = await prisma.user.findUnique({ where: { id: req.authUser!.id }, select: { name: true } })
+      const settings = await prisma.appSettings.findUnique({ where: { id: 'singleton' } })
+      if (await isEmailConfigured(prisma)) {
+        sendInviteToRegisterEmail(email, {
+          targetName: ws?.name ?? '',
+          inviterName: inviter?.name ?? 'Администратор',
+          appUrl: settings?.appUrl ?? config.APP_URL ?? 'http://localhost:3012',
+          token: invite.token,
+        }, prisma).catch(() => {})
+      }
+      await writeAuditLog(prisma, { action: 'member.invited', workspaceId: id, userId: req.authUser!.id, resourceName: email, ip: req.ip })
+      return reply.status(202).send({ invited: true, email, emailSent: await isEmailConfigured(prisma) })
+    }
 
     const memberCheck = await canAddMember(prisma, id)
     if (!memberCheck.ok) {

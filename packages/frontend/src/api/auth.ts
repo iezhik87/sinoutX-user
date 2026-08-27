@@ -31,7 +31,9 @@ export const authApi = {
   login: (email: string, password: string) =>
     api.post<LoginResponse | LoginResponseWith2FA>('/auth/login', { email, password }).then((r) => r.data),
 
-  register: (data: { email: string; name: string; password: string; inviteCode?: string }) =>
+  // `inviteCode` is the instance-wide code; `invite` is a personal token from
+  // a colleague's email, and it also grants the right to register at all.
+  register: (data: { email: string; name: string; password: string; inviteCode?: string; invite?: string }) =>
     api.post<LoginResponse | RegisterResponseVerification>('/auth/register', data).then((r) => r.data),
 
   resendVerification: (email: string) =>

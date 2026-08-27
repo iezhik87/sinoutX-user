@@ -373,6 +373,11 @@ export default function App() {
           <Route path="/login" element={
             isAuthenticated ? <Navigate to="/" replace /> : <LoginPage />
           } />
+          {/* Invitation links point here. Same screen, but it opens on the
+              sign-up form — the visitor has no account yet by definition. */}
+          <Route path="/register" element={
+            isAuthenticated ? <Navigate to="/" replace /> : <LoginPage />
+          } />
           <Route path="/forgot-password" element={
             isAuthenticated ? <Navigate to="/" replace /> : <ForgotPasswordPage />
           } />

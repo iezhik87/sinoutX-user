@@ -24,7 +24,11 @@ export function LoginPage() {
   const { setAuth } = useAuthStore()
   const t = useT()
 
-  const [mode, setMode] = useState<Mode>('login')
+  // Arriving from an invitation email: /register?invite=… or /login?invite=…
+  // Open straight on the sign-up form — the visitor has no account yet, and
+  // showing them a login box first is a small insult.
+  const inviteToken = new URLSearchParams(window.location.search).get('invite') ?? ''
+  const [mode, setMode] = useState<Mode>(inviteToken ? 'register' : 'login')
   const [step, setStep] = useState<Step>('credentials')
   const [tempToken, setTempToken] = useState('')
   const [totpCode, setTotpCode] = useState('')
@@ -67,7 +71,11 @@ export function LoginPage() {
           return
         }
       } else {
-        res = await authApi.register({ email: form.email, name: form.name, password: form.password, inviteCode: form.inviteCode || undefined })
+        res = await authApi.register({
+          email: form.email, name: form.name, password: form.password,
+          inviteCode: form.inviteCode || undefined,
+          invite: inviteToken || undefined,
+        })
         if ('requiresVerification' in res && res.requiresVerification) {
           setStep('verify-sent')
           return
