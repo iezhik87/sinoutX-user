@@ -37,6 +37,18 @@ Thumbs.db
 postgres_data/
 redis_data/
 
+# Каталоги данных в корне на сервере — bind-mount'ы из migrate-storage.sh.
+# postgres/ под root, git его даже не читает («Permission denied» в status).
+/postgres/
+/meili/
+/minio/
+/uploads/
+
+# Копии боевого .env рядом с ним же (.env.save, .env.save.1) — правило .env
+# их не ловит, а внутри живые секреты.
+.env.save*
+.env.bak*
+
 # deploy bookkeeping (per-server)
 .last-deploy
 

@@ -10,7 +10,7 @@ import { redis } from '../../lib/redis.js'
 import { settleTopup, spentThisMonth, monthlyCapMicroUsd, lowBalanceMicroUsd, adjust, expireStalePendingTopups } from '../../lib/wallet.js'
 import { toMicroUsd, fromMicroUsd, MODEL_PRICES, margin } from '../../lib/pricing.js'
 import { getManagedAi } from '../../lib/managed.js'
-import { effectiveStorageMb, getPlanLimits } from '../../lib/plans.js'
+import { effectivePlan, effectiveStorageMb, getPlanLimits } from '../../lib/plans.js'
 import { monthlyBill } from '../../lib/subscription.js'
 import { isBillingEnabled } from '../../lib/billingMode.js'
 
@@ -77,7 +77,7 @@ async function storageState(prisma: PrismaClient, userId: string) {
       }))._sum.size ?? 0)
     : 0
 
-  const planLimits = await getPlanLimits(prisma, user?.plan ?? 'free')
+  const planLimits = await getPlanLimits(prisma, user ? effectivePlan(user) : 'free')
   const packs = user?.storagePacks ?? 0
   const limitMb = user
     ? effectiveStorageMb({ storageLimitMb: user.storageLimitMb, storagePacks: packs }, planLimits.storageMb)

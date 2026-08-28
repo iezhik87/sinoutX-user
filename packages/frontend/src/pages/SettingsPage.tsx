@@ -3,12 +3,13 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { toast } from '@/stores/toastStore'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ProviderConnect } from '@/components/settings/ProviderConnect'
+import { PeopleTab } from '@/components/settings/PeopleTab'
 import {
   Bot, Trash2, Download, Upload, Loader2, Plus, Check, X,
   MessageCircle, Phone, Hash, Webhook, Key, Eye, EyeOff, Copy, DatabaseBackup,
   Cpu, ToggleLeft, ToggleRight, Settings2, Search, ScanText,
   Moon, Sun, Leaf, ImagePlus, Coffee, Sunrise, ShieldCheck, HelpCircle,
-  FileInput, FolderOpen, ArrowRight, AlertCircle, CheckCircle2,
+  FileInput, FolderOpen, ArrowRight, AlertCircle, CheckCircle2, Users,
 } from 'lucide-react'
 import { integrationApi, backupApi, aiSettingsApi, searchApi, importApi, projectApi, twoFactorApi, moduleApi, type ImportResult, type IntegrationType, type Integration, type AIProvider, type ImageProvider, type AISettings, type AISettingsPatch, type EmbeddingProvider, type ToolMeta, walletApi, type Wallet } from '@/api/client'
 import { authApi, type ApiKeyItem } from '@/api/auth'
@@ -26,7 +27,7 @@ import { Header } from '@/components/layout/Header'
 import { cn } from '@/lib/utils'
 import { formatDistanceToNow } from 'date-fns'
 
-type Tab = 'general' | 'ai' | 'integrations' | 'files' | 'apikeys' | 'backup' | 'security' | 'plan' | 'help' | 'import'
+type Tab = 'general' | 'ai' | 'integrations' | 'people' | 'files' | 'apikeys' | 'backup' | 'security' | 'plan' | 'help' | 'import'
 
 const INTEGRATION_ICONS: Record<IntegrationType, React.ReactNode> = {
   TELEGRAM: <MessageCircle size={18} />,
@@ -87,6 +88,7 @@ export function SettingsPage() {
             { id: 'general',      label: t.settings.tabs.general,      icon: <Settings2 size={14} /> },
             { id: 'ai',           label: t.settings.tabs.ai,           icon: <Cpu size={14} /> },
             { id: 'integrations', label: t.settings.tabs.integrations, icon: <Bot size={14} /> },
+            { id: 'people',       label: t.settings.tabs.people,       icon: <Users size={14} /> },
             { id: 'apikeys',      label: t.settings.tabs.apikeys,      icon: <Key size={14} /> },
             { id: 'backup',       label: t.settings.tabs.backup,       icon: <DatabaseBackup size={14} /> },
             { id: 'security',     label: t.settings.tabs.security,     icon: <ShieldCheck size={14} /> },
@@ -124,6 +126,9 @@ export function SettingsPage() {
           )}
           {activeTab === 'integrations' && (
             <IntegrationsTab workspaceId={currentWorkspaceId} />
+          )}
+          {activeTab === 'people' && (
+            <PeopleTab />
           )}
           {activeTab === 'apikeys' && (
             <ApiKeysTab />

@@ -228,6 +228,15 @@ export interface DashboardStats {
   todayTasks: { id: string; title: string; dueDate: string; priority: string; status: string; projectId: string }[]
 }
 
+export interface PeopleOverview {
+  projects: { id: string; name: string; icon?: string | null; color?: string | null }[]
+  people: {
+    userId: string; name: string; email: string; since: string
+    access: { projectId: string; role: 'VIEWER' | 'EDITOR' }[]
+  }[]
+  pending: { id: string; email: string; projectId: string | null; role: string; expiresAt: string; createdAt: string }[]
+}
+
 export const projectApi = {
   listByWorkspace: (workspaceId: string) =>
     api.get<Project[]>(`/workspaces/${workspaceId}/projects`).then((r) => r.data),
@@ -247,6 +256,9 @@ export const projectApi = {
   updateMemberRole: (id: string, userId: string, role: 'VIEWER' | 'EDITOR') =>
     api.patch(`/projects/${id}/members/${userId}`, { role }).then((r) => r.data),
   removeMember: (id: string, userId: string) => api.delete(`/projects/${id}/members/${userId}`),
+  // Сводный вид на те же ProjectMember: кто и к каким моим проектам допущен.
+  people: () => api.get<PeopleOverview>('/people').then((r) => r.data),
+  revokeInvite: (inviteId: string) => api.delete(`/people/invites/${inviteId}`),
   getDashboard: (workspaceId: string) =>
     api.get<DashboardStats>(`/workspaces/${workspaceId}/dashboard`).then((r) => r.data),
 }

@@ -758,7 +758,16 @@ export async function adminRoutes(app: FastifyInstance, prisma: PrismaClient) {
   // GET /admin/plan-limits
   app.get('/admin/plan-limits', { preHandler: [authenticate, requireOwnerOrAdmin] }, async (_req, reply) => {
     const settings = await prisma.appSettings.findUnique({ where: { id: 'singleton' } })
-    const stored = settings?.planLimits as Record<string, unknown> | null
-    return reply.send(stored && Object.keys(stored).length > 0 ? stored : DEFAULT_LIMITS)
+    const stored = (settings?.planLimits ?? {}) as Record<string, unknown>
+    // Показываем ровно те тарифы, что существуют сейчас: сохранённые значения
+    // ложатся поверх умолчаний, а записи отменённых тарифов не показываются —
+    // иначе один отживший ключ вытесняет с экрана все настоящие.
+    const merged = Object.fromEntries(
+      Object.keys(DEFAULT_LIMITS).map((plan) => [
+        plan,
+        { ...DEFAULT_LIMITS[plan], ...((stored[plan] as Record<string, unknown>) ?? {}) },
+      ]),
+    )
+    return reply.send(merged)
   })
 }

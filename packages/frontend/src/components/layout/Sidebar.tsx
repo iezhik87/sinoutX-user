@@ -364,6 +364,7 @@ export function Sidebar({ onOpenSearch }: { onOpenSearch?: () => void }) {
                     <ProjectItem
                       key={p.id}
                       project={p}
+                      sharedBy={p.sharedBy}
                       isActive={p.id === currentProjectId}
                       isExpanded={expandedProjects.has(p.id)}
                       onToggle={() => toggleProject(p.id)}
@@ -627,12 +628,15 @@ function ProjectItem({
   isExpanded,
   onToggle,
   onSelect,
+  sharedBy,
 }: {
   project: Project
   isActive: boolean
   isExpanded: boolean
   onToggle: () => void
   onSelect: () => void
+  /** Владелец — только у чужих проектов в разделе «Доступно мне». */
+  sharedBy?: { name: string; email: string } | null
 }) {
   const { pathname } = useLocation()
   const t = useT()
@@ -669,8 +673,13 @@ function ProjectItem({
               ? <Inbox size={15} className="text-primary-400" />
               : <FolderKanban size={15} className="text-slate-400" />}
         </span>
-        <span className={cn('flex-1 truncate', (project.isSystem || project.isModule) && 'text-primary-300')} onClick={onSelect}>
-          {displayName}
+        <span className={cn('flex-1 min-w-0', (project.isSystem || project.isModule) && 'text-primary-300')} onClick={onSelect}>
+          <span className="block truncate">{displayName}</span>
+          {sharedBy && (
+            <span className="block truncate text-[10px] leading-tight text-slate-500" title={sharedBy.email}>
+              {sharedBy.name}
+            </span>
+          )}
         </span>
         {!project.isSystem && !solo && (
           <button

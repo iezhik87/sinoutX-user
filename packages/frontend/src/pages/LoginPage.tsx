@@ -6,6 +6,7 @@ import { twoFactorApi } from '@/api/client'
 import { useAuthStore } from '@/stores/authStore'
 import { useT } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { toast } from '@/stores/toastStore'
 
 type Mode = 'login' | 'register'
 type Step = 'credentials' | 'totp' | 'verify-sent'
@@ -77,11 +78,25 @@ export function LoginPage() {
           invite: inviteToken || undefined,
         })
         if ('requiresVerification' in res && res.requiresVerification) {
+          if (res.invites?.refused) {
+            toast.error(res.invites.joined ? t.auth.invitePartlyRefused : t.auth.inviteRefused)
+          }
           setStep('verify-sent')
           return
         }
       }
       if ('token' in res) {
+        // Приглашение могло не сработать: мест по тарифу не осталось. Молчать
+        // тут нельзя — человек заводит аккаунт ради доступа, не находит его и
+        // считает, что сломался продукт.
+        const inv = 'invites' in res ? res.invites : undefined
+        if (inv?.refused) {
+          toast.error(
+            inv.joined
+              ? t.auth.invitePartlyRefused
+              : t.auth.inviteRefused,
+          )
+        }
         setAuth(res.token, res.user)
         navigate(postLoginTarget(), { replace: true })
       }

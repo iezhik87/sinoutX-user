@@ -1,7 +1,7 @@
 import cron from 'node-cron'
 import type { PrismaClient } from '@prisma/client'
 import { publish, redis } from './redis.js'
-import { sendDeadlineReminderEmail, sendLicenseExpiryReminderEmail, isEmailConfigured } from './email.js'
+import { sendDeadlineReminderEmail, sendLicenseExpiryReminderEmail, isEmailConfigured, normalizeAppUrl } from './email.js'
 import { config } from '../config/index.js'
 import { buildBackupBuffer, dirByLabel, backupName, pruneDir } from './instanceBackup.js'
 import { NotificationService } from '../modules/notification/notification.service.js'
@@ -386,7 +386,7 @@ async function processEmailDeadlineReminders(prisma: PrismaClient) {
   if (tasks.length === 0) return
 
   const settings = await prisma.appSettings.findUnique({ where: { id: 'singleton' } })
-  const appUrl = settings?.appUrl ?? 'http://localhost:3012'
+  const appUrl = normalizeAppUrl(settings?.appUrl ?? 'http://localhost:3012')
 
   for (const task of tasks) {
     if (!task.assignee) continue

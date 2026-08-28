@@ -77,8 +77,10 @@ export function roleIsUnlimited(role?: string | null): boolean {
   return role === 'OWNER' || role === 'ADMIN'
 }
 
-// A license that has lapsed falls back to free.
-function effectivePlan(u: { plan: string; licenseExpiresAt?: Date | null }): string {
+// A license that has lapsed falls back to free. Exported because every place
+// that resolves limits from a stored `user.plan` must go through here: the raw
+// column keeps both retired tiers and expired licences.
+export function effectivePlan(u: { plan: string; licenseExpiresAt?: Date | null }): string {
   if (u.licenseExpiresAt && u.licenseExpiresAt < new Date()) return 'free'
   // Only two plans exist now. A leftover 'pro' from before it was cut (or any
   // unknown value) reads as free rather than resurrecting a tier and its limits.

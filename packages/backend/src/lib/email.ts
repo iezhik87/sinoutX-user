@@ -2,6 +2,20 @@ import nodemailer from 'nodemailer'
 import type { PrismaClient } from '@prisma/client'
 import { config } from '../config/index.js'
 
+// Адрес из админки не проверяется как URL (в отличие от APP_URL в окружении),
+// и «app.example.com» без схемы туда попадает легко. В письме такая ссылка
+// относительная: почтовый клиент подставит свой домен, и приглашение,
+// подтверждение почты и сброс пароля ведут в никуда. Достраиваем схему здесь —
+// это единственное место, через которое адрес попадает во все письма.
+export function normalizeAppUrl(raw: string): string {
+  const v = raw.trim().replace(/\/+$/, '')
+  if (!v) return 'http://localhost:3012'
+  if (/^https?:\/\//i.test(v)) return v
+  // localhost и голый IP почти всегда без TLS, остальное — с ним.
+  const insecure = /^(localhost|127\.0\.0\.1|\[?::1\]?|\d{1,3}(\.\d{1,3}){3})(:\d+)?$/i.test(v)
+  return (insecure ? 'http://' : 'https://') + v
+}
+
 interface SmtpConfig {
   host: string
   port: number
@@ -21,7 +35,7 @@ async function getSmtpConfig(prisma?: PrismaClient): Promise<SmtpConfig | null> 
         user: settings.smtpUser,
         pass: settings.smtpPass,
         from: settings.smtpFrom ?? settings.smtpUser,
-        appUrl: settings.appUrl ?? config.APP_URL ?? 'http://localhost:3012',
+        appUrl: normalizeAppUrl(settings.appUrl ?? config.APP_URL ?? 'http://localhost:3012'),
       }
     }
   }
@@ -32,7 +46,7 @@ async function getSmtpConfig(prisma?: PrismaClient): Promise<SmtpConfig | null> 
     user: config.SMTP_USER,
     pass: config.SMTP_PASS,
     from: config.SMTP_FROM ?? config.SMTP_USER,
-    appUrl: config.APP_URL ?? 'http://localhost:3012',
+    appUrl: normalizeAppUrl(config.APP_URL ?? 'http://localhost:3012'),
   }
 }
 
@@ -217,6 +231,68 @@ export async function sendWorkspaceInviteEmail(to: string, opts: {
       <h2 style="margin:0 0 16px;color:#f1f5f9;font-size:20px">Вас добавили в рабочее пространство</h2>
       <p style="margin:0 0 8px;color:#94a3b8;line-height:1.6"><b style="color:#c4b5fd">${opts.inviterName}</b> добавил вас в пространство <b style="color:#f1f5f9">${opts.workspaceName}</b>.</p>
       <a href="${opts.appUrl}/login" style="display:inline-block;margin-top:24px;padding:12px 24px;background:#7c3aed;color:#fff;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px">Открыть SinoutX</a>
+    </div>`,
+  })
+}
+
+/**
+ * Приглашённый зарегистрировался, но мест по тарифу не осталось.
+ *
+ * Единственный, кто может это исправить, — пригласивший, и он же единственный,
+ * кто без письма ничего не узнает: человек зарегистрировался, доступ не
+ * открылся, и обе стороны считают, что сломалось у другой.
+ */
+export async function sendInviteRefusedEmail(to: string, opts: {
+  newcomerEmail: string; targetName: string; limit: number; appUrl: string
+}, prisma?: PrismaClient): Promise<void> {
+  const cfg = await getSmtpConfig(prisma)
+  if (!cfg) return
+  const seats = opts.limit > 0 ? `Ваш тариф — ${opts.limit} чел.` : ''
+  await createTransporter(cfg).sendMail({
+    from: cfg.from, to,
+    subject: `Не удалось открыть доступ: ${opts.newcomerEmail} — SinoutX`,
+    text: `${opts.newcomerEmail} завёл аккаунт по вашему приглашению в "${opts.targetName}", `
+      + `но доступ не открылся: закончились места. ${seats}
+`
+      + `Освободите место или расширьте тариф, после чего пригласите заново — `
+      + `прежняя ссылка уже использована.
+${opts.appUrl}/settings`,
+    html: `<div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;background:#0f172a;color:#e2e8f0;border-radius:12px">
+      <h2 style="margin:0 0 16px;color:#f1f5f9;font-size:20px">Доступ не открылся — нет мест</h2>
+      <p style="margin:0 0 8px;color:#94a3b8;line-height:1.6"><b style="color:#f1f5f9">${opts.newcomerEmail}</b> завёл аккаунт по вашему приглашению в <b style="color:#f1f5f9">${opts.targetName}</b>, но доступ не открылся: места по тарифу закончились. ${seats}</p>
+      <p style="margin:0 0 8px;color:#94a3b8;line-height:1.6">Освободите место или расширьте тариф, после чего пригласите заново — прежняя ссылка уже использована.</p>
+      <a href="${opts.appUrl}/settings" style="display:inline-block;margin-top:24px;padding:12px 24px;background:#7c3aed;color:#fff;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px">Открыть настройки</a>
+    </div>`,
+  })
+}
+
+/**
+ * Приглашение отозвали до того, как им воспользовались.
+ *
+ * Письмо нужно потому, что первое письмо уже лежит у человека в почте, и
+ * ссылка в нём молча перестала работать. Без этого он либо ждёт доступа,
+ * который не откроется, либо упирается в «приглашение недействительно» и не
+ * понимает, ошибка это или так и задумано.
+ *
+ * Причину не называем: её знает только пригласивший, и додумывать за него
+ * («мест не хватило», «передумали») хуже, чем сказать факт.
+ */
+export async function sendInviteRevokedEmail(to: string, opts: {
+  targetName: string; inviterName: string
+}, prisma?: PrismaClient): Promise<void> {
+  const cfg = await getSmtpConfig(prisma)
+  if (!cfg) return
+  await createTransporter(cfg).sendMail({
+    from: cfg.from, to,
+    subject: `Приглашение в ${opts.targetName} отозвано — SinoutX`,
+    text: `${opts.inviterName} отозвал приглашение в "${opts.targetName}".\n`
+      + `Ссылка из предыдущего письма больше не работает — заводить аккаунт по ней не нужно.\n`
+      + `Если это недоразумение, свяжитесь с тем, кто вас приглашал: он может позвать снова.`,
+    html: `<div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;background:#0f172a;color:#e2e8f0;border-radius:12px">
+      <h2 style="margin:0 0 16px;color:#f1f5f9;font-size:20px">Приглашение отозвано</h2>
+      <p style="margin:0 0 8px;color:#94a3b8;line-height:1.6"><b style="color:#c4b5fd">${opts.inviterName}</b> отозвал приглашение в <b style="color:#f1f5f9">${opts.targetName}</b>.</p>
+      <p style="margin:0 0 8px;color:#94a3b8;line-height:1.6">Ссылка из предыдущего письма больше не работает — заводить аккаунт по ней не нужно.</p>
+      <p style="margin:20px 0 0;color:#64748b;font-size:12px;line-height:1.6">Если это недоразумение, свяжитесь с тем, кто вас приглашал: он может позвать снова.</p>
     </div>`,
   })
 }

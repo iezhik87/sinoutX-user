@@ -11,7 +11,7 @@ import { denyIfNotMember, denyIfNoProjectAccess } from '../../lib/requireAccess.
 import { writeAuditLog } from '../../lib/audit.js'
 import { canShareProject, getWorkspaceOwner } from '../../lib/plans.js'
 import { createInvite } from '../../lib/invites.js'
-import { sendInviteToRegisterEmail, isEmailConfigured } from '../../lib/email.js'
+import { sendInviteToRegisterEmail, sendInviteRevokedEmail, isEmailConfigured } from '../../lib/email.js'
 import { config } from '../../config/index.js'
 
 export async function projectRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
@@ -168,6 +168,82 @@ export async function projectRoutes(fastify: FastifyInstance, prisma: PrismaClie
       myRole: m.role,
       sharedBy: m.project.workspace.members[0]?.user ?? null,
     })))
+  })
+
+  // GET /people — каждый, у кого есть доступ хоть к одному моему проекту, и к
+  // каким именно. Собирается из тех же ProjectMember, что и шаринг на проекте:
+  // это второй ВИД на один доступ, а не второй механизм. Плюс приглашения,
+  // которые ещё никто не принял, — иначе позвавший не видит, что позвал.
+  fastify.get('/people', async (req, reply) => {
+    const me = req.authUser!.id
+    const mine = await prisma.project.findMany({
+      where: { workspace: { members: { some: { userId: me, role: 'OWNER' } } } },
+      select: { id: true, name: true, icon: true, color: true },
+      orderBy: { createdAt: 'asc' },
+    })
+    const ids = mine.map((p) => p.id)
+
+    const grants = ids.length
+      ? await prisma.projectMember.findMany({
+          where: { projectId: { in: ids } },
+          select: { projectId: true, userId: true, role: true, createdAt: true, user: { select: { name: true, email: true } } },
+          orderBy: { createdAt: 'asc' },
+        })
+      : []
+
+    const byUser = new Map<string, { userId: string; name: string; email: string; since: Date; access: { projectId: string; role: string }[] }>()
+    for (const g of grants) {
+      let rec = byUser.get(g.userId)
+      if (!rec) {
+        rec = { userId: g.userId, name: g.user.name, email: g.user.email, since: g.createdAt, access: [] }
+        byUser.set(g.userId, rec)
+      }
+      rec.access.push({ projectId: g.projectId, role: g.role })
+      if (g.createdAt < rec.since) rec.since = g.createdAt
+    }
+
+    // Приглашения показываем только живые: принятое уже превратилось в доступ
+    // выше, просроченное ни во что не превратится.
+    const pending = await prisma.invite.findMany({
+      where: { invitedBy: me, acceptedAt: null, expiresAt: { gt: new Date() }, projectId: { in: ids.length ? ids : ['-'] } },
+      select: { id: true, email: true, projectId: true, role: true, expiresAt: true, createdAt: true },
+      orderBy: { createdAt: 'asc' },
+    })
+
+    return reply.send({
+      projects: mine,
+      people: [...byUser.values()].sort((a, b) => a.name.localeCompare(b.name)),
+      pending,
+    })
+  })
+
+  // DELETE /people/invites/:id — отозвать приглашение, которое ещё не приняли.
+  // Без этого опечатка в адресе живёт две недели и её нечем убрать.
+  fastify.delete<{ Params: { id: string } }>('/people/invites/:id', async (req, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params)
+    // Читаем до удаления: после него не из чего собрать письмо.
+    const invite = await prisma.invite.findFirst({
+      where: { id, invitedBy: req.authUser!.id, acceptedAt: null },
+      select: { email: true, projectId: true },
+    })
+    if (!invite) return reply.status(404).send({ error: 'not_found' })
+    await prisma.invite.delete({ where: { id } })
+
+    // Первое письмо уже лежит у человека в почте, и ссылка в нём молча
+    // перестала работать. Молчание тут читается как поломка.
+    if (await isEmailConfigured(prisma)) {
+      const [project, inviter] = await Promise.all([
+        invite.projectId
+          ? prisma.project.findUnique({ where: { id: invite.projectId }, select: { name: true } })
+          : Promise.resolve(null),
+        prisma.user.findUnique({ where: { id: req.authUser!.id }, select: { name: true } }),
+      ])
+      sendInviteRevokedEmail(invite.email, {
+        targetName: project?.name ?? 'SinoutX',
+        inviterName: inviter?.name ?? 'Администратор',
+      }, prisma).catch(() => {})
+    }
+    return reply.status(204).send()
   })
 
   // GET /projects/:id/members — who the project is shared with.

@@ -4,6 +4,12 @@ import type { AuthUser } from '@/stores/authStore'
 export interface LoginResponse {
   token: string
   user: AuthUser
+  /**
+   * Итог погашения приглашений при регистрации. Приходит только при регистрации
+   * по ссылке: joined — сколько доступов открылось, refused — сколько
+   * отказано (мест по тарифу не осталось либо цель удалили).
+   */
+  invites?: { joined: number; refused: number }
 }
 
 export interface LoginResponseWith2FA {
@@ -13,6 +19,8 @@ export interface LoginResponseWith2FA {
 
 export interface RegisterResponseVerification {
   requiresVerification: true
+  /** Тот же итог, что и в LoginResponse: приглашение могло не сработать. */
+  invites?: { joined: number; refused: number }
 }
 
 export interface ApiKeyItem {

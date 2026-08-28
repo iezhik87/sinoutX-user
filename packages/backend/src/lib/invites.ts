@@ -14,6 +14,8 @@
 import { randomBytes } from 'node:crypto'
 import type { PrismaClient } from '@prisma/client'
 import { canAddMember, canShareProject, getWorkspaceOwner } from './plans.js'
+import { sendInviteRefusedEmail, isEmailConfigured } from './email.js'
+import { config } from '../config/index.js'
 
 /** Long enough that guessing is pointless, short enough to paste in a URL. */
 const newToken = () => randomBytes(24).toString('base64url')
@@ -70,6 +72,8 @@ export interface RedeemResult {
   granted: boolean
   /** Set when access was refused, so the caller can say why rather than fail mute. */
   reason?: 'limit' | 'gone'
+  /** Мест по тарифу — попадает в письмо пригласившему, поэтому не отбрасываем. */
+  limit?: number
 }
 
 /**
@@ -99,7 +103,7 @@ export async function redeemInvitesFor(
       if (!ws) result = { granted: false, reason: 'gone' }
       else {
         const gate = await canAddMember(prisma, invite.workspaceId)
-        if (!gate.ok) result = { granted: false, reason: 'limit' }
+        if (!gate.ok) result = { granted: false, reason: 'limit', limit: gate.limit }
         else {
           await prisma.workspaceMember.upsert({
             where: { workspaceId_userId: { workspaceId: invite.workspaceId, userId } },
@@ -117,8 +121,8 @@ export async function redeemInvitesFor(
       if (!project) result = { granted: false, reason: 'gone' }
       else {
         const owner = await getWorkspaceOwner(prisma, project.workspaceId)
-        const gate = owner ? await canShareProject(prisma, owner.id, userId) : { ok: true }
-        if (!gate.ok) result = { granted: false, reason: 'limit' }
+        const gate = owner ? await canShareProject(prisma, owner.id, userId) : { ok: true, limit: -1 }
+        if (!gate.ok) result = { granted: false, reason: 'limit', limit: gate.limit }
         else {
           await prisma.projectMember.upsert({
             where: { projectId_userId: { projectId: invite.projectId, userId } },
@@ -138,6 +142,32 @@ export async function redeemInvitesFor(
     // Mark it used either way: a refused invite must not stay live, or the
     // newcomer would silently gain access the moment a seat frees up.
     await prisma.invite.update({ where: { id: invite.id }, data: { acceptedAt: new Date() } })
+
+    // Отказ по местам умеет исправить только пригласивший — и только он без
+    // письма ничего не узнает: человек зарегистрировался, доступ не открылся,
+    // и обе стороны думают, что сломалось у другой.
+    if (result.reason === 'limit') {
+      void (async () => {
+        try {
+          if (!(await isEmailConfigured(prisma))) return
+          const [inviter, project, settings] = await Promise.all([
+            prisma.user.findUnique({ where: { id: invite.invitedBy }, select: { email: true } }),
+            invite.projectId
+              ? prisma.project.findUnique({ where: { id: invite.projectId }, select: { name: true } })
+              : Promise.resolve(null),
+            prisma.appSettings.findUnique({ where: { id: 'singleton' }, select: { appUrl: true } }),
+          ])
+          if (!inviter?.email) return
+          await sendInviteRefusedEmail(inviter.email, {
+            newcomerEmail: invite.email,
+            targetName: project?.name ?? 'SinoutX',
+            limit: result.limit ?? -1,
+            appUrl: settings?.appUrl ?? config.APP_URL ?? 'http://localhost:3012',
+          }, prisma)
+        } catch { /* регистрация не должна падать из-за письма */ }
+      })()
+    }
+
     results.push(result)
   }
 

@@ -137,7 +137,14 @@ export async function authRoutes(app: FastifyInstance, prisma: PrismaClient) {
       const verifyToken = randomBytes(32).toString('hex')
       await redis.set(`email-verify:${verifyToken}`, user.id, 'EX', 86400)
       await sendVerificationEmail(body.email, verifyToken, prisma)
-      return reply.status(201).send({ requiresVerification: true })
+      // Итог приглашений отдаём и здесь: почта настроена ровно в тех
+      // установках, где приглашения и работают, — иначе про отказ по местам
+      // новичок не узнал бы никогда, а экран «подтвердите почту» выглядел бы
+      // как обещание доступа, которого не будет.
+      return reply.status(201).send({
+        requiresVerification: true,
+        ...(redeemed.length ? { invites: { joined, refused } } : {}),
+      })
     }
 
     const token = app.jwt.sign(
