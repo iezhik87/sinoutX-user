@@ -1,7 +1,7 @@
 version: '3.9'
 
-# Переопределения для dev-режима
-# Запуск: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+# Overrides for development mode
+# Run: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 
 services:
   postgres:
@@ -51,6 +51,6 @@ services:
       - ./packages/frontend/src:/app/src:ro
     command: npm run dev -- --host
 
-  # Nginx не нужен в dev
+  # Nginx is not needed in dev
   nginx:
     profiles: ["prod"]

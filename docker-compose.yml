@@ -1,24 +1,24 @@
 services:
-  # ═══ База данных ═══
+  # ═══ Database ═══
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
     volumes:
-      # По умолчанию — named volume (работает из коробки). Чтобы хранить данные
-      # на другом диске, задай POSTGRES_DATA_DIR=/abs/path в .env (см. .env.example).
+      # A named volume by default - works out of the box. To keep the data on
+      # another disk, set POSTGRES_DATA_DIR=/abs/path in .env (see .env.example).
       - ${POSTGRES_DATA_DIR:-postgres_data}:/var/lib/postgresql/data
     environment:
       POSTGRES_DB: sinout
       POSTGRES_USER: ${DB_USER:-sinout}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
-    # порт закрыт снаружи — доступен только внутри Docker сети
+    # not published to the host - reachable only inside the Docker network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-sinout}"]
       interval: 5s
       timeout: 5s
       retries: 10
 
-  # ═══ Кеш и pub/sub ═══
+  # ═══ Cache and pub/sub ═══
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -34,7 +34,7 @@ services:
       timeout: 3s
       retries: 5
 
-  # ═══ Полнотекстовый поиск ═══
+  # ═══ Full-text search ═══
   meilisearch:
     image: getmeili/meilisearch:v1.10
     restart: unless-stopped
@@ -43,14 +43,14 @@ services:
     environment:
       MEILI_MASTER_KEY: ${MEILI_KEY}
       MEILI_ENV: production
-    # порт закрыт снаружи — доступен только внутри Docker сети
+    # not published to the host - reachable only inside the Docker network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:7700/health"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # ═══ Файловое хранилище ═══
+  # ═══ Object storage ═══
   minio:
     image: minio/minio:latest
     restart: unless-stopped
@@ -60,14 +60,14 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_USER:-sinout}
       MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD}
-    # порты закрыты снаружи — доступны только внутри Docker сети
+    # not published to the host - reachable only inside the Docker network
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # ═══ Поиск (SearXNG metasearch) ═══
+  # ═══ Web search (SearXNG metasearch) ═══
   searxng:
     image: searxng/searxng:latest
     restart: unless-stopped
@@ -75,7 +75,7 @@ services:
       - ./searxng:/etc/searxng:rw
     environment:
       SEARXNG_SECRET: ${SEARXNG_SECRET:-sinout_searxng_secret_key_2024}
-    # порт закрыт снаружи — доступен только внутри Docker сети
+    # not published to the host - reachable only inside the Docker network
     cap_drop:
       - ALL
     cap_add:
@@ -84,7 +84,7 @@ services:
       - SETUID
       - DAC_OVERRIDE
 
-  # ═══ Локальная транскрипция (faster-whisper, OpenAI-совместимый API) ═══
+  # ═══ Local transcription (faster-whisper, OpenAI-compatible API) ═══
   whisper:
     image: fedirz/faster-whisper-server:latest-cpu
     restart: unless-stopped
@@ -94,7 +94,7 @@ services:
       WHISPER__COMPUTE_TYPE: int8
     volumes:
       - whisper_models:/root/.cache/huggingface
-    # порт закрыт снаружи — обращаемся изнутри по http://whisper:8000
+    # not published to the host - reached internally at http://whisper:8000
 
   # ═══ Backend API ═══
   backend:
@@ -121,8 +121,8 @@ services:
       MINIO_USER: ${MINIO_USER:-sinout}
       MINIO_PASSWORD: ${MINIO_PASSWORD}
       MINIO_USE_SSL: "false"
-      # Куда складывать админ-бэкапы (опц.): ';'-список "Метка=/abs/path".
-      # Каждый путь должен быть примонтирован в контейнер (volumes ниже).
+      # Where admin backups go (optional): a ';'-separated list of "Label=/abs/path".
+      # Every path must also be mounted into the container (see volumes below).
       BACKUP_DIRS: ${BACKUP_DIRS:-}
       JWT_SECRET: ${JWT_SECRET}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
@@ -137,35 +137,36 @@ services:
       PRICE_TEAM_USD: ${PRICE_TEAM_USD:-149}
       APP_VERSION: ${APP_VERSION:-dev}
       APP_BUILT_AT: ${APP_BUILT_AT:-}
-      # Семантическая память — ОПЦ. серверный фолбэк (платит за всех без своего
-      # ключа). Основной путь — BYOK в Настройки → ИИ → Эмбеддинги (на воркспейс).
+      # Semantic memory - OPTIONAL server-side fallback (the operator then pays for
+      # everyone without a key). The main path is BYOK: Settings -> AI -> Embeddings.
       EMBEDDINGS_API_KEY: ${EMBEDDINGS_API_KEY:-}
       EMBEDDINGS_BASE_URL: ${EMBEDDINGS_BASE_URL:-}
       EMBEDDINGS_MODEL: ${EMBEDDINGS_MODEL:-}
-      # Кастом-навыки: разрешить запросы во внутренние/локальные адреса (по умолч. блок)
+      # Custom skills: allow requests to internal/private addresses (blocked by default)
       ALLOW_CUSTOM_TOOL_INTERNAL: ${ALLOW_CUSTOM_TOOL_INTERNAL:-}
-      # Песочница исполнения кода (отдельный изолированный контейнер executor)
+      # Code execution sandbox (a separate, isolated `executor` container)
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-self-hosted}
-      # Издание: пусто = обычный multi/cloud; solo = персональная self-hosted-версия.
+      # Edition: empty = regular multi-user/cloud; solo = personal self-hosted build.
       SINOUT_EDITION: ${SINOUT_EDITION:-solo}
       EXECUTOR_URL: ${EXECUTOR_URL:-http://executor:8088}
       EXECUTOR_TOKEN: ${EXECUTOR_TOKEN:-}
-    # Backend сидит в трёх сетях, и одна из них (sandbox) — internal, без интернета.
-    # Docker выбирает ОДИН шлюз по умолчанию; когда выбор падал на sandbox, контейнер
-    # терял выход наружу целиком — отваливались Telegram, эмбеддинги, платежи. При этом
-    # DNS продолжал работать (он локальный), поэтому в логах видно «имя разрешилось, а
-    # коннект таймаутит» и легко подумать на провайдера. Пересоздание контейнера могло
-    # перевыбрать шлюз — отсюда «сломалось на ровном месте». Прибиваем шлюз к default.
+    # The backend sits on three networks and one of them (sandbox) is internal -
+    # no internet. Docker picks ONE default gateway; when it picked sandbox, the
+    # container lost outbound access entirely: Telegram, embeddings and payments
+    # all stopped. DNS kept working (it is local), so the logs read "the name
+    # resolved but the connection timed out" and the ISP looked guilty. Recreating
+    # the container could re-pick the gateway - hence "it broke on its own". So we
+    # pin the gateway to default.
     networks:
       default:
         gw_priority: 100
       sandbox: {}
       sandbox_net: {}
-    # порт закрыт снаружи — проксируется через nginx
+    # not published to the host - proxied through nginx
     volumes:
       - ${UPLOADS_DIR:-uploads}:/app/uploads
-      # Опциональный отдельный диск под бэкапы. Задай BACKUP_MOUNT=/abs/path
-      # в .env (и BACKUP_DIRS=Метка=/backups). Иначе — локальная папка ./backups.
+      # Optional dedicated disk for backups: set BACKUP_MOUNT=/abs/path in .env
+      # (together with BACKUP_DIRS=Label=/backups). Otherwise ./backups is used.
       - ${BACKUP_MOUNT:-./backups}:/backups
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3010/health"]
@@ -214,22 +215,22 @@ services:
     security_opt:
       - no-new-privileges:true
 
-  # ═══ Эмбеддинги: свой сервис, без интернета и без ключей ═══
-  # Часть стека по умолчанию — потому что хостовых вариантов практически не
-  # осталось: OpenRouter эмбеддинги больше не отдаёт вовсе, а OpenAI напрямую
-  # закрыт в ряде стран. Свой сервис снимает и то, и другое, а заодно тексты
-  # не уходят наружу — для self-hosted это и есть главный смысл.
+  # ═══ Embeddings: our own service, no internet and no keys ═══
+  # Part of the stack by default, because hosted options have all but run out:
+  # OpenRouter no longer serves embeddings at all, and OpenAI is blocked outright
+  # in a number of countries. A local service removes both problems - and keeps
+  # the text from leaving the machine, which is the whole point of self-hosting.
   #
-  # Модель по умолчанию многоязычная (в т.ч. русский), 384 измерения, ~0.5 ГБ
-  # на диске и заметно меньше в памяти. Крупнее и точнее: multilingual-e5-base
-  # или BAAI/bge-m3 — им нужно больше и того, и другого (см. EMBEDDINGS_MEM).
+  # The default model is multilingual, 384 dimensions, ~0.5 GB on disk and
+  # noticeably less in memory. Larger and more accurate: multilingual-e5-base or
+  # BAAI/bge-m3 - both need more of each (see EMBEDDINGS_MEM).
   #
-  # ВАЖНО: сменив модель, вы меняете размерность вектора. Уже сохранённые
-  # эмбеддинги станут несопоставимы с новыми — их придётся переиндексировать.
+  # IMPORTANT: changing the model changes the vector dimension. Embeddings that
+  # are already stored become incomparable with new ones and must be reindexed.
   #
-  # Backend НЕ ждёт его готовности: первая загрузка модели идёт минуты, и
-  # держать из-за неё весь стек незачем — семантика подключится, когда сервис
-  # поднимется.
+  # The backend does NOT wait for it: the first model download takes minutes and
+  # holding the whole stack for that is pointless - semantic search joins in once
+  # the service is up.
   embeddings:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
     restart: unless-stopped
@@ -241,7 +242,7 @@ services:
       interval: 15s
       timeout: 5s
       retries: 10
-      start_period: 180s   # первая загрузка модели идёт дольше обычного старта
+      start_period: 180s   # the first model download takes longer than a normal start
     mem_limit: ${EMBEDDINGS_MEM:-1g}
     cpus: 2.0
     security_opt:
@@ -261,7 +262,7 @@ services:
       PORT: 3011
       BACKEND_URL: http://backend:3010
       MCP_API_KEY: ${MCP_API_KEY}
-    # порт закрыт снаружи — доступен только внутри Docker сети
+    # not published to the host - reachable only inside the Docker network
 
   # ═══ Collab Server (Yjs / Hocuspocus) ═══
   collab-server:
@@ -283,7 +284,7 @@ services:
       context: ./packages/frontend
       dockerfile: Dockerfile
     restart: unless-stopped
-    # порт закрыт снаружи — проксируется через nginx
+    # not published to the host - proxied through nginx
 
   # ═══ Reverse Proxy ═══
   nginx:
@@ -311,7 +312,7 @@ networks:
   sandbox_net: {}
 
 volumes:
-  # Используются по умолчанию (если *_DATA_DIR/UPLOADS_DIR в .env не заданы).
+  # Used by default (when *_DATA_DIR / UPLOADS_DIR are not set in .env).
   postgres_data:
   meili_data:
   minio_data:
