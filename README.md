@@ -165,6 +165,10 @@ sinout/
 ### Prerequisites
 
 - Docker + Docker Compose
+- Git — the first step below clones the repository. Windows does not ship
+  it: `winget install --id Git.Git -e`, then reopen the terminal so `git`
+  lands in `PATH`. macOS: `xcode-select --install`. Most Linux distros
+  already have it. (No Git? See «Without Git» after step 1.)
 - 4 GB RAM (8 GB recommended — Meilisearch, SearXNG, Whisper and the
   embedder are hungry). The embedder can be turned off with
   `EMBEDDINGS_LOCAL_OFF=true` if memory is tight; semantic recall then
@@ -181,6 +185,11 @@ sinout/
 git clone https://github.com/iezhik87/sinoutX-user.git
 cd sinoutX-user
 ```
+
+**Without Git.** The app itself never uses Git, so an archive works too:
+download the ZIP from the repository page (Code → Download ZIP) and unpack
+it. The catch is updates — `deploy.sh` pulls with Git, so an archive install
+has to be updated by hand. Installing Git is the easier path.
 
 ### 2. Configure
 
