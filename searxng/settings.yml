@@ -49,10 +49,14 @@ engines:
     disabled: false
     use_mobile_ui: false
 
+  # Отвечает, но не на заданный вопрос: на «статую зубра» присылал справку
+  # Windows и форум про гидроциклы. Bing подсовывает серверным адресам
+  # заглушку, и парсер честно её разбирает. Мусор хуже пустоты — агент станет
+  # его пересказывать.
   - name: bing
     engine: bing
     shortcut: b
-    disabled: false
+    disabled: true
 
   # DuckDuckGo в замерах не ответил ни разу: его движок делает лишний обмен
   # токенами и залипает, а веб-выдачу он всё равно во многом повторяет за Bing.
@@ -88,8 +92,13 @@ engines:
   # Disable engines that require API keys or are often blocked
   - name: wolframalpha
     disabled: true
+  # Замер на боевом сервере: единственный движок, который отвечает ПО ДЕЛУ.
+  # Пометка «часто блокируется» оказалась неверной — держит собственный индекс
+  # и серверные адреса не режет, в отличие от Google и Bing.
   - name: brave
-    disabled: true
+    engine: brave
+    shortcut: br
+    disabled: false
 
   # Эти в замере не ответили ни разу и тянули на себя общий бюджет времени:
   # с ними тот же запрос давал 0 результатов, без них — 10. Отключены не
@@ -101,4 +110,6 @@ engines:
   - name: karmasearch
     disabled: true
   - name: karmasearch videos
+    disabled: true
+  - name: qwant
     disabled: true
