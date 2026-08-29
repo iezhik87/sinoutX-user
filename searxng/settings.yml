@@ -23,6 +23,15 @@ ui:
   infinite_scroll: false
   default_theme: simple
 
+# Бюджет времени на исходящие запросы. Не был задан вовсе, и SearXNG брал
+# своё умолчание — слишком тесное: медленный, но живой источник не успевал
+# ответить, и поиск возвращал пустоту.
+outgoing:
+  request_timeout: 6.0
+  max_request_timeout: 12.0
+  pool_connections: 100
+  pool_maxsize: 20
+
 search:
   safe_search: 0
   autocomplete: ""
@@ -37,38 +46,59 @@ engines:
   - name: google
     engine: google
     shortcut: g
+    disabled: false
     use_mobile_ui: false
 
   - name: bing
     engine: bing
     shortcut: b
+    disabled: false
 
+  # DuckDuckGo в замерах не ответил ни разу: его движок делает лишний обмен
+  # токенами и залипает, а веб-выдачу он всё равно во многом повторяет за Bing.
   - name: duckduckgo
     engine: duckduckgo
     shortcut: d
+    disabled: true
 
   - name: wikipedia
     engine: wikipedia
     shortcut: wp
+    disabled: false
     language: ru
 
   - name: google news
     engine: google_news
     shortcut: gn
+    disabled: false
     categories: news
 
   - name: hackernews
     engine: hackernews
     shortcut: hn
+    disabled: false
     categories: news, it
 
   - name: github
     engine: github
     shortcut: gh
+    disabled: false
     categories: it
 
   # Disable engines that require API keys or are often blocked
   - name: wolframalpha
     disabled: true
   - name: brave
+    disabled: true
+
+  # Эти в замере не ответили ни разу и тянули на себя общий бюджет времени:
+  # с ними тот же запрос давал 0 результатов, без них — 10. Отключены не
+  # потому что «лишние», а потому что глушили рабочие.
+  - name: aol
+    disabled: true
+  - name: startpage
+    disabled: true
+  - name: karmasearch
+    disabled: true
+  - name: karmasearch videos
     disabled: true

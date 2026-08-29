@@ -66,6 +66,10 @@ const envSchema = z.object({
   // OpenAI-compatible local transcription endpoint (faster-whisper-server).
   // When set, Telegram voice messages are transcribed here instead of OpenAI.
   WHISPER_URL: z.string().url().optional(),
+  // Имя модели распознавания речи. Должно совпадать с WHISPER__MODEL у
+  // сервиса whisper: он загружает ту модель, которую попросит клиент, так
+  // что расхождение молча оставляет старую.
+  WHISPER_MODEL: z.string().default('Systran/faster-whisper-base'),
 
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: z.coerce.number().optional(),

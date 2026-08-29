@@ -533,7 +533,7 @@ async function ingestMedia(
     const headers: Record<string, string> = {}
     if (config.WHISPER_URL) {
       endpoint = `${config.WHISPER_URL.replace(/\/$/, '')}/audio/transcriptions`
-      form.append('model', 'Systran/faster-whisper-base')
+      form.append('model', config.WHISPER_MODEL)
     } else {
       const settings = await getAISettings(workspaceId, prisma)
       const openaiKey = settings?.providers?.openai?.apiKey ?? (settings?.provider === 'openai' ? settings?.apiKey : null)

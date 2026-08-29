@@ -1567,6 +1567,16 @@ Page length: 700–1200 words per chapter. Strict academic style with in-text ci
 
 // ─── Build system prompt ──────────────────────────────────────────────────────
 
+/**
+ * Упёрлись в потолок действий за один запрос. Приходило всегда по-русски —
+ * в белорусском или английском диалоге это читалось как чужая вставка.
+ */
+function roundLimitNotice(lang: 'ru' | 'en' | 'be'): string {
+  if (lang === 'en') return '\n\n⚠️ Reached the action limit for one request — wrapping up with what I have.'
+  if (lang === 'be') return '\n\n⚠️ Дасягнуты мяжа дзеянняў за адзін запыт — завяршаю тым, што ўжо сабрана.'
+  return '\n\n⚠️ Достигнут предел действий за один запрос — завершаю тем, что уже собрано.'
+}
+
 function buildSystemPrompt(context: ChatContext, customSystemPrompt?: string): string {
   const lang = context.userLanguage ?? 'ru'
   const isRu = lang === 'ru' || lang === 'be'
@@ -3278,12 +3288,41 @@ async function executeTool(
             url.searchParams.set('pageno', '1')
             const res = await fetch(url.toString(), { signal: AbortSignal.timeout(15_000) })
             if (res.ok) {
-              const data = await res.json() as { results?: Array<{ title: string; url: string; content?: string; engine?: string }>; unresponsive_engines?: unknown[] }
+              const data = await res.json() as {
+                results?: Array<{ title: string; url: string; content?: string; engine?: string }>
+                unresponsive_engines?: unknown[]
+                // Прямые ответы и карточки. Приходят даже когда обычные движки
+                // молчат, и часто это единственное, что вернулось.
+                answers?: Array<string | { answer?: string; url?: string }>
+                infoboxes?: Array<{ infobox?: string; id?: string; content?: string }>
+              }
               unresponsive = (data.unresponsive_engines ?? []).map((e) => Array.isArray(e) ? String(e[0]) : String(e))
               const results = (data.results ?? []).slice(0, limit).map(r => ({
                 title: r.title, url: r.url, snippet: r.content ?? '', engine: r.engine,
               }))
               if (results.length) return { query, results, count: results.length, source: 'searxng' }
+
+              // Движки молчат, но карточка или прямой ответ у SearXNG есть —
+              // это ровно то, что случается, когда Google и Bing режут IP
+              // сервера, а Википедия отвечает. Выбрасывать её и докладывать
+              // «поиск не работает» неверно: это единственное, что вернулось.
+              const extras = [
+                ...(data.answers ?? []).map((a) => (typeof a === 'string'
+                  ? { title: query, url: '', snippet: a }
+                  : { title: query, url: a.url ?? '', snippet: a.answer ?? '' })),
+                ...(data.infoboxes ?? []).map((b) => ({
+                  title: b.infobox ?? query, url: b.id ?? '', snippet: b.content ?? '',
+                })),
+              ].filter((r) => r.snippet.trim())
+              if (extras.length) {
+                return {
+                  query, results: extras.slice(0, limit), count: Math.min(extras.length, limit),
+                  source: 'searxng_answer',
+                  note: unresponsive?.length
+                    ? `Web engines did not respond (${unresponsive.join(', ')}); this is SearXNG's own answer card.`
+                    : "No web results, but SearXNG returned an answer card.",
+                }
+              }
               // else: empty — fall through to the DuckDuckGo fallback below.
             } else {
               console.error('[web_search] searxng', res.status, (await res.text()).slice(0, 200))
@@ -4086,30 +4125,69 @@ async function executeTool(
     case 'search_images': {
       const query = input.query as string
       const limit = Math.min((input.limit as number) ?? 5, 8)
-      const url = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrnamespace=6&gsrsearch=${encodeURIComponent(query)}&prop=imageinfo&iiprop=url|extmetadata&iiurlwidth=800&format=json&origin=*&gsrlimit=${limit}`
-      const res = await fetch(url, { headers: { 'User-Agent': 'SinoutX/1.0 (research)' }, signal: AbortSignal.timeout(15_000) })
-      const data = await res.json() as Record<string, unknown>
-      const pages = Object.values((data.query as Record<string, unknown>)?.pages ?? {}) as Record<string, unknown>[]
-      const images = pages
-        .map((p) => {
-          const ii = ((p.imageinfo as unknown[]) ?? [])[0] as Record<string, unknown> | undefined
-          if (!ii) return null
-          const meta = ii.extmetadata as Record<string, Record<string, string>> | undefined
-          return {
-            url: ii.thumburl ?? ii.url,
-            fullUrl: ii.url,
-            title: (p.title as string).replace('File:', ''),
-            description: meta?.ImageDescription?.value?.replace(/<[^>]+>/g, '').slice(0, 200) ?? '',
-            license: meta?.LicenseShortName?.value ?? '',
+
+      type Img = { url: string; fullUrl: string; title: string; description: string; license: string }
+      const insertNote = 'To insert an image into a page use: { "type": "image", "attrs": { "src": "<url>", "alt": "<title>" } } inside the page content nodes.'
+
+      // ── 1. SearXNG: обычный поиск картинок ────────────────────────────────
+      // Commons хорош лицензиями, но там нет обычных вещей — придорожной
+      // скульптуры, вывески, местного объекта. Спрашивая «покажи фото», человек
+      // имеет в виду именно их, поэтому веб-поиск идёт первым.
+      if (config.SEARXNG_URL) {
+        try {
+          const u = new URL('/search', config.SEARXNG_URL)
+          u.searchParams.set('q', query)
+          u.searchParams.set('format', 'json')
+          u.searchParams.set('categories', 'images')
+          u.searchParams.set('pageno', '1')
+          const r = await fetch(u.toString(), { signal: AbortSignal.timeout(15_000) })
+          if (r.ok) {
+            const d = await r.json() as { results?: Array<{ title?: string; url?: string; img_src?: string; thumbnail_src?: string; source?: string }> }
+            const images: Img[] = (d.results ?? [])
+              .filter((x) => x.img_src)
+              .slice(0, limit)
+              .map((x) => ({
+                url: x.thumbnail_src || x.img_src!,
+                fullUrl: x.img_src!,
+                title: x.title ?? query,
+                description: x.source ?? '',
+                license: '',
+              }))
+            if (images.length) return { query, images, count: images.length, source: 'searxng', note: insertNote }
           }
-        })
-        .filter(Boolean)
-      return {
-        query,
-        images,
-        count: images.length,
-        note: 'To insert an image into a page use: { "type": "image", "attrs": { "src": "<url>", "alt": "<title>" } } inside the page content nodes array.',
+        } catch (e) {
+          console.error('[search_images] searxng', e instanceof Error ? e.message : e)
+        }
       }
+
+      // ── 2. Wikimedia Commons: свободные лицензии ──────────────────────────
+      try {
+        const url = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrnamespace=6&gsrsearch=${encodeURIComponent(query)}&prop=imageinfo&iiprop=url|extmetadata&iiurlwidth=800&gsrlimit=${limit}&format=json&origin=*`
+        const res = await fetch(url, { headers: { 'User-Agent': 'SinoutX/1.0 (research)' }, signal: AbortSignal.timeout(15_000) })
+        const data = await res.json() as Record<string, unknown>
+        const pages = Object.values((data.query as Record<string, unknown>)?.pages ?? {}) as Record<string, unknown>[]
+        const images = pages
+          .map((p) => {
+            const ii = ((p.imageinfo as unknown[]) ?? [])[0] as Record<string, unknown> | undefined
+            if (!ii) return null
+            const meta = ii.extmetadata as Record<string, Record<string, string>> | undefined
+            return {
+              url: (ii.thumburl ?? ii.url) as string,
+              fullUrl: ii.url as string,
+              title: (p.title as string).replace('File:', ''),
+              description: meta?.ImageDescription?.value?.replace(/<[^>]+>/g, '').slice(0, 200) ?? '',
+              license: meta?.LicenseShortName?.value ?? '',
+            }
+          })
+          .filter((x): x is Img => x !== null)
+        if (images.length) return { query, images, count: images.length, source: 'wikimedia', note: insertNote }
+      } catch (e) {
+        console.error('[search_images] commons', e instanceof Error ? e.message : e)
+      }
+
+      // Ничего не нашлось — говорим это прямо, чтобы агент не выдумывал ссылку
+      // и не докладывал «сервис не отвечает», когда он ответил пустотой.
+      return { query, images: [], count: 0, note: 'No images found for this query.' }
     }
 
     case 'list_page_templates': {
@@ -5798,7 +5876,7 @@ async function* streamAnthropic(
       // At the ceiling, drop tools so this call has to produce a final answer.
       const roundTools = rounds > roundLimit(context) ? [] : tools
       if (rounds === roundLimit(context) + 1) {
-        yield `data: ${JSON.stringify({ type: 'text', text: '\n\n⚠️ Достигнут предел действий за один запрос — завершаю тем, что уже собрано.' })}\n\n`
+        yield `data: ${JSON.stringify({ type: 'text', text: roundLimitNotice(context?.userLanguage ?? 'ru') })}\n\n`
       }
       const stream = client.messages.stream({
         model: settings.model ?? 'claude-sonnet-4-6',
@@ -5968,7 +6046,7 @@ async function* streamOpenAI(
       // At the ceiling, drop tools so this call has to produce a final answer.
       const roundTools = rounds > roundLimit(context) ? [] : openaiTools
       if (rounds === roundLimit(context) + 1) {
-        yield `data: ${JSON.stringify({ type: 'text', text: '\n\n⚠️ Достигнут предел действий за один запрос — завершаю тем, что уже собрано.' })}\n\n`
+        yield `data: ${JSON.stringify({ type: 'text', text: roundLimitNotice(context?.userLanguage ?? 'ru') })}\n\n`
       }
       const toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }> = []
       let hasToolCalls = false

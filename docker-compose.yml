@@ -89,7 +89,7 @@ services:
     image: fedirz/faster-whisper-server:latest-cpu
     restart: unless-stopped
     environment:
-      WHISPER__MODEL: Systran/faster-whisper-base
+      WHISPER__MODEL: ${WHISPER_MODEL:-Systran/faster-whisper-base}
       WHISPER__INFERENCE_DEVICE: cpu
       WHISPER__COMPUTE_TYPE: int8
     volumes:
@@ -130,6 +130,7 @@ services:
       APP_URL: ${APP_URL:-}
       SEARXNG_URL: http://searxng:8080
       WHISPER_URL: http://whisper:8000/v1
+      WHISPER_MODEL: ${WHISPER_MODEL:-Systran/faster-whisper-base}
       # Crypto billing (NOWPayments) — empty disables /billing/invoice (503)
       NOWPAYMENTS_API_KEY: ${NOWPAYMENTS_API_KEY:-}
       NOWPAYMENTS_IPN_SECRET: ${NOWPAYMENTS_IPN_SECRET:-}
