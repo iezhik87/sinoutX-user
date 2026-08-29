@@ -245,6 +245,9 @@ docker compose up -d
 
 Navigate to **http://localhost:8090**.
 
+You land on a sign-in screen. Press **Create account** and register — the
+instance does nothing until an account exists, and there is no seeded login.
+
 The first registered user becomes the **owner** — every capability unlocked. After that, registration is **closed** (this is a single-user edition), so no one else can sign up.
 
 Add your AI provider key in **Settings → AI** to switch the assistant on.
