@@ -72,14 +72,17 @@ services:
     image: searxng/searxng:latest
     restart: unless-stopped
     volumes:
-      - ./searxng:/etc/searxng:rw
+      # Только файл настроек и только на чтение. Каталог целиком в режиме
+      # записи давал контейнеру сменить владельца (у него есть CHOWN), и после
+      # первого же старта git не мог обновить settings.yml: «Permission
+      # denied» на каждом деплое, который эту настройку трогает.
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
     environment:
       SEARXNG_SECRET: ${SEARXNG_SECRET:-sinout_searxng_secret_key_2024}
     # not published to the host - reachable only inside the Docker network
     cap_drop:
       - ALL
     cap_add:
-      - CHOWN
       - SETGID
       - SETUID
       - DAC_OVERRIDE
