@@ -11,6 +11,7 @@ import { denyIfNotMember, denyIfNoProjectAccess } from '../../lib/requireAccess.
 import { writeAuditLog } from '../../lib/audit.js'
 import { canShareProject, getWorkspaceOwner } from '../../lib/plans.js'
 import { createInvite } from '../../lib/invites.js'
+import { isSoloEdition } from '../../lib/edition.js'
 import { sendInviteToRegisterEmail, sendInviteRevokedEmail, isEmailConfigured } from '../../lib/email.js'
 import { config } from '../../config/index.js'
 
@@ -270,6 +271,12 @@ export async function projectRoutes(fastify: FastifyInstance, prisma: PrismaClie
     // cannot be delivered, and AGAIN at redemption so the promise cannot be
     // stretched by sending ten invites against one free seat.
     if (!target) {
+      // В персональном издании регистрация закрыта после первого аккаунта, так
+      // что приглашение выслать можно, а принять его — нельзя. Письмо с мёртвой
+      // ссылкой хуже отказа: человек ждёт доступа, которого не будет.
+      if (isSoloEdition()) {
+        return reply.status(403).send({ error: 'solo_edition', message: 'This is a single-user edition: registration is closed, so an invitation cannot be accepted.' })
+      }
       const owner = await getWorkspaceOwner(prisma, project!.workspaceId)
       if (owner) {
         const seat = await canShareProject(prisma, owner.id, '')

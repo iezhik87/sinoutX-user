@@ -4,6 +4,7 @@ import { toast } from '@/stores/toastStore'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ProviderConnect } from '@/components/settings/ProviderConnect'
 import { PeopleTab } from '@/components/settings/PeopleTab'
+import { useIsSolo } from '@/stores/instanceStore'
 import {
   Bot, Trash2, Download, Upload, Loader2, Plus, Check, X,
   MessageCircle, Phone, Hash, Webhook, Key, Eye, EyeOff, Copy, DatabaseBackup,
@@ -53,6 +54,10 @@ const INTEGRATION_LABELS: Record<IntegrationType, string> = {
 export function SettingsPage() {
   const { currentWorkspaceId } = useWorkspaceStore()
   const [activeTab, setActiveTab] = useState<Tab>('general')
+  // В персональном издании делиться не с кем: шаринг проектов спрятан, а
+  // регистрация закрыта после первого аккаунта — приглашённый просто не
+  // сможет завести учётную запись. Вкладка «Люди» там ведёт в тупик.
+  const solo = useIsSolo()
   const t = useT()
   const navigate = useNavigate()
 
@@ -88,7 +93,7 @@ export function SettingsPage() {
             { id: 'general',      label: t.settings.tabs.general,      icon: <Settings2 size={14} /> },
             { id: 'ai',           label: t.settings.tabs.ai,           icon: <Cpu size={14} /> },
             { id: 'integrations', label: t.settings.tabs.integrations, icon: <Bot size={14} /> },
-            { id: 'people',       label: t.settings.tabs.people,       icon: <Users size={14} /> },
+            ...(solo ? [] : [{ id: 'people' as Tab, label: t.settings.tabs.people, icon: <Users size={14} /> }]),
             { id: 'apikeys',      label: t.settings.tabs.apikeys,      icon: <Key size={14} /> },
             { id: 'backup',       label: t.settings.tabs.backup,       icon: <DatabaseBackup size={14} /> },
             { id: 'security',     label: t.settings.tabs.security,     icon: <ShieldCheck size={14} /> },
@@ -127,7 +132,7 @@ export function SettingsPage() {
           {activeTab === 'integrations' && (
             <IntegrationsTab workspaceId={currentWorkspaceId} />
           )}
-          {activeTab === 'people' && (
+          {activeTab === 'people' && !solo && (
             <PeopleTab />
           )}
           {activeTab === 'apikeys' && (
