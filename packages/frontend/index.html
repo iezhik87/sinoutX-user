@@ -2,7 +2,10 @@
 <html lang="ru" class="dark">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- favicon.svg в public/ никогда не было: браузер получал 404, а вкладка
+         оставалась без иконки. Иконка приложения уже лежит рядом — на неё и
+         ссылаемся, чтобы не плодить третий файл под то же самое. -->
+    <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#6366f1" />
     <!-- The web app manifest + apple meta are injected at runtime ONLY on our
