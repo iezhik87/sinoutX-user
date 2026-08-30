@@ -217,6 +217,12 @@ export interface ChatContext {
   /** Telegram delivery target — when set, file-producing tools (export_project)
    * send the result straight to this chat via the Bot API. */
   telegram?: { botToken: string; chatId: number }
+  /**
+   * Отправить готовый файл в тот канал, откуда пришёл запрос. Инструменту не
+   * нужно знать, Telegram это или что-то ещё; вернёт false, если канал файлы
+   * не принимает (Viber), — тогда человеку говорят, где файл взять.
+   */
+  sendFile?: (file: { buffer: Buffer; filename: string; mime: string }, caption?: string) => Promise<boolean>
   /** Which messenger the answer goes to, and what that channel can do.
    *  `canDelete: false` (Viber) removes get_secret from the toolset entirely —
    *  a password we cannot un-send must never reach the chat. */
@@ -2886,23 +2892,153 @@ async function executeTool(
         return { error: 'Не удалось сгенерировать файл: ' + (e instanceof Error ? e.message : String(e)).slice(0, 150) }
       }
 
-      // Deliver to Telegram if this is a bot session; otherwise tell the user.
-      if (context?.telegram) {
-        try {
-          const form = new FormData()
-          form.append('chat_id', String(context.telegram.chatId))
-          form.append('document', new Blob([buffer as unknown as ArrayBuffer], { type: mime }), filename)
-          form.append('caption', `📄 ${project.name} (${format.toUpperCase()})`)
-          const res = await fetch(`https://api.telegram.org/bot${context.telegram.botToken}/sendDocument`, {
-            method: 'POST', body: form, signal: AbortSignal.timeout(60_000),
-          })
-          if (!res.ok) return { error: 'Telegram отклонил файл: ' + (await res.text().catch(() => '')).slice(0, 150) }
-          return { ok: true, message: `Файл «${filename}» отправлен в чат.` }
-        } catch (e) {
-          return { error: 'Не удалось отправить файл в Telegram: ' + (e instanceof Error ? e.message : String(e)).slice(0, 150) }
-        }
+      // Отдаём файл в тот канал, откуда пришёл запрос. Инструмент не знает,
+      // Telegram это или нет: транспорт живёт в канале.
+      if (context?.sendFile) {
+        const sent = await context.sendFile({ buffer, filename, mime }, `📄 ${project.name} (${format.toUpperCase()})`)
+        if (sent) return { ok: true, message: `Файл «${filename}» отправлен в чат.` }
+        return { ok: false, message: `Не удалось отправить «${filename}» в чат — скачайте его в приложении, кнопкой экспорта в проекте.` }
       }
-      return { ok: true, message: `Экспорт «${filename}» готов. В приложении используй кнопку экспорта проекта, чтобы скачать.` }
+      return { ok: true, message: `Экспорт «${filename}» готов. В приложении используй кнопку экспорта в проекте.` }
+    }
+
+    case 'send_attachment': {
+      const attachmentId = String(input.attachmentId ?? '')
+      if (!attachmentId) return { error: 'Укажи attachmentId файла (найди его через list_attachments или поиск).' }
+      const att = await prisma.attachment.findUnique({
+        where: { id: attachmentId },
+        select: { filename: true, mimeType: true, size: true, storagePath: true, workspaceId: true },
+      })
+      if (!att) return { error: 'Файл не найден.' }
+      const allowedWs = context?.lockWorkspaceId ?? context?.workspaceId
+      if (allowedWs && att.workspaceId !== allowedWs) return { error: 'Нет доступа к этому файлу.' }
+
+      // Предел Bot API — 50 МБ. Проверяем ДО скачивания из хранилища: иначе
+      // тянем сотни мегабайт в память ради отказа.
+      const MAX = 50 * 1024 * 1024
+      if (att.size > MAX) {
+        return { error: `Файл «${att.filename}» весит ${Math.round(att.size / 1048576)} МБ — мессенджер принимает до 50 МБ. Скачайте его в приложении.` }
+      }
+      if (!context?.sendFile) {
+        return { ok: true, message: `Файл «${att.filename}» есть в воркспейсе — откройте его в приложении.` }
+      }
+
+      let buffer: Buffer
+      try {
+        const { minio, BUCKET } = await import('../../lib/storage.js')
+        const stream = await minio.getObject(BUCKET, att.storagePath)
+        const chunks: Buffer[] = []
+        for await (const c of stream) chunks.push(c as Buffer)
+        buffer = Buffer.concat(chunks)
+      } catch (e) {
+        return { error: 'Не удалось прочитать файл из хранилища: ' + (e instanceof Error ? e.message : String(e)).slice(0, 150) }
+      }
+
+      const sent = await context.sendFile({ buffer, filename: att.filename, mime: att.mimeType }, `📎 ${att.filename}`)
+      if (sent) return { ok: true, message: `Файл «${att.filename}» отправлен в чат.` }
+      return { ok: false, message: `Не удалось отправить «${att.filename}» в чат — откройте его в приложении.` }
+    }
+
+    case 'export_page': {
+      const pageId = String(input.pageId ?? context?.pageId ?? '')
+      const format = (input.format === 'docx' ? 'docx' : 'pdf') as 'pdf' | 'docx'
+      if (!pageId) return { error: 'Укажи pageId страницы.' }
+      const page = await prisma.page.findUnique({
+        where: { id: pageId },
+        select: { title: true, content: true, isDeleted: true, project: { select: { workspaceId: true } } },
+      })
+      if (!page || page.isDeleted) return { error: 'Страница не найдена.' }
+      const allowedWs = context?.lockWorkspaceId ?? context?.workspaceId
+      if (allowedWs && page.project.workspaceId !== allowedWs) return { error: 'Нет доступа к этой странице.' }
+
+      type Node = Record<string, unknown>
+      const c = page.content as { content?: Node[] } | null
+      if (!c?.content?.length) return { error: 'Страница пуста — экспортировать нечего.' }
+      const doc = { type: 'doc', content: c.content }
+
+      const safeName = (page.title.replace(/[^a-zA-Z0-9-_А-Яа-яЁё ]/g, '_').trim() || 'page')
+      const filename = `${safeName}.${format}`
+      const mime = format === 'pdf'
+        ? 'application/pdf'
+        : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+
+      let buffer: Buffer
+      try {
+        buffer = format === 'pdf' ? await tipTapToPdfBuffer(page.title, doc) : await tipTapToDocxBuffer(page.title, doc)
+      } catch (e) {
+        return { error: 'Не удалось сгенерировать файл: ' + (e instanceof Error ? e.message : String(e)).slice(0, 150) }
+      }
+
+      if (context?.sendFile) {
+        const sent = await context.sendFile({ buffer, filename, mime }, `📄 ${page.title} (${format.toUpperCase()})`)
+        if (sent) return { ok: true, message: `Файл «${filename}» отправлен в чат.` }
+        return { ok: false, message: `Не удалось отправить «${filename}» в чат — скачайте страницу в приложении.` }
+      }
+      return { ok: true, message: `Экспорт «${filename}» готов. В приложении используй экспорт страницы.` }
+    }
+
+    case 'export_records': {
+      const collectionId = String(input.collectionId ?? '')
+      if (!collectionId) return { error: 'Укажи collectionId реестра.' }
+      const col = await prisma.collection.findUnique({
+        where: { id: collectionId },
+        select: { name: true, fields: true, project: { select: { name: true, workspaceId: true } } },
+      })
+      if (!col) return { error: 'Реестр не найден.' }
+      const allowedWs = context?.lockWorkspaceId ?? context?.workspaceId
+      if (allowedWs && col.project.workspaceId !== allowedWs) return { error: 'Нет доступа к этому реестру.' }
+
+      const records = await prisma.collectionRecord.findMany({
+        where: { collectionId },
+        orderBy: { createdAt: 'asc' },
+        select: { data: true, createdAt: true },
+      })
+      if (!records.length) return { error: 'В реестре нет записей.' }
+
+      // Колонки берём из схемы реестра, а не из первой записи: поле, которое
+      // заполнено не везде, иначе потерялось бы целиком.
+      const schema = (Array.isArray(col.fields) ? col.fields : []) as Array<{ key?: string; label?: unknown; type?: string }>
+      const lang = context?.userLanguage ?? 'ru'
+      const labelOf = (f: { key?: string; label?: unknown }) => {
+        const l = f.label
+        if (l && typeof l === 'object') return String((l as Record<string, unknown>)[lang] ?? (l as Record<string, unknown>).ru ?? f.key ?? '')
+        return String(l ?? f.key ?? '')
+      }
+      const cols = schema.filter((f) => f.key && f.type !== 'secret')
+      if (!cols.length) return { error: 'У реестра нет полей для выгрузки.' }
+
+      const ExcelJS = await import('exceljs')
+      const wb = new ExcelJS.Workbook()
+      const nameOf = (n: unknown) => (n && typeof n === 'object'
+        ? String((n as Record<string, unknown>)[lang] ?? (n as Record<string, unknown>).ru ?? 'Реестр')
+        : String(n ?? 'Реестр'))
+      const title = nameOf(col.name)
+      // Excel не пускает в имя листа : \ / ? * [ ] и больше 31 символа.
+      const ws = wb.addWorksheet(title.replace(/[:\\/?*[\]]/g, ' ').slice(0, 31) || 'Records')
+
+      ws.columns = cols.map((f) => ({ header: labelOf(f), key: String(f.key), width: 22 }))
+      ws.getRow(1).font = { bold: true }
+      for (const r of records) {
+        const d = maskSecrets(r.data) as Record<string, unknown>
+        const row: Record<string, unknown> = {}
+        for (const f of cols) {
+          const v = d[String(f.key)]
+          // Объекты и массивы Excel не понимает — сводим к тексту.
+          row[String(f.key)] = v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : v)
+        }
+        ws.addRow(row)
+      }
+
+      const buffer = Buffer.from(await wb.xlsx.writeBuffer())
+      const filename = `${title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 60) || 'records'}.xlsx`
+      const mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+      if (context?.sendFile) {
+        const sent = await context.sendFile({ buffer, filename, mime }, `📊 ${title} — ${records.length} зап.`)
+        if (sent) return { ok: true, message: `Файл «${filename}» отправлен в чат.`, rows: records.length }
+        return { ok: false, message: `Не удалось отправить «${filename}» в чат — выгрузите реестр в приложении.` }
+      }
+      return { ok: true, message: `Выгрузка «${filename}» готова (${records.length} зап.). В приложении используй экспорт реестра.` }
     }
 
     case 'delete_item': {
@@ -4124,7 +4260,9 @@ async function executeTool(
 
     case 'search_images': {
       const query = input.query as string
-      const limit = Math.min((input.limit as number) ?? 5, 8)
+      // По умолчанию одна: «покажи фото» — это про предмет, а не про подборку.
+      // Агент попросит больше явно, если человек попросил больше.
+      const limit = Math.min((input.limit as number) ?? 1, 10)
 
       type Img = { url: string; fullUrl: string; title: string; description: string; license: string }
       const insertNote = 'To insert an image into a page use: { "type": "image", "attrs": { "src": "<url>", "alt": "<title>" } } inside the page content nodes.'

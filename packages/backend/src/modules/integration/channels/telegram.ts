@@ -124,6 +124,21 @@ export function telegramAdapter(botToken: string, chatId: number): ChannelAdapte
       return failed
     },
 
+    // Файл уходит multipart-ом: Telegram принимает байты напрямую, качать
+    // ему ничего не надо.
+    async sendDocument(file, caption) {
+      try {
+        const form = new FormData()
+        form.append('chat_id', String(chatId))
+        form.append('document', new Blob([file.buffer as unknown as ArrayBuffer], { type: file.mime }), file.filename)
+        if (caption) form.append('caption', caption.slice(0, 1024))
+        const res = await fetch(`https://api.telegram.org/bot${botToken}/sendDocument`, {
+          method: 'POST', body: form, signal: AbortSignal.timeout(60_000),
+        })
+        return res.ok
+      } catch { return false }
+    },
+
     async edit(messageId, text, buttons) {
       const km = keyboard(buttons)
       const e = await tgApi(botToken, 'editMessageText', { chat_id: chatId, message_id: Number(messageId), text, parse_mode: 'HTML', disable_web_page_preview: true, ...km })

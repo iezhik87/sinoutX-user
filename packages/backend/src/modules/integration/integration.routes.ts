@@ -231,6 +231,22 @@ function splitForChannel(text: string, limit = 3500): string[] {
 }
 
 /**
+ * Сколько картинок отправлять, судя по просьбе.
+ *
+ * «Покажи фото» — это одна картинка, а не лента: человек спросил про предмет,
+ * а не про подборку. «Несколько», «ещё», «варианты» — три, дальше начинается
+ * спам. Назвали число — столько и шлём, но не больше десяти: это предел
+ * альбома Telegram, и присылать больше в мессенджер незачем.
+ */
+export function photoLimitFor(request: string): number {
+  const q = request.toLowerCase()
+  const n = q.match(/(\d{1,2})\s*(?:шт|фото|фотк|картин|изображ|снимк|photos?|images?|pics?)/)
+  if (n) return Math.min(Math.max(parseInt(n[1], 10), 1), 10)
+  if (/(несколько|побольше|ещё фото|еще фото|разные|варианты|подборк|галере|several|a few|more photos|multiple)/.test(q)) return 3
+  return 1
+}
+
+/**
  * Достаёт из ответа адреса изображений и убирает их из текста.
  *
  * Человек просит «покажи фото» и ждёт фото, а не список ссылок. Разбираем сам
@@ -353,6 +369,10 @@ export async function runChannelAgent(
     // Lets file-producing tools (export_project) deliver straight to this chat.
     // Only Telegram accepts an upload; Viber would need a public URL.
     ...(telegram && adapter.canUploadFile ? { telegram } : {}),
+    // Файлы уходят через канал: инструменту незачем знать транспорт, а Viber
+    // честно ответит false — он принимает только публичный адрес, не байты.
+    sendFile: (f: { buffer: Buffer; filename: string; mime: string }, caption?: string) =>
+      adapter.sendDocument(f, caption),
   }
 
   let reply = ''
@@ -462,7 +482,7 @@ export async function runChannelAgent(
 
   // Картинки уходят картинками, а не ссылками. Недоставленные (чужой хост мог
   // отказать мессенджеру) возвращаем в текст — лучше ссылка, чем ничего.
-  const { text: replyText, photos } = extractPhotos(reply)
+  const { text: replyText, photos } = extractPhotos(reply, photoLimitFor(text))
   let bodyText = replyText
   if (photos.length) {
     const failed = await adapter.sendPhotos(photos).catch(() => photos)

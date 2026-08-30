@@ -52,6 +52,12 @@ export interface ChannelAdapter {
    */
   sendPhotos(urls: string[], caption?: string): Promise<string[]>
 
+  /**
+   * Отправить файл байтами. Viber так не умеет — ему нужен публичный адрес,
+   * которого у нас нет, поэтому у него это всегда false (см. canUploadFile).
+   */
+  sendDocument(file: { buffer: Buffer; filename: string; mime: string }, caption?: string): Promise<boolean>
+
   /** `ref` is a Telegram file_id or a Viber media URL. */
   downloadFile(ref: string, hint?: { filename?: string; mime?: string }): Promise<IncomingFile | null>
 }

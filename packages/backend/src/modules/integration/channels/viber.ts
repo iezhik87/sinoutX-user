@@ -138,6 +138,11 @@ export function viberAdapter(token: string, receiverId: string, senderName = 'Si
       return failed
     },
 
+    // Viber принимает только публичный адрес файла, а не байты. Хостинга под
+    // это у нас нет, поэтому честно false — вызывающий скажет человеку, где
+    // взять файл, вместо тихой пропажи.
+    async sendDocument() { return false },
+
     async edit() { return false },
     async delete() { return false },
 

@@ -29,6 +29,9 @@ export const TOOL_CATALOG: ToolMeta[] = [
   { name: 'create_event',           category: 'workspace', description: 'Создать событие календаря с напоминанием (день рождения, встреча, дедлайн)',     description_en: 'Create a calendar event with a reminder (birthday, meeting, deadline)' },
   { name: 'list_events',            category: 'workspace', description: 'Найти события календаря (ДР/встречи) по имени или диапазону — перед «такого нет» вызови это', description_en: 'Find calendar events (birthdays/meetings) by name or date range — call before saying "no such event"' },
   { name: 'export_project',         category: 'workspace', description: 'Экспортировать проект в PDF или DOCX (в Telegram файл придёт прямо в чат)',     description_en: 'Export a project to PDF or DOCX (in Telegram the file is sent to the chat)' },
+  { name: 'send_attachment',        category: 'workspace', description: 'Отправить в чат уже загруженный файл из воркспейса (до 50 МБ)',            description_en: 'Send an already uploaded workspace file to the chat (up to 50 MB)' },
+  { name: 'export_page',            category: 'workspace', description: 'Экспортировать одну страницу в PDF или DOCX; в мессенджере файл придёт в чат',  description_en: 'Export a single page to PDF or DOCX; in a messenger the file is sent to the chat' },
+  { name: 'export_records',         category: 'workspace', description: 'Выгрузить записи реестра в Excel (.xlsx); в мессенджере файл придёт в чат',   description_en: 'Export registry records to Excel (.xlsx); in a messenger the file is sent to the chat' },
   { name: 'delete_item',            category: 'workspace', description: 'Удалить задачу/заметку/страницу/событие/проект (обратимо, в корзину на 30 дней)', description_en: 'Delete a task/note/page/event/project (reversible, kept in trash for 30 days)' },
   { name: 'list_trash',             category: 'workspace', description: 'Показать недавно удалённые объекты (корзина)',                                  description_en: 'List recently deleted items (trash)' },
   { name: 'restore_item',           category: 'workspace', description: 'Восстановить удалённый объект из корзины',                                      description_en: 'Restore a deleted item from trash' },
@@ -365,6 +368,40 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
         format: { type: 'string', enum: ['pdf', 'docx'], description: 'Формат файла. По умолчанию pdf.' },
       },
       required: ['projectId'],
+    },
+  },
+  {
+    name: 'send_attachment',
+    description: 'Отправить в чат файл, который уже загружен в воркспейс (договор, скан, таблицу). Работает только в сессии мессенджера. Предел — 50 МБ.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        attachmentId: { type: 'string', description: 'ID вложения. Найди его поиском по воркспейсу, если не знаешь.' },
+      },
+      required: ['attachmentId'],
+    },
+  },
+  {
+    name: 'export_page',
+    description: 'Экспортировать ОДНУ страницу в PDF или DOCX. В сессии мессенджера файл отправляется прямо в чат. Для всего проекта используй export_project.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pageId: { type: 'string', description: 'ID страницы. Если не указан — берётся текущая страница.' },
+        format: { type: 'string', enum: ['pdf', 'docx'], description: 'Формат файла. По умолчанию pdf.' },
+      },
+      required: ['pageId'],
+    },
+  },
+  {
+    name: 'export_records',
+    description: 'Выгрузить записи реестра в файл Excel (.xlsx). В сессии мессенджера файл отправляется прямо в чат. Секретные поля в выгрузку не попадают.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        collectionId: { type: 'string', description: 'ID реестра (коллекции), записи которого выгружаем.' },
+      },
+      required: ['collectionId'],
     },
   },
   {
