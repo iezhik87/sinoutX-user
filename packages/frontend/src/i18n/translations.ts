@@ -322,6 +322,16 @@ const ru = {
     skip: 'Пропустить',
     next: 'Далее',
     finish: 'Начать работу',
+    // Экран для замороженного аккаунта: на облаке он заморожен с первой минуты,
+    // и звать его создавать проекты — значит обещать то, на что сервер ответит
+    // отказом. Вместо тура объясняем, за что платит, и даём кнопку.
+    paywall: {
+      title: 'Остался один шаг',
+      desc: 'Облако — это ваш сервер у нас: он работает круглосуточно, хранит данные и держит ассистента на связи. Первый месяц стоит $5, и с этого момента всё открыто.',
+      hint: 'Читать, искать и выгружать данные можно и сейчас — приостановлена только запись. Свой ключ AI подключается после оплаты и убирает наценку на токены.',
+      cta: 'Пополнить баланс',
+      later: 'Осмотреться пока так',
+    },
     step: 'Шаг',
     of: 'из',
     steps: [
@@ -2429,6 +2439,14 @@ const en: typeof ru = {
     skip: 'Skip',
     next: 'Next',
     finish: 'Get Started',
+    // Screen for a frozen account — see the Russian block for the reasoning.
+    paywall: {
+      title: 'One step left',
+      desc: 'The cloud is your own server on our side: it runs around the clock, keeps your data and holds the assistant ready. The first month is $5, and everything opens up from then on.',
+      hint: 'Reading, search and export already work — only writing is on hold. Your own AI key can be connected after payment and removes the token markup.',
+      cta: 'Top up balance',
+      later: 'Look around first',
+    },
     step: 'Step',
     of: 'of',
     steps: [
@@ -4489,6 +4507,14 @@ const be: typeof ru = {
     skip: 'Прапусціць',
     next: 'Далей',
     finish: 'Пачаць працу',
+    // Экран для замарожанага акаўнта — тлумачэнне ў рускім блоку.
+    paywall: {
+      title: 'Застаўся адзін крок',
+      desc: 'Воблака — гэта ваш сервер у нас: ён працуе кругласутачна, захоўвае даныя і трымае асістэнта на сувязі. Першы месяц каштуе $5, і з гэтага моманту ўсё адкрыта.',
+      hint: 'Чытаць, шукаць і выгружаць даныя можна і зараз — прыпынены толькі запіс. Свой ключ AI падключаецца пасля аплаты і прыбірае нацэнку на токены.',
+      cta: 'Папоўніць баланс',
+      later: 'Агледзецца пакуль так',
+    },
     step: 'Крок',
     of: 'з',
     steps: [
