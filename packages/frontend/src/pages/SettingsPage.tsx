@@ -59,8 +59,11 @@ export function SettingsPage() {
   // менять ради этого не стоит.
   const [activeTab, setActiveTab] = useState<Tab>(() => {
     const wanted = new URLSearchParams(window.location.search).get('tab')
-    const known: Tab[] = ['general', 'ai', 'integrations', 'people', 'files',
-      'apikeys', 'backup', 'security', 'plan', 'help', 'import']
+    // Только вкладки, которые ДЕЙСТВИТЕЛЬНО рисуются. В типе Tab остались ещё
+    // 'plan' (переехал на /billing) и 'files' — по ссылке на них настройки
+    // открылись бы пустыми.
+    const known: Tab[] = ['general', 'ai', 'integrations', 'people',
+      'apikeys', 'backup', 'security', 'import']
     return (known as string[]).includes(wanted ?? '') ? (wanted as Tab) : 'general'
   })
   // В персональном издании делиться не с кем: шаринг проектов спрятан, а

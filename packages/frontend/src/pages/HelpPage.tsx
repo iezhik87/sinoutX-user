@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useLanguageStore } from '@/stores/languageStore'
+import { useIsCloud, useIsSolo } from '@/stores/instanceStore'
 import type { Localized } from '@/i18n'
 import { Header } from '@/components/layout/Header'
 import {
@@ -19,7 +20,14 @@ interface HelpSection {
   content: Localized<React.ReactNode>
 }
 
-const SECTIONS: HelpSection[] = [
+/**
+ * Разделы справки. Функция, а не константа: облако и своя установка расходятся
+ * принципиально — в облаке есть баланс и встроенная модель, на своём сервере
+ * ассистент молчит без вашего ключа, зато нет ни платы, ни ограничений. Одна
+ * справка на оба случая половину читателей вводила в заблуждение.
+ */
+function buildSections(cloud: boolean, solo: boolean): HelpSection[] {
+  return [
   {
     id: 'start',
     icon: <Zap size={18} />,
@@ -38,7 +46,7 @@ const SECTIONS: HelpSection[] = [
                 <Globe size={15} className="text-blue-400" />
                 <span className="text-sm font-semibold text-slate-200">Рабочее пространство</span>
               </div>
-              <p className="text-xs text-slate-400">Общая область для команды или личного использования. Все проекты, файлы и настройки живут внутри рабочего пространства.</p>
+              <p className="text-xs text-slate-400">У каждого своё личное пространство: проекты, файлы, память ассистента и настройки живут в нём. Работать вместе — значит поделиться отдельным проектом, а не пространством целиком.</p>
             </div>
             <div className="bg-surface-800 rounded-xl p-4 border border-slate-700/50">
               <div className="flex items-center gap-2 mb-2">
@@ -59,7 +67,7 @@ const SECTIONS: HelpSection[] = [
             <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Навигация</p>
             <ul className="space-y-1.5 text-sm text-slate-300">
               <li className="flex items-start gap-2"><ChevronRight size={14} className="mt-0.5 text-primary-400 flex-shrink-0" />Боковая панель слева — доступ ко всем разделам</li>
-              <li className="flex items-start gap-2"><ChevronRight size={14} className="mt-0.5 text-primary-400 flex-shrink-0" />Переключение рабочих пространств — кнопка в верхнем левом углу</li>
+              <li className="flex items-start gap-2"><ChevronRight size={14} className="mt-0.5 text-primary-400 flex-shrink-0" />Общие проекты — те, которыми с вами поделились; открываются там же, в списке проектов</li>
               <li className="flex items-start gap-2"><ChevronRight size={14} className="mt-0.5 text-primary-400 flex-shrink-0" />Быстрый поиск — <kbd className="text-xs bg-slate-700 px-1.5 py-0.5 rounded">Ctrl+K</kbd></li>
               <li className="flex items-start gap-2"><ChevronRight size={14} className="mt-0.5 text-primary-400 flex-shrink-0" />Избранное — звёздочка рядом с любым элементом</li>
             </ul>
@@ -74,7 +82,7 @@ const SECTIONS: HelpSection[] = [
                 <Globe size={15} className="text-blue-400" />
                 <span className="text-sm font-semibold text-slate-200">Workspace</span>
               </div>
-              <p className="text-xs text-slate-400">A shared area for your team or personal use. All projects, files and settings live inside a workspace.</p>
+              <p className="text-xs text-slate-400">Everyone has their own personal workspace: projects, files, assistant memory and settings live in it. Working together means sharing an individual project, not the whole workspace.</p>
             </div>
             <div className="bg-surface-800 rounded-xl p-4 border border-slate-700/50">
               <div className="flex items-center gap-2 mb-2">
@@ -95,7 +103,7 @@ const SECTIONS: HelpSection[] = [
             <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Navigation</p>
             <ul className="space-y-1.5 text-sm text-slate-300">
               <li className="flex items-start gap-2"><ChevronRight size={14} className="mt-0.5 text-primary-400 flex-shrink-0" />Left sidebar — access all sections</li>
-              <li className="flex items-start gap-2"><ChevronRight size={14} className="mt-0.5 text-primary-400 flex-shrink-0" />Switch workspaces — button in the top left corner</li>
+              <li className="flex items-start gap-2"><ChevronRight size={14} className="mt-0.5 text-primary-400 flex-shrink-0" />Shared projects — the ones shared with you; they open in the same project list</li>
               <li className="flex items-start gap-2"><ChevronRight size={14} className="mt-0.5 text-primary-400 flex-shrink-0" />Quick search — <kbd className="text-xs bg-slate-700 px-1.5 py-0.5 rounded">Ctrl+K</kbd></li>
               <li className="flex items-start gap-2"><ChevronRight size={14} className="mt-0.5 text-primary-400 flex-shrink-0" />Favorites — star icon next to any item</li>
             </ul>
@@ -110,7 +118,7 @@ const SECTIONS: HelpSection[] = [
                 <Globe size={15} className="text-blue-400" />
                 <span className="text-sm font-semibold text-slate-200">Працоўная прастора</span>
               </div>
-              <p className="text-xs text-slate-400">Агульная вобласць для каманды або асабістага выкарыстання. Усе праекты, файлы і налады жывуць унутры працоўнай прасторы.</p>
+              <p className="text-xs text-slate-400">У кожнага свая асабістая прастора: праекты, файлы, памяць асістэнта і налады жывуць у ёй. Працаваць разам — значыць падзяліцца асобным праектам, а не прасторай цалкам.</p>
             </div>
             <div className="bg-surface-800 rounded-xl p-4 border border-slate-700/50">
               <div className="flex items-center gap-2 mb-2">
@@ -131,7 +139,7 @@ const SECTIONS: HelpSection[] = [
             <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Навігацыя</p>
             <ul className="space-y-1.5 text-sm text-slate-300">
               <li className="flex items-start gap-2"><ChevronRight size={14} className="mt-0.5 text-primary-400 flex-shrink-0" />Бакавая панэль злева — доступ да ўсіх раздзелаў</li>
-              <li className="flex items-start gap-2"><ChevronRight size={14} className="mt-0.5 text-primary-400 flex-shrink-0" />Пераключэнне працоўных прастор — кнопка ў верхнім левым куце</li>
+              <li className="flex items-start gap-2"><ChevronRight size={14} className="mt-0.5 text-primary-400 flex-shrink-0" />Агульныя праекты — тыя, якімі з вамі падзяліліся; адкрываюцца ў тым жа спісе праектаў</li>
               <li className="flex items-start gap-2"><ChevronRight size={14} className="mt-0.5 text-primary-400 flex-shrink-0" />Хуткі пошук — <kbd className="text-xs bg-slate-700 px-1.5 py-0.5 rounded">Ctrl+K</kbd></li>
               <li className="flex items-start gap-2"><ChevronRight size={14} className="mt-0.5 text-primary-400 flex-shrink-0" />Абраныя — зорачка побач з любым элементам</li>
             </ul>
@@ -859,7 +867,7 @@ const SECTIONS: HelpSection[] = [
               { icon: <Star size={14} className="text-yellow-400" />, title: 'Темы', desc: 'Тёмная, светлая, стеклянная (Glass), HUD, Latte, Dawn — выбери в Настройках → Общие' },
               { icon: <Globe size={14} className="text-blue-400" />, title: 'Язык', desc: 'Русский, English, Беларуская — переключай в Настройках → Общие' },
               { icon: <Brain size={14} className="text-primary-400" />, title: 'AI провайдер', desc: 'OpenAI, Anthropic, Groq, Mistral, Google и другие. Настрой в Настройках → AI' },
-              { icon: <MessageSquare size={14} className="text-green-400" />, title: 'Интеграции', desc: 'Telegram, Slack, Discord — настрой уведомления в Настройках → Интеграции' },
+              { icon: <MessageSquare size={14} className="text-green-400" />, title: 'Интеграции', desc: 'Telegram и Viber — полноценный канал ассистента: голос, фото, документы. Slack и Discord — уведомления. Настройки → Интеграции' },
               { icon: <Timer size={14} className="text-orange-400" />, title: 'Pomodoro', desc: 'Таймер помодоро — кнопка в правом нижнем углу интерфейса' },
               { icon: <Share2 size={14} className="text-cyan-400" />, title: 'Публичные страницы', desc: 'Поделись страницей — кнопка Share в редакторе. Ссылка /p/токен доступна без авторизации' },
             ].map(({ icon, title, desc }) => (
@@ -881,7 +889,7 @@ const SECTIONS: HelpSection[] = [
               { icon: <Star size={14} className="text-yellow-400" />, title: 'Themes', desc: 'Dark, Light, Glass, HUD, Latte, Dawn — choose in Settings → General' },
               { icon: <Globe size={14} className="text-blue-400" />, title: 'Language', desc: 'Russian, English, Belarusian — switch in Settings → General' },
               { icon: <Brain size={14} className="text-primary-400" />, title: 'AI Provider', desc: 'OpenAI, Anthropic, Groq, Mistral, Google and more. Configure in Settings → AI' },
-              { icon: <MessageSquare size={14} className="text-green-400" />, title: 'Integrations', desc: 'Telegram, Slack, Discord — set up notifications in Settings → Integrations' },
+              { icon: <MessageSquare size={14} className="text-green-400" />, title: 'Integrations', desc: 'Telegram and Viber — a full assistant channel: voice, photos, documents. Slack and Discord — notifications. Settings → Integrations' },
               { icon: <Timer size={14} className="text-orange-400" />, title: 'Pomodoro', desc: 'Pomodoro timer — button in the bottom right corner' },
               { icon: <Share2 size={14} className="text-cyan-400" />, title: 'Public Pages', desc: 'Share a page — Share button in the editor. Link /p/token is accessible without login' },
             ].map(({ icon, title, desc }) => (
@@ -903,7 +911,7 @@ const SECTIONS: HelpSection[] = [
               { icon: <Star size={14} className="text-yellow-400" />, title: 'Тэмы', desc: 'Цёмная, светлая, шкляная (Glass), HUD, Latte, Dawn — выберы ў Налады → Агульныя' },
               { icon: <Globe size={14} className="text-blue-400" />, title: 'Мова', desc: 'Руская, English, Беларуская — пераключай у Налады → Агульныя' },
               { icon: <Brain size={14} className="text-primary-400" />, title: 'AI правайдэр', desc: 'OpenAI, Anthropic, Groq, Mistral, Google і іншыя. Наладзь у Налады → AI' },
-              { icon: <MessageSquare size={14} className="text-green-400" />, title: 'Інтэграцыі', desc: 'Telegram, Slack, Discord — наладзь апавяшчэнні ў Налады → Інтэграцыі' },
+              { icon: <MessageSquare size={14} className="text-green-400" />, title: 'Інтэграцыі', desc: 'Telegram і Viber — паўнавартасны канал асістэнта: голас, фота, дакументы. Slack і Discord — апавяшчэнні. Налады → Інтэграцыі' },
               { icon: <Timer size={14} className="text-orange-400" />, title: 'Pomodoro', desc: 'Таймер помадора — кнопка ў правым ніжнім куце інтэрфейсу' },
               { icon: <Share2 size={14} className="text-cyan-400" />, title: 'Публічныя старонкі', desc: 'Падзяліся старонкай — кнопка Share у рэдактары. Спасылка /p/токен даступная без аўтарызацыі' },
             ].map(({ icon, title, desc }) => (
@@ -920,7 +928,78 @@ const SECTIONS: HelpSection[] = [
       ),
     },
   },
-]
+  editionSection(cloud, solo),
+  ]
+}
+
+/** Чем эта установка отличается от другой — единственный раздел, который
+ *  зависит от того, где человек читает. */
+function editionSection(cloud: boolean, solo: boolean): HelpSection {
+  const line = (ru: string, en: string, be: string) => ({ ru, en, be })
+  const rows = cloud
+    ? [
+        line('Ассистент готов сразу', 'The assistant works out of the box', 'Асістэнт гатовы адразу'),
+        line('Модель уже подключена — платите за токены по счётчику. Свой ключ в Настройках → AI убирает эту плату совсем.',
+             'A model is already connected — you pay per token. Your own key in Settings → AI removes that charge entirely.',
+             'Мадэль ужо падключана — плаціце за токены па лічыльніку. Свой ключ у Налады → AI прыбірае гэту плату зусім.'),
+        line('Один баланс на всё', 'One balance for everything', 'Адзін баланс на ўсё'),
+        line('Хостинг, место и токены списываются с общего баланса. Он на странице «Тариф» в боковом меню, не во вкладках настроек.',
+             'Hosting, storage and tokens are charged to one balance. It lives on the Plan page in the sidebar, not in the settings tabs.',
+             'Хостынг, месца і токены спісваюцца з агульнага балансу. Ён на старонцы «Тарыф» у бакавым меню, не ва ўкладках налад.'),
+        line('Пустой баланс — только чтение', 'Empty balance means read-only', 'Пусты баланс — толькі чытанне'),
+        line('Запись приостанавливается, данные остаются на месте: чтение, поиск и экспорт работают всегда.',
+             'Writing pauses, the data stays put: reading, search and export keep working.',
+             'Запіс прыпыняецца, даныя застаюцца на месцы: чытанне, пошук і экспарт працуюць заўсёды.'),
+        line('Инстансом управляет оператор', 'The instance is run by its operator', 'Інстансам кіруе аператар'),
+        line('Обновления, резервные копии и параметры сервера — на его стороне. Ваши собственные копии делаются в Настройках → Бэкап.',
+             'Updates, backups and server parameters are on their side. Your own copies are made in Settings → Backup.',
+             'Абнаўленні, рэзервовыя копіі і параметры сервера — на яго баку. Вашы ўласныя копіі робяцца ў Налады → Бэкап.'),
+      ]
+    : [
+        line('Ассистенту нужен ваш ключ', 'The assistant needs your key', 'Асістэнту патрэбны ваш ключ'),
+        line('Встроенной модели здесь нет: пока ключ не указан в Настройках → AI, ассистент молчит. Платите вы напрямую провайдеру, без наценки.',
+             'There is no built-in model here: until a key is set in Settings → AI the assistant stays silent. You pay the provider directly, with no markup.',
+             'Убудаванай мадэлі тут няма: пакуль ключ не пазначаны ў Налады → AI, асістэнт маўчыць. Плаціце вы напрамую правайдэру, без нацэнкі.'),
+        line('Платы и лимитов нет', 'No fees, no limits', 'Платы і лімітаў няма'),
+        line('Это ваш сервер: ни подписки, ни счётчиков, ни ограничений на проекты, страницы и место.',
+             'This is your server: no subscription, no meters, no limits on projects, pages or storage.',
+             'Гэта ваш сервер: ні падпіскі, ні лічыльнікаў, ні абмежаванняў на праекты, старонкі і месца.'),
+        ...(solo
+          ? [line('Один человек', 'One person', 'Адзін чалавек'),
+             line('Регистрация закрылась на вас: личное издание — это один владелец. Админки нет, параметры инстанса живут в файле .env.',
+                  'Registration closed with you: the personal edition is a single owner. There is no admin panel; instance settings live in the .env file.',
+                  'Рэгістрацыя зачынілася на вас: асабістае выданне — гэта адзін уладальнік. Адмінкі няма, параметры інстанса жывуць у файле .env.')]
+          : [line('Несколько человек', 'Several people', 'Некалькі чалавек'),
+             line('Владелец управляет пользователями и параметрами в админке, доступ выдаётся к отдельным проектам.',
+                  'The owner manages users and settings in the admin panel; access is granted to individual projects.',
+                  'Уладальнік кіруе карыстальнікамі і параметрамі ў адмінцы, доступ выдаецца да асобных праектаў.')]),
+        line('Обновления и копии — на вас', 'Updates and backups are yours', 'Абнаўленні і копіі — на вас'),
+        line('Обновление: git pull и пересборка. Резервные копии — в Настройках → Бэкап, включая расписание.',
+             'Updating: git pull and rebuild. Backups are in Settings → Backup, schedule included.',
+             'Абнаўленне: git pull і перазборка. Рэзервовыя копіі — у Налады → Бэкап, уключаючы расклад.'),
+      ]
+
+  const render = (lang: 'ru' | 'en' | 'be') => (
+    <div className="space-y-3">
+      {Array.from({ length: rows.length / 2 }, (_, i) => (
+        <div key={i} className="bg-surface-800 rounded-xl p-4 border border-slate-700/50">
+          <p className="text-sm font-semibold text-slate-200 mb-1.5">{rows[i * 2][lang]}</p>
+          <p className="text-xs text-slate-400 leading-relaxed">{rows[i * 2 + 1][lang]}</p>
+        </div>
+      ))}
+    </div>
+  )
+
+  return {
+    id: 'edition',
+    icon: <Globe size={18} />,
+    color: cloud ? 'text-sky-400 bg-sky-400/10' : 'text-emerald-400 bg-emerald-400/10',
+    title: cloud
+      ? { ru: 'Облако: как здесь всё устроено', en: 'The cloud: how things work here', be: 'Воблака: як тут усё зроблена' }
+      : { ru: 'Ваш сервер: как здесь всё устроено', en: 'Your server: how things work here', be: 'Ваш сервер: як тут усё зроблена' },
+    content: { ru: render('ru'), en: render('en'), be: render('be') },
+  }
+}
 
 function SectionAccordion({ section, lang }: { section: HelpSection; lang: 'ru' | 'en' | 'be' }) {
   const [open, setOpen] = useState(false)
@@ -956,6 +1035,9 @@ function SectionAccordion({ section, lang }: { section: HelpSection; lang: 'ru' 
 export function HelpPage() {
   const { language } = useLanguageStore()
   const lang = (language === 'be' ? 'be' : language === 'en' ? 'en' : 'ru') as 'ru' | 'en' | 'be'
+  const cloud = useIsCloud()
+  const solo = useIsSolo()
+  const sections = buildSections(cloud, solo)
 
   const pageTitle = lang === 'be' ? 'Даведка' : lang === 'en' ? 'Help' : 'Справка'
   const subtitle = lang === 'be'
@@ -1000,7 +1082,7 @@ export function HelpPage() {
 
           {/* Sections */}
           <div className="space-y-3">
-            {SECTIONS.map((section) => (
+            {sections.map((section) => (
               <SectionAccordion key={section.id} section={section} lang={lang} />
             ))}
           </div>
