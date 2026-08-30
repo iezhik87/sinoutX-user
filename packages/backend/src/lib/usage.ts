@@ -6,19 +6,30 @@
 // repeatedly in the tool loop — "look at the tasks", "compute the balance",
 // "write the reply" — and the user experienced one answer.
 import type { PrismaClient } from '@prisma/client'
-import { costOf } from './pricing.js'
+import { costOf, margin, toMicroUsd, type UsageCost } from './pricing.js'
 import { debit, lowBalanceMicroUsd, usd } from './wallet.js'
 
 export interface TokenUsage {
   /** Fresh input tokens (a cache miss, the expensive kind). */
   inputTokens: number
-  /** Input served from the provider's prompt cache. DeepSeek prices these ~120x
+  /** Input served from the provider's prompt cache. DeepSeek prices these ~30x
    *  lower than a miss, so folding them into `inputTokens` would overstate the
    *  cost of a long system prompt by an order of magnitude. */
   cachedInputTokens: number
   outputTokens: number
   /** Model round-trips inside this one answer. */
   calls: number
+  /**
+   * What the provider says the call actually cost, in US dollars, when it says
+   * so at all. OpenRouter does; a direct provider endpoint does not.
+   *
+   * This is not a nicety. OpenRouter spreads ONE model id across dozens of
+   * hosts whose prices differ severalfold, and picks one per request. A single
+   * number in the price table is then a guess that is wrong in both directions
+   * — earning 200% on one answer and losing half on the next, by luck of
+   * routing. When the real figure arrives, it wins over the table.
+   */
+  costUsd?: number
 }
 
 export const emptyUsage = (): TokenUsage => ({ inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, calls: 0 })
@@ -31,6 +42,9 @@ export function addUsage(total: TokenUsage, one: Partial<TokenUsage>): void {
   total.inputTokens += one.inputTokens ?? 0
   total.cachedInputTokens += one.cachedInputTokens ?? 0
   total.outputTokens += one.outputTokens ?? 0
+  // Costs add up across the tool loop exactly like tokens do: the user
+  // experienced one answer, and paid for every round-trip inside it.
+  if (one.costUsd) total.costUsd = (total.costUsd ?? 0) + one.costUsd
   total.calls += 1
 }
 
@@ -51,11 +65,27 @@ export function parseOpenAIUsage(u: Record<string, unknown> | undefined): Partia
   const details = u.prompt_tokens_details as { cached_tokens?: number } | undefined
   const cached = Number(details?.cached_tokens ?? u.prompt_cache_hit_tokens ?? 0)
 
+  // OpenRouter returns what it actually charged, in credits (= US dollars), on
+  // every response and without being asked. Absent from every other endpoint,
+  // and absent here if zero or unparseable — then the price table decides.
+  const reported = Number(u.cost ?? 0)
+
   return {
     inputTokens: Math.max(0, prompt - cached),
     cachedInputTokens: cached,
     outputTokens: completion,
+    ...(Number.isFinite(reported) && reported > 0 ? { costUsd: reported } : {}),
   }
+}
+
+/**
+ * Cost as the provider itself reported it. Returns null when it reported none,
+ * and the caller falls back to the price table.
+ */
+function reportedCost(usage: TokenUsage, managed: boolean): UsageCost | null {
+  if (!usage.costUsd || usage.costUsd <= 0) return null
+  const costMicroUsd = toMicroUsd(usage.costUsd)
+  return { costMicroUsd, chargedMicroUsd: managed ? toMicroUsd(usage.costUsd * margin()) : 0 }
 }
 
 export interface UsageOrigin {
@@ -82,7 +112,10 @@ export async function recordUsage(prisma: PrismaClient, origin: UsageOrigin, usa
   const managed = origin.managed ?? false
   // An unpriced model (anything we never run on our own key) records zeros
   // rather than a guess — the admin table shows it as unpriced.
-  const cost = origin.fixedCost ?? costOf(origin.model, usage, managed)
+  // Order matters: a fixed price (one generated image is one picture, not N
+  // tokens) beats everything; then what the provider actually charged; the
+  // table is the last resort, for endpoints that report no cost.
+  const cost = origin.fixedCost ?? reportedCost(usage, managed) ?? costOf(origin.model, usage, managed)
   try {
     await prisma.aiUsage.create({
       data: {

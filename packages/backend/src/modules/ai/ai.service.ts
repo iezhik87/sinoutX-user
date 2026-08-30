@@ -881,7 +881,8 @@ export async function completeManaged(system: string, user: string): Promise<str
   const res = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({ model, temperature: 0.2, max_tokens: 2048, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }),
+    // Runs on OUR key, so it gets the same price ceiling as the assistant.
+    body: JSON.stringify({ model, temperature: 0.2, max_tokens: 2048, ...openRouterPriceCap(baseUrl, true), messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }),
     signal: AbortSignal.timeout(60_000),
   })
   if (!res.ok) throw new Error(`Provider error ${res.status}: ${(await res.text()).slice(0, 200)}`)
@@ -1906,6 +1907,31 @@ interface OAIStreamChunk {
   usage?: Partial<TokenUsage>
 }
 
+/**
+ * A ceiling on what a routed provider may charge, in dollars per 1M tokens.
+ * Empty for every endpoint but OpenRouter's — elsewhere the field is unknown
+ * and there is no routing to constrain.
+ *
+ * OpenRouter serves one model id from dozens of hosts whose prices differ up to
+ * sevenfold, and picks one per request. Uncapped, the same question costs the
+ * user two to four times more on an unlucky day, for no reason he can see.
+ *
+ * Applied ONLY to the managed key: capping a user's own key would silently
+ * override the model he chose and pays for, and for an expensive model no host
+ * would qualify at all.
+ *
+ * Nothing here asks for cost reporting — OpenRouter returns `usage.cost` on
+ * every response now, and the `usage: { include: true }` that used to request it
+ * is deprecated and does nothing.
+ */
+function openRouterPriceCap(baseUrl: string, withCap: boolean): Record<string, unknown> {
+  if (!withCap || !/openrouter\.ai/i.test(baseUrl)) return {}
+  const maxPrice: Record<string, number> = {}
+  if (config.OPENROUTER_MAX_PROMPT_USD > 0) maxPrice.prompt = config.OPENROUTER_MAX_PROMPT_USD
+  if (config.OPENROUTER_MAX_COMPLETION_USD > 0) maxPrice.completion = config.OPENROUTER_MAX_COMPLETION_USD
+  return Object.keys(maxPrice).length > 0 ? { provider: { max_price: maxPrice } } : {}
+}
+
 async function* streamOpenAICompatible(
   baseUrl: string,
   apiKey: string,
@@ -1919,7 +1945,7 @@ async function* streamOpenAICompatible(
   // servers (some Ollama builds, custom gateways) reject the unknown field —
   // so a 400 that names it is retried once without asking. Guessing which
   // providers support it from a hard-coded list would rot with every release.
-  const send = (withUsage: boolean) => fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+  const send = (withUsage: boolean, withCap: boolean) => fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -1934,26 +1960,35 @@ async function* streamOpenAICompatible(
       tool_choice: tools.length > 0 ? 'auto' : undefined,
       stream: true,
       ...(withUsage ? { stream_options: { include_usage: true } } : {}),
+      // The cap rides on the managed key only — `sinoutx` is the provider whose
+      // bill is ours.
+      ...openRouterPriceCap(baseUrl, withCap && settings.provider === 'sinoutx'),
       temperature: settings.temperature,
       max_tokens: settings.maxTokens,
     }),
     signal: AbortSignal.timeout(300_000), // 5 min max per request round
   })
 
-  let response = await send(true)
+  let response = await send(true, true)
 
-  if (!response.ok && response.status === 400) {
+  if (!response.ok) {
     const err = await response.text()
-    if (/stream_options|include_usage/i.test(err)) {
-      response = await send(false)
+    if (response.status === 400 && /stream_options|include_usage/i.test(err)) {
+      response = await send(false, true)
+    } else if (/max_price|no (allowed|available) provider/i.test(err)) {
+      // The ceiling left OpenRouter nothing to route to. An answer at an
+      // unplanned price beats no answer, so retry uncapped — and say so, because
+      // a model that lands here every time needs its cap raised, not this retry.
+      console.warn(`[ai] price cap left no provider for ${model}; retrying without it`)
+      response = await send(true, false)
     } else {
-      throw new Error(`400: ${err.slice(0, 400)}`)
+      // Include status code so formatApiError can match it
+      throw new Error(`${response.status}: ${err.slice(0, 400)}`)
     }
   }
 
   if (!response.ok) {
     const err = await response.text()
-    // Include status code so formatApiError can match it
     throw new Error(`${response.status}: ${err.slice(0, 400)}`)
   }
 

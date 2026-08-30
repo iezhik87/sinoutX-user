@@ -6,7 +6,10 @@
 // honest blank.
 //
 // Prices are per 1M tokens, in US dollars, as published by the provider.
-// Source: https://api-docs.deepseek.com/quick_start/pricing — checked 2026-07-10.
+// Source: https://api-docs.deepseek.com/quick_start/pricing — checked 2026-08-30.
+// They rose since the first version of this file and nobody noticed for weeks,
+// because nothing here fails when a price is stale — it just quietly bills the
+// wrong amount. Re-check when the managed model changes.
 // They change; MODEL_PRICES is the single place to change them, and every
 // ai_usage row stores the cost computed at the time it was written, so an
 // old row keeps the price that actually applied.
@@ -24,9 +27,19 @@ export interface ModelPrice {
 
 /** Shipped defaults. An admin may override any of them, and add his own. */
 export const DEFAULT_MODEL_PRICES: Record<string, ModelPrice> = {
-  // Language model. Source: api-docs.deepseek.com/quick_start/pricing (2026-07-10).
-  'deepseek-v4-pro':   { input: 0.435, cachedInput: 0.003625, output: 0.87 },
-  'deepseek-v4-flash': { input: 0.14,  cachedInput: 0.0028,   output: 0.28 },
+  // Language model. Source: api-docs.deepseek.com/quick_start/pricing (2026-08-30).
+  //
+  // DeepSeek bills two rates: peak (01:00-04:00 and 06:00-10:00 UTC, Mon-Fri)
+  // and off-peak at exactly half. Peak covers 35 of the 168 hours in a week, so
+  // the numbers below are off-peak x 1.208 — what the same traffic costs on
+  // average over a week. Booking off-peak would lose money every weekday
+  // morning; booking peak would overcharge everyone the rest of the time.
+  //
+  // These apply to DeepSeek's OWN endpoint, which reports no cost of its own.
+  // Through OpenRouter the real figure comes back with the answer and wins over
+  // this table entirely — see TokenUsage.costUsd.
+  'deepseek-v4-pro':   { input: 0.797,  cachedInput: 0.0266,  output: 2.392 },
+  'deepseek-v4-flash': { input: 0.2658, cachedInput: 0.00846, output: 0.797 },
 
   // Document recognition (receipts, lab results).
   'gpt-4o-mini':       { input: 0.15,  cachedInput: 0.075,    output: 0.60 },

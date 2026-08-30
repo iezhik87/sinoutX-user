@@ -40,6 +40,14 @@ const envSchema = z.object({
   MANAGED_AI_KEY: z.string().optional(),
   MANAGED_AI_MODEL: z.string().default('deepseek-v4-pro'),
   MANAGED_AI_BASE_URL: z.string().default('https://api.deepseek.com/v1'),
+  // Ceiling on what a routed provider may charge, per 1M tokens, when the model
+  // runs through OpenRouter. An open-weights model is served there by dozens of
+  // hosts at prices that differ up to sevenfold, and the router picks one per
+  // request — without a cap the same answer costs the user 2-4x more on an
+  // unlucky day, for no visible reason. Providers above the cap are skipped.
+  // Zero disables the cap and takes whatever routing offers.
+  OPENROUTER_MAX_PROMPT_USD: z.coerce.number().default(0.25),
+  OPENROUTER_MAX_COMPLETION_USD: z.coerce.number().default(0.7),
 
   // ─── Wallet ─────────────────────────────────────────────────────────────────
   // Grant on signup. Zero by default: a hundred signups at $0.50 is a bill the
