@@ -252,6 +252,11 @@ The first registered user becomes the **owner** — every capability unlocked. A
 
 Add your AI provider key in **Settings → AI** to switch the assistant on.
 
+> **Reinstalling?** `docker compose down` leaves the database volume in place, so
+> the next start finds the old account and refuses to register a new one. To begin
+> from nothing, bring it down with `docker compose down -v` — the `-v` is what
+> removes the data.
+
 ---
 
 ## AI Providers

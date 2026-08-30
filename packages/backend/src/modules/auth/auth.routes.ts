@@ -50,7 +50,12 @@ export async function authRoutes(app: FastifyInstance, prisma: PrismaClient) {
     if (userCount > 0 && isSoloEdition()) {
       // Even a valid invitation stops here: the solo edition is one person by
       // definition, and a second account would quietly make it something else.
-      return reply.status(403).send({ error: 'Registration is closed' })
+      //
+      // Код, а не фраза: «Registration is closed» показывалось как есть, и
+      // человек, ставящий продукт впервые, упирался в тупик — ему не сказано ни
+      // что владелец уже заведён, ни что надо просто войти. Первый экран новой
+      // установки выглядел поломкой.
+      return reply.status(403).send({ error: 'owner_exists' })
     }
 
     // A personal invitation is permission to register — and nothing more. It is
@@ -71,7 +76,9 @@ export async function authRoutes(app: FastifyInstance, prisma: PrismaClient) {
       const mode = settings?.registrationMode ?? (process.env.INVITE_CODE ? 'invite' : 'open')
 
       if (mode === 'closed') {
-        return reply.status(403).send({ error: 'Registration is closed' })
+        // Другой случай, другой ответ: тут владелец закрыл регистрацию сам, и
+        // выход не «войдите», а «попросите приглашение».
+        return reply.status(403).send({ error: 'registration_closed' })
       }
       if (mode === 'invite') {
         const inviteCode = settings?.inviteCode ?? process.env.INVITE_CODE

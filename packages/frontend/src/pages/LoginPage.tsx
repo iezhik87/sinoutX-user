@@ -102,7 +102,13 @@ export function LoginPage() {
       }
     } catch (err: unknown) {
       const raw = err instanceof Error ? err.message : t.auth.loginError
-      const msg = /too_many_attempts/i.test(raw) ? t.auth.tooManyAttempts : raw
+      // Сервер отвечает кодом, а не фразой: показать код человеку нельзя, а
+      // «владелец уже есть» вдобавок требует действия — переключаем на вход,
+      // иначе он остаётся на форме, которая для него больше никогда не сработает.
+      let msg = raw
+      if (/too_many_attempts/i.test(raw)) msg = t.auth.tooManyAttempts
+      else if (raw === 'owner_exists') { msg = t.auth.ownerExists; setMode('login') }
+      else if (raw === 'registration_closed') msg = t.auth.registrationClosed
       setError(msg)
       if (/verif|verified|подтвержд|пацверд/i.test(msg)) setNeedsVerify(true)
     } finally {
