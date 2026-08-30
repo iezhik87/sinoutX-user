@@ -1,5 +1,6 @@
 import type { PrismaClient } from '@prisma/client'
 import archiver from 'archiver'
+import { config } from '../config/index.js'
 import { promises as fs } from 'fs'
 import { join } from 'path'
 import { minio, BUCKET } from './storage.js'
@@ -110,6 +111,31 @@ export async function appendBucketFiles(archive: archiver.Archiver): Promise<Bac
 const mb = (bytes: number) => (bytes / 1024 / 1024).toFixed(1)
 
 // Build a zip (data.json + manifest.json + MinIO files) into a Buffer.
+/**
+ * Полный дамп базы в собственном формате Postgres (-Fc): его понимает
+ * pg_restore, он сжат и не зависит от порядка таблиц.
+ *
+ * Берём именно дамп, а не перечисление моделей: список, написанный руками,
+ * верен ровно до следующей сущности, и обнаруживается это в тот день, когда
+ * бэкап понадобился.
+ */
+export async function dumpDatabase(): Promise<Buffer> {
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const run = promisify(execFile)
+  // Пароль уезжает через окружение, а не в аргументах: аргументы видно в ps.
+  const url = new URL(config.DATABASE_URL)
+  const { stdout } = await run('pg_dump', [
+    '--format=custom', '--no-owner', '--no-privileges', '--compress=6',
+    '--dbname', `postgresql://${url.username}@${url.hostname}:${url.port || 5432}${url.pathname}`,
+  ], {
+    env: { ...process.env, PGPASSWORD: decodeURIComponent(url.password) },
+    maxBuffer: 2 * 1024 * 1024 * 1024,
+    encoding: 'buffer',
+  }) as unknown as { stdout: Buffer }
+  return stdout
+}
+
 export async function buildBackupBuffer(prisma: PrismaClient): Promise<{ buffer: Buffer; data: GlobalData; files: BackupFileStats }> {
   const data = await gatherGlobalData(prisma)
   const archive = archiver('zip', { zlib: { level: 6 } })
@@ -120,8 +146,23 @@ export async function buildBackupBuffer(prisma: PrismaClient): Promise<{ buffer:
     archive.on('error', rej)
   })
   archive.append(JSON.stringify(data, null, 2), { name: 'data.json' })
+  // Полный дамп — то, из чего инстанс восстанавливается целиком. data.json выше
+  // остаётся для совместимости со старыми архивами и как быстрый обзор.
+  let dbBytes = 0
+  try {
+    const dump = await dumpDatabase()
+    dbBytes = dump.length
+    archive.append(dump, { name: 'db.dump' })
+  } catch (e) {
+    // Падаем, а не продолжаем. Архив без дампа — это снова 15 таблиц вместо 45,
+    // то есть ровно та тихая неполнота, ради которой всё затевалось. Лучше
+    // явная ошибка (плановый бэкап не отметится выполненным и повторит попытку),
+    // чем файл, который выглядит бэкапом и им не является.
+    throw new Error('Не удалось снять дамп базы, бэкап не собран: '
+      + (e instanceof Error ? e.message : String(e)).slice(0, 300))
+  }
   const files = await appendBucketFiles(archive)
-  archive.append(JSON.stringify({ createdAt: new Date().toISOString(), files }, null, 2), { name: 'manifest.json' })
+  archive.append(JSON.stringify({ createdAt: new Date().toISOString(), files, dbBytes }, null, 2), { name: 'manifest.json' })
   await archive.finalize()
   console.log(`[backup] files ${files.included}/${files.total} included, ${files.skipped} skipped, ${mb(files.bytes)} MB of content`)
   return { buffer: await done, data, files }

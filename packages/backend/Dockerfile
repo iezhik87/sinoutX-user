@@ -1,6 +1,9 @@
 FROM node:22-alpine AS base
 WORKDIR /app
-RUN apk add --no-cache curl openssl \
+# postgresql16-client — ради pg_dump/pg_restore: бэкап снимает ВСЮ базу, а не
+# перечисленные руками таблицы (такой список молча стареет с каждой новой
+# сущностью). Версия клиента должна совпадать с сервером из docker-compose.
+RUN apk add --no-cache curl openssl postgresql16-client \
     chromium nss freetype harfbuzz ca-certificates ttf-freefont
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true

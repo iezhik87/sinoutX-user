@@ -6,6 +6,8 @@ import { promises as fs } from 'fs'
 import { join } from 'path'
 import { minio, BUCKET, uploadFile } from '../../lib/storage.js'
 import { randomUUID } from 'crypto'
+import { tmpdir } from 'os'
+import { config } from '../../config/index.js'
 import { writeAuditLog } from '../../lib/audit.js'
 import { serverDirs, dirByLabel, gatherGlobalData, buildBackupBuffer, backupName, appendBucketFiles } from '../../lib/instanceBackup.js'
 
@@ -108,7 +110,14 @@ export async function adminBackupRoutes(app: FastifyInstance, prisma: PrismaClie
       return
     }
 
-    const { buffer, files } = await buildBackupBuffer(prisma)
+    // Сборка падает, если не удалось снять дамп базы. Отдаём причину админу, а
+    // не общую пятисотку: «бэкап не сделан» должно быть видно сразу.
+    let buffer: Buffer, files: Awaited<ReturnType<typeof buildBackupBuffer>>['files']
+    try {
+      ({ buffer, files } = await buildBackupBuffer(prisma))
+    } catch (e) {
+      return reply.status(500).send({ error: 'backup_failed', message: e instanceof Error ? e.message : String(e) })
+    }
     if (destination === MINIO) {
       await minio.putObject(BUCKET, MINIO_PREFIX + name, buffer, buffer.byteLength, { 'Content-Type': 'application/zip' })
     } else {
@@ -200,6 +209,66 @@ export async function adminBackupRoutes(app: FastifyInstance, prisma: PrismaClie
     const AdmZip = (await import('adm-zip')).default
     let zip: InstanceType<typeof AdmZip>
     try { zip = new AdmZip(buffer) } catch { return reply.status(400).send({ error: 'Invalid ZIP file' }) }
+    // ── Полный дамп: разворачиваем базу целиком ────────────────────────────
+    // Архивы, снятые до появления дампа, идут старым путём ниже — там 15 таблиц
+    // из написанного руками списка, и это ровно та неполнота, ради которой
+    // дамп и появился.
+    const dumpEntry = zip.getEntries().find((e) => e.entryName.endsWith('db.dump'))
+    if (dumpEntry) {
+      // Дамп затирает существующие объекты. Промахнуться мимо этой кнопки и
+      // потерять живой инстанс нельзя, поэтому нужен явный признак.
+      const confirmed = (req.query as { confirm?: string }).confirm === 'replace'
+      if (!confirmed) {
+        return reply.status(409).send({
+          error: 'full_restore_requires_confirm',
+          message: 'Этот архив содержит полный дамп базы. Восстановление ЗАМЕНИТ все текущие данные. Повторите запрос с confirm=replace.',
+        })
+      }
+
+      const { execFile } = await import('node:child_process')
+      const { promisify } = await import('node:util')
+      const run = promisify(execFile)
+      const url = new URL(config.DATABASE_URL)
+      const conn = `postgresql://${url.username}@${url.hostname}:${url.port || 5432}${url.pathname}`
+      const tmp = join(tmpdir(), `restore-${Date.now()}.dump`)
+      await fs.writeFile(tmp, dumpEntry.getData())
+      try {
+        // --clean --if-exists: сносим существующие объекты перед заливкой.
+        // Код возврата ненулевой и при безобидных замечаниях (например, «роль
+        // не существует»), поэтому судим по тому, поднялась ли база, а не по нему.
+        await run('pg_restore', ['--clean', '--if-exists', '--no-owner', '--no-privileges',
+          '--dbname', conn, tmp], {
+          env: { ...process.env, PGPASSWORD: decodeURIComponent(url.password) },
+          maxBuffer: 512 * 1024 * 1024,
+        }).catch((e: unknown) => {
+          const msg = e instanceof Error ? e.message : String(e)
+          console.error('[restore] pg_restore reported:', msg.slice(0, 400))
+        })
+        // Проверяем, что база действительно на месте, а не «команда молча прошла».
+        const [{ count }] = await prisma.$queryRaw<{ count: bigint }[]>`
+          SELECT count(*)::bigint AS count FROM information_schema.tables WHERE table_schema = 'public'`
+        if (Number(count) < 10) {
+          return reply.status(500).send({ error: 'Восстановление не удалось: база осталась почти пустой. Данные НЕ заменены целиком — разберитесь по логам бэкенда.' })
+        }
+
+        // Файлы из архива — тем же путём, что и в старом восстановлении.
+        let files = 0
+        for (const e of zip.getEntries()) {
+          if (!e.entryName.startsWith('files/') || e.isDirectory) continue
+          const key = e.entryName.slice('files/'.length)
+          try {
+            await minio.putObject(BUCKET, key, e.getData())
+            files++
+          } catch { /* один файл не должен ронять всё восстановление */ }
+        }
+
+        await writeAuditLog(prisma, { action: 'backup.restored', userId: req.authUser!.id, userEmail: req.authUser!.email, resourceName: 'full dump', ip: req.ip })
+        return reply.send({ ok: true, mode: 'full', tables: Number(count), files })
+      } finally {
+        await fs.unlink(tmp).catch(() => {})
+      }
+    }
+
     const dataEntry = zip.getEntries().find((e) => e.entryName.endsWith('data.json'))
     if (!dataEntry) return reply.status(400).send({ error: 'data.json not found in backup' })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
