@@ -53,7 +53,16 @@ const INTEGRATION_LABELS: Record<IntegrationType, string> = {
 
 export function SettingsPage() {
   const { currentWorkspaceId } = useWorkspaceStore()
-  const [activeTab, setActiveTab] = useState<Tab>('general')
+  // Вкладка берётся из адреса (?tab=ai), чтобы на неё можно было сослаться —
+  // иначе «настройте ассистента» приводит на общие настройки и человек ищет сам.
+  // Читаем лениво из window: useSearchParams объявлен ниже, а порядок хуков
+  // менять ради этого не стоит.
+  const [activeTab, setActiveTab] = useState<Tab>(() => {
+    const wanted = new URLSearchParams(window.location.search).get('tab')
+    const known: Tab[] = ['general', 'ai', 'integrations', 'people', 'files',
+      'apikeys', 'backup', 'security', 'plan', 'help', 'import']
+    return (known as string[]).includes(wanted ?? '') ? (wanted as Tab) : 'general'
+  })
   // В персональном издании делиться не с кем: шаринг проектов спрятан, а
   // регистрация закрыта после первого аккаунта — приглашённый просто не
   // сможет завести учётную запись. Вкладка «Люди» там ведёт в тупик.

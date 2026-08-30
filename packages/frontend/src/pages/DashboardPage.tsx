@@ -1,9 +1,11 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { FolderKanban, FileText, CheckSquare, Plus, Loader2, Clock, Calendar, CheckCircle2, AlertTriangle, Star, Sparkles, Flame, Check } from 'lucide-react'
+import { FolderKanban, FileText, CheckSquare, Plus, Loader2, Clock, Calendar, CheckCircle2, AlertTriangle, Star, Sparkles, Flame, Check, Cpu, Send, Blocks, ChevronRight } from 'lucide-react'
 import { workspaceApi, projectApi, pageApi, taskApi, calendarApi, habitApi, aiApi, type TaskStatus, type TaskPriority } from '@/api/client'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
+import { useAuthStore } from '@/stores/authStore'
+import { useBillingStore } from '@/stores/billingStore'
 import { Header } from '@/components/layout/Header'
 import { Modal } from '@/components/common/Modal'
 import { CreateProjectModal } from '@/components/project/CreateProjectModal'
@@ -25,12 +27,24 @@ export function DashboardPage() {
 
   const [showCreate, setShowCreate] = useState(false)
 
+  // Первый запуск. Панель рассчитана на заполненный воркспейс: у нового аккаунта
+  // она показывала пять строк «ничего нет» и ни одной кнопки — правда, с которой
+  // нечего делать. Пропуск помнится по аккаунту, а не по браузеру.
+  const { user } = useAuthStore()
+  // Замороженному эти карточки показывать нельзя: каждая ведёт к записи, а
+  // сервер ответит 402. Ему уже показан экран оплаты и висит плашка — второй раз
+  // обещать то, чего нельзя, незачем.
+  const frozen = useBillingStore((s) => s.frozen)
+  const [firstRunSkipped, setFirstRunSkipped] = useState(
+    () => !!(user && localStorage.getItem(`sinoutx-firstrun-${user.id}`)),
+  )
+
   const { data: workspaces = [], isLoading: wsLoading } = useQuery({
     queryKey: ['workspaces'],
     queryFn: workspaceApi.list,
   })
 
-  const { data: allProjects = [] } = useQuery({
+  const { data: allProjects = [], isLoading: projectsLoading } = useQuery({
     queryKey: ['projects', currentWorkspaceId],
     queryFn: () => projectApi.listByWorkspace(currentWorkspaceId!),
     enabled: !!currentWorkspaceId,
@@ -42,7 +56,7 @@ export function DashboardPage() {
   const projects = allProjects.filter((p) => !p.isModule && !p.isSystem)
   const countedProjects = allProjects.filter((p) => !p.isModule)
 
-  const { data: recentPages = [] } = useQuery({
+  const { data: recentPages = [], isLoading: pagesLoading } = useQuery({
     queryKey: ['recent-pages', currentWorkspaceId],
     queryFn: () => pageApi.getRecent(currentWorkspaceId!, 8),
     enabled: !!currentWorkspaceId,
@@ -148,6 +162,59 @@ Write a short executive summary (3-5 sentences), highlight risks, and give 2-3 r
         <FolderKanban size={40} className="text-slate-600" />
         <h2 className="text-xl font-semibold text-slate-200">{t.dashboard.welcome}</h2>
         <p className="text-slate-500 text-sm">{t.dashboard.welcomeHint}</p>
+      </div>
+    )
+  }
+
+  // Пусто — значит человек только зашёл. Показываем, что делать, а не пять
+  // сообщений о том, чего нет. Ждём ответа запросов: иначе панель мигнёт и у
+  // заполненного аккаунта, пока списки едут.
+  const isEmpty = !projectsLoading && !pagesLoading
+    && projects.length === 0 && recentPages.length === 0
+  if (isEmpty && !firstRunSkipped && !frozen) {
+    const skip = () => {
+      if (user) localStorage.setItem(`sinoutx-firstrun-${user.id}`, '1')
+      setFirstRunSkipped(true)
+    }
+    const f = t.dashboard.firstRun
+    return (
+      <div className="flex flex-col h-full">
+        <Header title={t.dashboard.title} />
+        <div className="flex-1 overflow-y-auto">
+          <div className="max-w-3xl mx-auto p-5 pt-10">
+            <h2 className="text-xl font-semibold text-slate-100 mb-2">{f.title}</h2>
+            <p className="text-sm text-slate-400 mb-8 max-w-xl">{f.desc}</p>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <FirstRunCard
+                icon={<FolderKanban size={20} className="text-emerald-400" />}
+                title={f.projectTitle} desc={f.projectDesc}
+                onClick={() => setShowCreate(true)}
+              />
+              <FirstRunCard
+                icon={<Cpu size={20} className="text-primary-400" />}
+                title={f.aiTitle} desc={f.aiDesc}
+                to="/settings?tab=ai"
+              />
+              <FirstRunCard
+                icon={<Send size={20} className="text-sky-400" />}
+                title={f.tgTitle} desc={f.tgDesc}
+                to="/settings?tab=integrations"
+              />
+              <FirstRunCard
+                icon={<Blocks size={20} className="text-violet-400" />}
+                title={f.modulesTitle} desc={f.modulesDesc}
+                to="/modules"
+              />
+            </div>
+
+            <button onClick={skip}
+              className="mt-8 text-xs text-slate-500 hover:text-slate-300 transition-colors">
+              {f.skip}
+            </button>
+          </div>
+        </div>
+        <CreateProjectModal open={showCreate} onClose={() => setShowCreate(false)} />
       </div>
     )
   }
@@ -414,6 +481,26 @@ function SectionTitle({ icon, label, count, urgent }: { icon: React.ReactNode; l
       )}
     </div>
   )
+}
+
+/** Карточка первого шага: либо ведёт по ссылке, либо открывает модалку. */
+function FirstRunCard({ icon, title, desc, to, onClick }: {
+  icon: React.ReactNode; title: string; desc: string; to?: string; onClick?: () => void
+}) {
+  const inner = (
+    <>
+      <div className="flex items-center gap-2.5 mb-1.5">
+        {icon}
+        <span className="text-sm font-medium text-slate-100">{title}</span>
+        <ChevronRight size={14} className="ml-auto text-slate-600 group-hover:text-slate-400 transition-colors" />
+      </div>
+      <p className="text-xs text-slate-400 leading-relaxed">{desc}</p>
+    </>
+  )
+  const cls = 'group text-left bg-surface-800 border border-slate-700/50 rounded-xl p-4 hover:border-slate-600 transition-colors'
+  return to
+    ? <Link to={to} className={cls}>{inner}</Link>
+    : <button onClick={onClick} className={cls}>{inner}</button>
 }
 
 function EmptyState({ label }: { label: string }) {
