@@ -95,6 +95,13 @@ services:
       WHISPER__MODEL: ${WHISPER_MODEL:-Systran/faster-whisper-base}
       WHISPER__INFERENCE_DEVICE: cpu
       WHISPER__COMPUTE_TYPE: int8
+    # Единственный сервис в стеке без потолка памяти — а без него под нехватку
+    # попадает не он, а случайный сосед (например Postgres). Замер на минутном
+    # голосовом: base берёт 419 МБ на пике, small 818 МБ. Гигабайта хватает
+    # обеим, поэтому смена модели не превращается в тихую поломку. Для medium
+    # (веса 1.46 ГБ) поднимите WHISPER_MEM до 2g — это осознанный выбор, и он
+    # не должен проходить незаметно.
+    mem_limit: ${WHISPER_MEM:-1g}
     volumes:
       - whisper_models:/root/.cache/huggingface
     # not published to the host - reached internally at http://whisper:8000
