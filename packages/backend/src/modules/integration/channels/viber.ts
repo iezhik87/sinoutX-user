@@ -119,6 +119,25 @@ export function viberAdapter(token: string, receiverId: string, senderName = 'Si
       return r?.message_token?.toString()
     },
 
+    // Viber шлёт картинки по одной — альбомов у него нет. Тип picture требует
+    // публичного адреса, скачать за нас он не умеет, поэтому недоставленное
+    // возвращаем ссылками.
+    async sendPhotos(urls, caption) {
+      const failed: string[] = []
+      for (let i = 0; i < urls.length; i++) {
+        const r = await viberApi(token, 'send_message', {
+          receiver: receiverId,
+          min_api_version: 3,
+          sender: { name: senderName },
+          type: 'picture',
+          media: urls[i],
+          text: i === 0 && caption ? caption.slice(0, 120) : '',
+        })
+        if (!ok(r)) failed.push(urls[i])
+      }
+      return failed
+    },
+
     async edit() { return false },
     async delete() { return false },
 

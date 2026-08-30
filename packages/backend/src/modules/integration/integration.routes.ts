@@ -230,6 +230,37 @@ function splitForChannel(text: string, limit = 3500): string[] {
   return chunks.length ? chunks : [text.slice(0, limit)]
 }
 
+/**
+ * Достаёт из ответа адреса изображений и убирает их из текста.
+ *
+ * Человек просит «покажи фото» и ждёт фото, а не список ссылок. Разбираем сам
+ * текст, а не результат конкретного инструмента: так одинаково работает и
+ * поиск картинок, и сгенерированное изображение, и просто найденная ссылка.
+ *
+ * Берём только явные картинки (по расширению) — иначе в фото улетит первая
+ * попавшаяся ссылка на статью.
+ */
+export function extractPhotos(text: string, max = 6): { text: string; photos: string[] } {
+  const photos: string[] = []
+  const isImg = /^https?:\/\/[^\s)<>"']+\.(?:jpe?g|png|webp|gif)(?:\?[^\s)<>"']*)?$/i
+  // true = убрать из текста. Повтор того же адреса тоже убираем: картинка уже
+  // отправлена, второй ссылкой на неё в тексте делать нечего.
+  const take = (u: string) => {
+    if (photos.includes(u)) return true
+    if (photos.length >= max) return false
+    photos.push(u)
+    return true
+  }
+  // Сначала markdown-картинки: ![подпись](адрес) — их убираем целиком.
+  let out = text.replace(/!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/g, (m, u: string) => (take(u) ? '' : m))
+  // Затем голые адреса картинок в тексте.
+  out = out.replace(/https?:\/\/[^\s)<>"']+\.(?:jpe?g|png|webp|gif)(?:\?[^\s)<>"']*)?/gi,
+    (u) => (isImg.test(u) && take(u) ? '' : u))
+  // Подчищаем следы: пустые скобки, задвоенные пробелы и лишние пустые строки.
+  out = out.replace(/\(\s*\)/g, '').replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim()
+  return { text: out, photos }
+}
+
 export async function runChannelAgent(
   prisma: PrismaClient,
   adapter: ChannelAdapter,
@@ -429,7 +460,21 @@ export async function runChannelAgent(
     return
   }
 
-  const chunks = splitForChannel(reply)
+  // Картинки уходят картинками, а не ссылками. Недоставленные (чужой хост мог
+  // отказать мессенджеру) возвращаем в текст — лучше ссылка, чем ничего.
+  const { text: replyText, photos } = extractPhotos(reply)
+  let bodyText = replyText
+  if (photos.length) {
+    const failed = await adapter.sendPhotos(photos).catch(() => photos)
+    if (failed.length) bodyText = `${bodyText}\n\n${failed.join('\n')}`.trim()
+    if (!bodyText) {
+      // Ответ был из одних картинок — плейсхолдер «Думаю…» убираем.
+      if (phId) await adapter.delete(phId).catch(() => {})
+      return
+    }
+  }
+
+  const chunks = splitForChannel(bodyText)
   for (let i = 0; i < chunks.length; i++) {
     const isLast = i === chunks.length - 1
     const out = adapter.format(chunks[i])            // форматируем каждый кусок отдельно — тег не разорвётся

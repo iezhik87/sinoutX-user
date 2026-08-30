@@ -97,6 +97,33 @@ export function telegramAdapter(botToken: string, chatId: number): ChannelAdapte
 
     send,
 
+    // Одиночное фото — sendPhoto, несколько — альбомом по 10 (предел Telegram).
+    // Telegram сам скачивает картинку по адресу, поэтому чужой хост может
+    // отказать: такие адреса возвращаем, чтобы показать их ссылкой.
+    async sendPhotos(urls, caption) {
+      const failed: string[] = []
+      if (urls.length === 1) {
+        const r = await tgApi(botToken, 'sendPhoto', {
+          chat_id: chatId, photo: urls[0],
+          ...(caption ? { caption: caption.slice(0, 1024) } : {}),
+        })
+        if (!r || r.ok === false) failed.push(urls[0])
+        return failed
+      }
+      for (let i = 0; i < urls.length; i += 10) {
+        const batch = urls.slice(i, i + 10)
+        const r = await tgApi(botToken, 'sendMediaGroup', {
+          chat_id: chatId,
+          media: batch.map((u, k) => ({
+            type: 'photo', media: u,
+            ...(k === 0 && i === 0 && caption ? { caption: caption.slice(0, 1024) } : {}),
+          })),
+        })
+        if (!r || r.ok === false) failed.push(...batch)
+      }
+      return failed
+    },
+
     async edit(messageId, text, buttons) {
       const km = keyboard(buttons)
       const e = await tgApi(botToken, 'editMessageText', { chat_id: chatId, message_id: Number(messageId), text, parse_mode: 'HTML', disable_web_page_preview: true, ...km })

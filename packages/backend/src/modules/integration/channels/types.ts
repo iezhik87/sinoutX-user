@@ -46,6 +46,12 @@ export interface ChannelAdapter {
   edit(messageId: string, text: string, buttons?: ChannelButton[]): Promise<boolean>
   delete(messageId: string): Promise<boolean>
 
+  /**
+   * Отправить изображения по адресам. Возвращает те, что доставить НЕ удалось,
+   * — их вызывающий покажет ссылками, чтобы человек не остался ни с чем.
+   */
+  sendPhotos(urls: string[], caption?: string): Promise<string[]>
+
   /** `ref` is a Telegram file_id or a Viber media URL. */
   downloadFile(ref: string, hint?: { filename?: string; mime?: string }): Promise<IncomingFile | null>
 }
