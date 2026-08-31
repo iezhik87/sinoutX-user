@@ -7,7 +7,11 @@ import { randomUUID } from 'crypto'
 import { denyIfNotMember } from '../../lib/requireAccess.js'
 import { writeAuditLog } from '../../lib/audit.js'
 import { getWorkspaceOwnerId } from '../../lib/personal.js'
-import { exportWorkspace, importWorkspace, unclassifiedModels } from '../../lib/workspaceExport.js'
+import { exportWorkspace, importWorkspace, unclassifiedModels, mapRecordSecrets } from '../../lib/workspaceExport.js'
+import {
+  decryptSecret, encryptSecret, isEncrypted,
+  newSecretsSalt, derivePassphraseKey, encryptPortable, decryptPortable,
+} from '../../lib/crypto.js'
 
 // ─── Content-Disposition с Unicode ───────────────────────────────────────────
 
@@ -23,8 +27,13 @@ export async function backupRoutes(app: FastifyInstance, prisma: PrismaClient) {
 
   // POST /backup — ZIP со всеми данными + файлами из MinIO
   app.post('/backup', async (req, reply) => {
-    const { workspaceId } = z
-      .object({ workspaceId: z.string().cuid() })
+    const { workspaceId, secretsPassphrase } = z
+      .object({
+        workspaceId: z.string().cuid(),
+        // Фраза, под которую перешифровать секреты Сейфа. Без неё архив
+        // восстановится только на ЭТОМ инстансе — ключ шифрования его.
+        secretsPassphrase: z.string().min(8).max(200).optional(),
+      })
       .parse(req.body)
 
     if (await denyIfNotMember(prisma, workspaceId, req.authUser!.id, reply)) return
@@ -49,6 +58,24 @@ export async function backupRoutes(app: FastifyInstance, prisma: PrismaClient) {
     // Файлы кладём по тем же путям, что записаны в строках вложений.
     const attachments = (dump.models.Attachment ?? []) as { storagePath: string }[]
 
+    // Перешифровка секретов под фразу человека. Расшифровываем своим ключом —
+    // мы это можем — и тут же закрываем его собственным. Дальше архив не читаем
+    // ни мы, ни кто-либо, у кого нет фразы.
+    let secretsSalt: string | undefined
+    let secrets: { total: number; changed: number; failed: number } | undefined
+    if (secretsPassphrase) {
+      const salt = newSecretsSalt()
+      const key = derivePassphraseKey(secretsPassphrase, salt)
+      secrets = mapRecordSecrets(dump, (v) => {
+        const plain = decryptSecret(v)
+        // Не расшифровалось нашим же ключом — значит переносимым его не сделать.
+        // Оставить как есть нельзя: архив обещает переносимость.
+        if (!plain || isEncrypted(plain)) return null
+        return encryptPortable(plain, key)
+      })
+      secretsSalt = salt.toString('base64')
+    }
+
     await writeAuditLog(prisma, { action: 'backup.created', workspaceId, userId: req.authUser!.id, resourceType: 'workspace', resourceId: workspaceId, resourceName: workspace.name, ip: req.ip })
 
     const data = {
@@ -59,6 +86,8 @@ export async function backupRoutes(app: FastifyInstance, prisma: PrismaClient) {
       workspace,
       models: dump.models,
       counts: dump.counts,
+      // Присутствует, только если секреты перешифрованы под фразу.
+      ...(secretsSalt ? { secretsSalt, secrets } : {}),
     }
 
     const zipName = `sinoutx-backup-${workspace.name}-${new Date().toISOString().slice(0, 10)}`
@@ -94,6 +123,10 @@ export async function backupRoutes(app: FastifyInstance, prisma: PrismaClient) {
   app.post('/backup/restore', async (req, reply) => {
     const data = await req.file({ limits: { fileSize: 2 * 1024 * 1024 * 1024 } }) // 2 GB max
     if (!data) return reply.status(400).send({ error: 'No file provided' })
+
+    // Фраза приходит полем той же формы, что и файл.
+    const field = (data.fields as Record<string, unknown> | undefined)?.passphrase as { value?: unknown } | undefined
+    const passphrase = typeof field?.value === 'string' && field.value ? field.value : undefined
 
     // Читаем ZIP в память
     const chunks: Buffer[] = []
@@ -157,7 +190,32 @@ export async function backupRoutes(app: FastifyInstance, prisma: PrismaClient) {
         create: { workspaceId: w.id, userId: req.authUser!.id, role: 'OWNER' },
       }).catch(() => null)
 
-      const report = await importWorkspace(prisma, { models: d.models ?? {}, counts: d.counts ?? {} }, req.authUser!.id)
+      const dump = { models: d.models ?? {}, counts: d.counts ?? {} }
+
+      // Секреты, закрытые фразой, надо открыть ДО записи: иначе неверная фраза
+      // оставит в базе половину восстановленного и нечитаемый Сейф.
+      let secrets: { total: number; changed: number; failed: number } | undefined
+      if (d.secretsSalt) {
+        if (!passphrase) {
+          return reply.status(400).send({
+            error: 'passphrase_required',
+            message: 'В этом архиве Сейф закрыт парольной фразой. Введите её, иначе секреты восстановить нельзя.',
+          })
+        }
+        const key = derivePassphraseKey(passphrase, Buffer.from(String(d.secretsSalt), 'base64'))
+        secrets = mapRecordSecrets(dump, (v) => {
+          const plain = decryptPortable(v, key)
+          return plain === null ? null : (encryptSecret(plain) ?? plain)
+        })
+        if (secrets.total > 0 && secrets.changed === 0) {
+          return reply.status(400).send({
+            error: 'bad_passphrase',
+            message: 'Парольная фраза не подошла: ни одно значение Сейфа не расшифровалось. Ничего не изменено.',
+          })
+        }
+      }
+
+      const report = await importWorkspace(prisma, dump, req.authUser!.id)
 
       // Файлы: путь внутри архива и есть storagePath. Тип берём из строки
       // вложения — без него браузер получит поток байтов вместо картинки.
@@ -183,7 +241,20 @@ export async function backupRoutes(app: FastifyInstance, prisma: PrismaClient) {
       }
 
       await writeAuditLog(prisma, { action: 'backup.restored', workspaceId: w.id, userId: req.authUser!.id, resourceType: 'workspace', resourceId: w.id, resourceName: w.name, ip: req.ip })
-      return reply.send({ ok: true, workspaceId: w.id, version, files, ...report })
+      // `stats` прежней формы — панель результата в настройках читает именно её.
+      // Полная разбивка по моделям остаётся рядом, в `restored`.
+      return reply.send({
+        ok: true, workspaceId: w.id, version, files, secrets, ...report,
+        stats: {
+          projects: report.restored.Project ?? 0,
+          pages: report.restored.Page ?? 0,
+          tasks: report.restored.Task ?? 0,
+          notes: report.restored.Note ?? 0,
+          records: report.restored.CollectionRecord ?? 0,
+          files,
+          links: report.restored.Link ?? 0,
+        },
+      })
     }
 
     const stats = { created: 0, skipped: 0, files: 0 }

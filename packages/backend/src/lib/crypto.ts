@@ -53,3 +53,53 @@ export function decryptSecret(stored: string | undefined | null): string | undef
     return stored
   }
 }
+
+// ─── Переносимые секреты ──────────────────────────────────────────────────────
+//
+// Значения выше зашифрованы ключом ИНСТАНСА. Это верно, пока данные лежат на
+// месте, и становится тупиком, когда человек хочет забрать свой Сейф на другой
+// сервер: ключа облака ему не дадут — он общий на всех, — а без ключа записи
+// переносятся нечитаемыми.
+//
+// Выход: на выгрузке расшифровать своим ключом и тут же зашифровать заново тем,
+// который человек задал сам. Архив в пути не читает никто, включая нас; на новом
+// инстансе он вводит ту же фразу, и значения ложатся уже под ключ того сервера.
+// Плата за это — забытая фраза означает потерянный Сейф из этого архива. Но это
+// его собственная плата, и он о ней знает, в отличие от ключа инстанса.
+
+const PORTABLE_PREFIX = 'encp:v1:'
+
+export const isPortableSecret = (v: string): boolean => v.startsWith(PORTABLE_PREFIX)
+
+/** Новая соль на архив. */
+export const newSecretsSalt = (): Buffer => crypto.randomBytes(16)
+
+/**
+ * Ключ из парольной фразы. scrypt намеренно медленный — перебор фразы должен
+ * стоить дорого. Соль одна на весь архив: выводить ключ на каждое значение
+ * значило бы считать scrypt сотни раз и растянуть выгрузку на минуты.
+ */
+export function derivePassphraseKey(passphrase: string, salt: Buffer): Buffer {
+  return crypto.scryptSync(passphrase.normalize('NFKC'), salt, 32, { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 })
+}
+
+export function encryptPortable(plain: string, key: Buffer): string {
+  const iv = crypto.randomBytes(12)
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv)
+  const ct = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()])
+  return PORTABLE_PREFIX + Buffer.concat([iv, cipher.getAuthTag(), ct]).toString('base64')
+}
+
+/** null — не расшифровалось: не та фраза или порченый архив. Молча вернуть
+ *  исходное нельзя: в базу лёг бы мусор вместо пароля. */
+export function decryptPortable(stored: string, key: Buffer): string | null {
+  if (!stored.startsWith(PORTABLE_PREFIX)) return null
+  try {
+    const raw = Buffer.from(stored.slice(PORTABLE_PREFIX.length), 'base64')
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, raw.subarray(0, 12))
+    decipher.setAuthTag(raw.subarray(12, 28))
+    return Buffer.concat([decipher.update(raw.subarray(28)), decipher.final()]).toString('utf8')
+  } catch {
+    return null
+  }
+}

@@ -1597,7 +1597,9 @@ export const customToolsApi = {
 export interface RestoreStats {
   ok: boolean
   workspaceId: string
-  stats: { projects: number; pages: number; tasks: number; notes: number; files: number; links: number }
+  stats: { projects: number; pages: number; tasks: number; notes: number; records?: number; files: number; links: number }
+  /** Сколько секретов Сейфа открылось парольной фразой. Только для архивов 3.x. */
+  secrets?: { total: number; changed: number; failed: number }
 }
 
 export interface Notification {
@@ -1736,8 +1738,8 @@ export const importApi = {
 }
 
 export const backupApi = {
-  download: async (workspaceId: string) => {
-    const res = await api.post('/backup', { workspaceId }, { responseType: 'blob' })
+  download: async (workspaceId: string, secretsPassphrase?: string) => {
+    const res = await api.post('/backup', { workspaceId, secretsPassphrase: secretsPassphrase || undefined }, { responseType: 'blob' })
     const contentDisposition = res.headers['content-disposition'] ?? ''
     const match = contentDisposition.match(/filename="([^"]+)"/)
     const filename = match?.[1] ?? `sinoutx-backup-${new Date().toISOString().slice(0, 10)}.zip`
@@ -1751,9 +1753,13 @@ export const backupApi = {
 
   restore: async (
     file: File,
+    secretsPassphrase?: string,
     onUploadProgress?: (pct: number) => void,
   ): Promise<RestoreStats> => {
     const form = new FormData()
+    // Поле идёт ПЕРЕД файлом: сервер читает форму потоком и после файла полей
+    // уже не увидит.
+    if (secretsPassphrase) form.append('passphrase', secretsPassphrase)
     form.append('file', file)
     const res = await api.post<RestoreStats>('/backup/restore', form, {
       headers: { 'Content-Type': 'multipart/form-data' },

@@ -212,3 +212,28 @@ export async function importWorkspace(
 
   return { restored, droppedForMissingUser }
 }
+
+/**
+ * Проходит по секретным значениям записей реестров (Сейф и любой другой реестр
+ * с полями типа `secret`). Возврат `null` из `fn` означает «это значение
+ * непригодно» — оно удаляется, а не остаётся мусором: строка `encp:v1:…` в базе
+ * показалась бы человеку как его пароль.
+ */
+export function mapRecordSecrets(
+  dump: WorkspaceDump, fn: (value: string) => string | null,
+): { total: number; changed: number; failed: number } {
+  let total = 0, changed = 0, failed = 0
+  for (const row of dump.models.CollectionRecord ?? []) {
+    const data = row.data as Record<string, unknown> | undefined
+    const sec = data?._sec as Record<string, unknown> | undefined
+    if (!sec || typeof sec !== 'object') continue
+    for (const [k, v] of Object.entries(sec)) {
+      if (typeof v !== 'string' || !v) continue
+      total++
+      const next = fn(v)
+      if (next === null) { failed++; delete sec[k] } else { sec[k] = next; changed++ }
+    }
+    if (data && Object.keys(sec).length === 0) delete data._sec
+  }
+  return { total, changed, failed }
+}

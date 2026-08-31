@@ -1358,14 +1358,19 @@ function BackupTab({ workspaceId }: { workspaceId: string }) {
   const [restoreFile, setRestoreFile] = useState<File | null>(null)
   const [restoring, setRestoring] = useState(false)
   const [uploadPct, setUploadPct] = useState(0)
-  const [restoreResult, setRestoreResult] = useState<{ projects: number; pages: number; tasks: number; notes: number; files: number; links: number } | null>(null)
+  const [restoreResult, setRestoreResult] = useState<{ projects: number; pages: number; tasks: number; notes: number; records?: number; files: number; links: number } | null>(null)
+  const [restoreSecrets, setRestoreSecrets] = useState<{ total: number; changed: number; failed: number } | null>(null)
   const [restoreError, setRestoreError] = useState<string | null>(null)
+  // Фраза, под которую перешифровать Сейф. Пустая — архив останется читаемым
+  // только на этом сервере, потому что ключ шифрования принадлежит ему.
+  const [exportPass, setExportPass] = useState('')
+  const [restorePass, setRestorePass] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   async function handleBackup() {
     setDownloading(true)
     try {
-      await backupApi.download(workspaceId)
+      await backupApi.download(workspaceId, exportPass.trim() || undefined)
     } catch (err) {
       console.error('Backup failed:', err)
     } finally {
@@ -1380,8 +1385,9 @@ function BackupTab({ workspaceId }: { workspaceId: string }) {
     setRestoreResult(null)
     setRestoreError(null)
     try {
-      const result = await backupApi.restore(restoreFile, setUploadPct)
+      const result = await backupApi.restore(restoreFile, restorePass.trim() || undefined, setUploadPct)
       setRestoreResult(result.stats)
+      setRestoreSecrets(result.secrets ?? null)
     } catch (err) {
       setRestoreError(err instanceof Error ? err.message : t.settings.backup.restoreErrorDefault)
     } finally {
@@ -1402,7 +1408,23 @@ function BackupTab({ workspaceId }: { workspaceId: string }) {
             <p className="text-xs text-slate-400 mb-4">
               {t.settings.backup.exportDesc}
             </p>
-            <button onClick={handleBackup} disabled={downloading} className="btn-primary">
+            <label className="block text-xs text-slate-400 mb-1.5">{t.settings.backup.passphraseLabel}</label>
+            <input
+              type="password"
+              value={exportPass}
+              onChange={(e) => setExportPass(e.target.value)}
+              placeholder={t.settings.backup.passphrasePlaceholder}
+              autoComplete="new-password"
+              className="input w-full max-w-sm mb-1.5"
+            />
+            <p className="text-[11px] text-slate-500 mb-4 max-w-md leading-relaxed">
+              {exportPass.trim().length >= 8
+                ? t.settings.backup.passphraseOn
+                : exportPass.trim().length > 0
+                ? t.settings.backup.passphraseShort
+                : t.settings.backup.passphraseOff}
+            </p>
+            <button onClick={handleBackup} disabled={downloading || (exportPass.trim().length > 0 && exportPass.trim().length < 8)} className="btn-primary">
               {downloading ? (
                 <><Loader2 size={14} className="animate-spin" /> {t.settings.backup.preparing}</>
               ) : (
@@ -1463,6 +1485,17 @@ function BackupTab({ workspaceId }: { workspaceId: string }) {
               )}
             </div>
 
+            <label className="block text-xs text-slate-400 mb-1.5">{t.settings.backup.restorePassLabel}</label>
+            <input
+              type="password"
+              value={restorePass}
+              onChange={(e) => setRestorePass(e.target.value)}
+              placeholder={t.settings.backup.restorePassPlaceholder}
+              autoComplete="new-password"
+              className="input w-full max-w-sm mb-4"
+              disabled={restoring}
+            />
+
             {restoring && (
               <div className="mb-4">
                 <div className="flex justify-between text-xs text-slate-400 mb-1">
@@ -1481,7 +1514,14 @@ function BackupTab({ workspaceId }: { workspaceId: string }) {
             {restoreResult && (
               <div className="mb-4 p-3 bg-green-900/30 border border-green-800/50 rounded-lg text-xs text-green-300">
                 <p className="font-semibold mb-1">{t.settings.backup.restoreDone}</p>
-                <p>{t.dashboard.projects}: {restoreResult.projects} · {t.pages.title}: {restoreResult.pages} · {t.tasks.title}: {restoreResult.tasks} · {t.notes.title}: {restoreResult.notes} · {t.common.upload}: {restoreResult.files}</p>
+                <p>{t.dashboard.projects}: {restoreResult.projects} · {t.pages.title}: {restoreResult.pages} · {t.tasks.title}: {restoreResult.tasks} · {t.notes.title}: {restoreResult.notes} · {t.common.upload}: {restoreResult.files}
+                  {restoreResult.records ? ` · ${t.settings.backup.recordsRestored}: ${restoreResult.records}` : ''}</p>
+                {restoreSecrets && restoreSecrets.total > 0 && (
+                  <p className={restoreSecrets.failed ? 'mt-1 text-amber-300' : 'mt-1'}>
+                    {t.settings.backup.secretsRestored}: {restoreSecrets.changed} / {restoreSecrets.total}
+                    {restoreSecrets.failed ? ` · ${t.settings.backup.secretsFailed}: ${restoreSecrets.failed}` : ''}
+                  </p>
+                )}
               </div>
             )}
 
