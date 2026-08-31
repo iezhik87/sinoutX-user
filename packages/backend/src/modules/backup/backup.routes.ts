@@ -6,6 +6,8 @@ import { minio, BUCKET, uploadFile } from '../../lib/storage.js'
 import { randomUUID } from 'crypto'
 import { denyIfNotMember } from '../../lib/requireAccess.js'
 import { writeAuditLog } from '../../lib/audit.js'
+import { getWorkspaceOwnerId } from '../../lib/personal.js'
+import { exportWorkspace, importWorkspace, unclassifiedModels } from '../../lib/workspaceExport.js'
 
 // ─── Content-Disposition с Unicode ───────────────────────────────────────────
 
@@ -27,57 +29,36 @@ export async function backupRoutes(app: FastifyInstance, prisma: PrismaClient) {
 
     if (await denyIfNotMember(prisma, workspaceId, req.authUser!.id, reply)) return
 
-    const [
-      workspace,
-      projects,
-      pages,
-      tasks,
-      taskTags,
-      notes,
-      calendarEvents,
-      budgetEntries,
-      boards,
-      links,
-      tags,
-      attachments,
-      integrations,
-    ] = await Promise.all([
-      prisma.workspace.findUnique({ where: { id: workspaceId } }),
-      prisma.project.findMany({ where: { workspaceId }, orderBy: { position: 'asc' } }),
-      prisma.page.findMany({ where: { project: { workspaceId } }, orderBy: { position: 'asc' } }),
-      prisma.task.findMany({ where: { project: { workspaceId } }, orderBy: { position: 'asc' } }),
-      prisma.taskTag.findMany({ where: { task: { project: { workspaceId } } } }),
-      prisma.note.findMany({ where: { workspaceId } }),
-      prisma.calendarEvent.findMany({ where: { project: { workspaceId } } }),
-      prisma.budgetEntry.findMany({ where: { project: { workspaceId } } }),
-      prisma.board.findMany({ where: { project: { workspaceId } } }),
-      prisma.link.findMany({ where: { workspaceId } }),
-      prisma.tag.findMany({ where: { workspaceId } }),
-      prisma.attachment.findMany({ where: { workspaceId }, orderBy: { createdAt: 'asc' } }),
-      prisma.integration.findMany({ where: { workspaceId } }),
-    ])
+    // Если в схеме появилась модель, о которой никто не решил, входит она в
+    // архив или нет, — отказываемся. Архив, о неполноте которого узнают в день
+    // восстановления, хуже отсутствующего.
+    const unknown = unclassifiedModels()
+    if (unknown.length) {
+      console.error('[backup] модели без решения:', unknown.join(', '))
+      return reply.status(500).send({
+        error: 'backup_incomplete',
+        message: `Бэкап не собран: в схеме есть модели, не внесённые в список выгрузки (${unknown.join(', ')}). Это защита от неполного архива — внесите их в lib/workspaceExport.ts.`,
+      })
+    }
 
+    const workspace = await prisma.workspace.findUnique({ where: { id: workspaceId } })
     if (!workspace) return reply.status(404).send({ error: 'Workspace not found' })
+
+    const ownerId = await getWorkspaceOwnerId(prisma, workspaceId)
+    const dump = await exportWorkspace(prisma, workspaceId, ownerId)
+    // Файлы кладём по тем же путям, что записаны в строках вложений.
+    const attachments = (dump.models.Attachment ?? []) as { storagePath: string }[]
 
     await writeAuditLog(prisma, { action: 'backup.created', workspaceId, userId: req.authUser!.id, resourceType: 'workspace', resourceId: workspaceId, resourceName: workspace.name, ip: req.ip })
 
-
     const data = {
-      backupVersion: '2.0',
+      // 3.x — выгрузка по моделям целиком. 2.x читается по-прежнему (см. ниже):
+      // архивы, снятые до сегодня, должно быть чем развернуть.
+      backupVersion: '3.0',
       exportedAt: new Date().toISOString(),
       workspace,
-      projects,
-      pages,
-      tasks,
-      taskTags,
-      notes,
-      calendarEvents,
-      budgetEntries,
-      boards,
-      links,
-      tags,
-      attachments,
-      integrations,
+      models: dump.models,
+      counts: dump.counts,
     }
 
     const zipName = `sinoutx-backup-${workspace.name}-${new Date().toISOString().slice(0, 10)}`
@@ -140,8 +121,8 @@ export async function backupRoutes(app: FastifyInstance, prisma: PrismaClient) {
     }
 
     const version = parsed.backupVersion as string | undefined
-    if (!version || !version.startsWith('2')) {
-      return reply.status(400).send({ error: 'Unsupported backup version. Only v2.x supported.' })
+    if (!version || !/^[23]\./.test(version)) {
+      return reply.status(400).send({ error: 'Unsupported backup version. Only v2.x and v3.x are supported.' })
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -152,6 +133,57 @@ export async function backupRoutes(app: FastifyInstance, prisma: PrismaClient) {
     const existingWs = await prisma.workspace.findUnique({ where: { id: restoreWorkspaceId }, select: { id: true } })
     if (existingWs) {
       if (await denyIfNotMember(prisma, restoreWorkspaceId, req.authUser!.id, reply)) return
+    }
+
+    // ── 3.x: восстановление по моделям ────────────────────────────────────────
+    // Ниже, начиная с «1. Workspace», лежит прежний путь для архивов 2.x. Он
+    // перечисляет поля руками и именно поэтому терял половину данных; трогать
+    // его нельзя — иначе снятые раньше архивы станет нечем развернуть.
+    if (version.startsWith('3')) {
+      const w = d.workspace
+      await prisma.workspace.upsert({
+        where: { id: w.id },
+        update: {},
+        create: {
+          id: w.id, name: w.name, description: w.description, icon: w.icon,
+          color: w.color, isPersonal: w.isPersonal ?? false, settings: w.settings ?? {},
+          createdAt: new Date(w.createdAt), updatedAt: new Date(w.updatedAt),
+        },
+      })
+      // Восстанавливающий должен остаться в пространстве, которое поднял.
+      await prisma.workspaceMember.upsert({
+        where: { workspaceId_userId: { workspaceId: w.id, userId: req.authUser!.id } },
+        update: {},
+        create: { workspaceId: w.id, userId: req.authUser!.id, role: 'OWNER' },
+      }).catch(() => null)
+
+      const report = await importWorkspace(prisma, { models: d.models ?? {}, counts: d.counts ?? {} }, req.authUser!.id)
+
+      // Файлы: путь внутри архива и есть storagePath. Тип берём из строки
+      // вложения — без него браузер получит поток байтов вместо картинки.
+      const mimeOf = new Map<string, string>()
+      for (const att of (d.models?.Attachment ?? []) as { storagePath: string; mimeType: string }[]) {
+        mimeOf.set(att.storagePath, att.mimeType)
+      }
+      let files = 0
+      for (const e of zip.getEntries()) {
+        if (e.isDirectory) continue
+        const at = e.entryName.indexOf('/files/')
+        if (at < 0) continue
+        const storagePath = e.entryName.slice(at + '/files/'.length)
+        if (!storagePath) continue
+        try {
+          await minio.statObject(BUCKET, storagePath)
+        } catch {
+          const buf = e.getData()
+          await uploadFile(storagePath, buf, mimeOf.get(storagePath) ?? 'application/octet-stream', buf.byteLength)
+            .then(() => { files++ })
+            .catch(() => { /* один файл не должен ронять всё восстановление */ })
+        }
+      }
+
+      await writeAuditLog(prisma, { action: 'backup.restored', workspaceId: w.id, userId: req.authUser!.id, resourceType: 'workspace', resourceId: w.id, resourceName: w.name, ip: req.ip })
+      return reply.send({ ok: true, workspaceId: w.id, version, files, ...report })
     }
 
     const stats = { created: 0, skipped: 0, files: 0 }
