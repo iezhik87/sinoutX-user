@@ -17,7 +17,9 @@ import {
 
 function contentDispositionFilename(name: string): string {
   const ascii = name.replace(/[^\x20-\x7E]/g, '_').replace(/['"\\]/g, '_')
-  const encoded = encodeURIComponent(name)
+  // encodeURIComponent оставляет ' ( ) * ! как есть, а RFC 5987 их не допускает:
+  // апостроф в имени пространства разорвал бы разбор заголовка у стороннего клиента.
+  const encoded = encodeURIComponent(name).replace(/['()*!]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase())
   return `filename="${ascii}"; filename*=UTF-8''${encoded}`
 }
 

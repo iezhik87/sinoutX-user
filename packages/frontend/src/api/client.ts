@@ -1737,12 +1737,31 @@ export const importApi = {
   },
 }
 
+/**
+ * Имя файла из заголовка Content-Disposition.
+ *
+ * Порядок важен. Сервер отдаёт оба варианта: `filename*` с настоящим именем в
+ * UTF-8 и `filename` — его ASCII-огрызок для древних клиентов, где всё
+ * не-латинское заменено подчёркиваниями. Читали второй, и бэкап пространства
+ * «Личное» приезжал как `sinoutx-backup-______.zip`.
+ */
+export function filenameFromDisposition(cd: string, fallback: string): string {
+  const star = cd.match(/filename\*=([^']*)'[^']*'([^;]+)/i)
+  if (star) {
+    try {
+      return decodeURIComponent(star[2].trim().replace(/^"|"$/g, ''))
+    } catch { /* битая кодировка — падаем на ASCII-вариант ниже */ }
+  }
+  return cd.match(/filename="([^"]+)"/i)?.[1] ?? fallback
+}
+
 export const backupApi = {
   download: async (workspaceId: string, secretsPassphrase?: string) => {
     const res = await api.post('/backup', { workspaceId, secretsPassphrase: secretsPassphrase || undefined }, { responseType: 'blob' })
-    const contentDisposition = res.headers['content-disposition'] ?? ''
-    const match = contentDisposition.match(/filename="([^"]+)"/)
-    const filename = match?.[1] ?? `sinoutx-backup-${new Date().toISOString().slice(0, 10)}.zip`
+    const filename = filenameFromDisposition(
+      String(res.headers['content-disposition'] ?? ''),
+      `sinoutx-backup-${new Date().toISOString().slice(0, 10)}.zip`,
+    )
     const url = URL.createObjectURL(new Blob([res.data], { type: 'application/zip' }))
     const a = document.createElement('a')
     a.href = url

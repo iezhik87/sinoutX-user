@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef, Fragment } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Users, Settings, Shield, Trash2, UserCheck, UserX, Key, Save, RefreshCw, Check, UserPlus, X, Eye, EyeOff, Copy, ClipboardList, Loader2, Database, Download, Upload, RotateCcw, Clock, Activity, Cpu, MemoryStick, Network, HardDrive, AlertTriangle, Coins, Bot, Star } from 'lucide-react'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
-import { api, moduleApi } from '@/api/client'
+import { api, moduleApi, filenameFromDisposition } from '@/api/client'
 import { ProviderConnect } from '@/components/settings/ProviderConnect'
 import { Modal } from '@/components/common/Modal'
 import { useAuthStore } from '@/stores/authStore'
@@ -221,8 +221,10 @@ const adminApi = {
     api.post<{ ok: boolean; name: string; destination: string; size: number; files: { total: number; included: number; skipped: number; bytes: number } }>('/admin/backup', { destination }).then((r) => r.data),
   createBackupDownload: async () => {
     const res = await api.post('/admin/backup', { destination: 'download' }, { responseType: 'blob' })
-    const cd = (res.headers['content-disposition'] as string) ?? ''
-    const name = cd.match(/filename="([^"]+)"/)?.[1] ?? `sinoutx-full-${new Date().toISOString().slice(0, 10)}.zip`
+    const name = filenameFromDisposition(
+      String(res.headers['content-disposition'] ?? ''),
+      `sinoutx-full-${new Date().toISOString().slice(0, 10)}.zip`,
+    )
     triggerDownload(new Blob([res.data], { type: 'application/zip' }), name)
   },
   listBackups: () => api.get<BackupItem[]>('/admin/backups').then((r) => r.data),
