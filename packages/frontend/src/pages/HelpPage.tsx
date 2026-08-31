@@ -8,7 +8,7 @@ import {
   Keyboard, Settings, ChevronDown, ChevronRight, Zap, Target,
   Layers, StickyNote, Globe, Search, MessageSquare, Star,
   HelpCircle, Terminal, Image, Link,
-  BarChart2, Timer, Share2,
+  BarChart2, Timer, Share2, Database, ShieldCheck, Key,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -18,6 +18,30 @@ interface HelpSection {
   color: string
   title: Localized<string>
   content: Localized<React.ReactNode>
+}
+
+type Row = { ru: string; en: string; be: string }
+const L = (ru: string, en: string, be: string): Row => ({ ru, en, be })
+
+/**
+ * Раздел из пар «заголовок / описание». Три языка задаются рядом, а не тремя
+ * копиями разметки: именно из-за копий справка и разошлась с продуктом — правку
+ * вносили в русскую ветку и забывали про остальные.
+ */
+function cardsSection(
+  id: string, icon: React.ReactNode, color: string, title: Row, rows: Row[], oneColumn = false,
+): HelpSection {
+  const render = (lang: 'ru' | 'en' | 'be') => (
+    <div className={oneColumn ? 'space-y-3' : 'grid grid-cols-1 sm:grid-cols-2 gap-3'}>
+      {Array.from({ length: Math.floor(rows.length / 2) }, (_, i) => (
+        <div key={i} className="bg-surface-800 rounded-xl p-4 border border-slate-700/50">
+          <p className="text-sm font-semibold text-slate-200 mb-1.5">{rows[i * 2][lang]}</p>
+          <p className="text-xs text-slate-400 leading-relaxed">{rows[i * 2 + 1][lang]}</p>
+        </div>
+      ))}
+    </div>
+  )
+  return { id, icon, color, title, content: { ru: render('ru'), en: render('en'), be: render('be') } }
 }
 
 /**
@@ -403,6 +427,7 @@ function buildSections(cloud: boolean, solo: boolean): HelpSection[] {
       ),
     },
   },
+  ...featureSections(cloud),
   {
     id: 'canvas',
     icon: <Layout size={18} />,
@@ -649,6 +674,7 @@ function buildSections(cloud: boolean, solo: boolean): HelpSection[] {
       ),
     },
   },
+  ...(solo ? [] : [collabSection()]),
   {
     id: 'shortcuts',
     icon: <Keyboard size={18} />,
@@ -870,6 +896,10 @@ function buildSections(cloud: boolean, solo: boolean): HelpSection[] {
               { icon: <MessageSquare size={14} className="text-green-400" />, title: 'Интеграции', desc: 'Telegram и Viber — полноценный канал ассистента: голос, фото, документы. Slack и Discord — уведомления. Настройки → Интеграции' },
               { icon: <Timer size={14} className="text-orange-400" />, title: 'Pomodoro', desc: 'Таймер помодоро — кнопка в правом нижнем углу интерфейса' },
               { icon: <Share2 size={14} className="text-cyan-400" />, title: 'Публичные страницы', desc: 'Поделись страницей — кнопка Share в редакторе. Ссылка /p/токен доступна без авторизации' },
+              { icon: <Database size={14} className="text-amber-400" />, title: 'Бэкап', desc: 'Полная копия инстанса — база и файлы — по кнопке или по расписанию, с выбором диска. Настройки → Бэкап' },
+              { icon: <ShieldCheck size={14} className="text-red-400" />, title: 'Безопасность', desc: 'Смена пароля и двухфакторная аутентификация. Настройки → Безопасность' },
+              { icon: <Key size={14} className="text-violet-400" />, title: 'API ключи', desc: 'Для MCP-сервера и внешних интеграций, заголовок X-API-Key. Ключ показывается один раз — сохраните сразу. Настройки → API ключи' },
+              { icon: <Upload size={14} className="text-sky-400" />, title: 'Импорт', desc: 'Перенос из Notion и Obsidian. Настройки → Импорт' },
             ].map(({ icon, title, desc }) => (
               <div key={title} className="bg-surface-800 rounded-xl p-4 border border-slate-700/50">
                 <div className="flex items-center gap-2 mb-1.5">
@@ -892,6 +922,10 @@ function buildSections(cloud: boolean, solo: boolean): HelpSection[] {
               { icon: <MessageSquare size={14} className="text-green-400" />, title: 'Integrations', desc: 'Telegram and Viber — a full assistant channel: voice, photos, documents. Slack and Discord — notifications. Settings → Integrations' },
               { icon: <Timer size={14} className="text-orange-400" />, title: 'Pomodoro', desc: 'Pomodoro timer — button in the bottom right corner' },
               { icon: <Share2 size={14} className="text-cyan-400" />, title: 'Public Pages', desc: 'Share a page — Share button in the editor. Link /p/token is accessible without login' },
+              { icon: <Database size={14} className="text-amber-400" />, title: 'Backup', desc: 'A full copy of the instance — database and files — on demand or on a schedule, to a disk you choose. Settings → Backup' },
+              { icon: <ShieldCheck size={14} className="text-red-400" />, title: 'Security', desc: 'Password change and two-factor authentication. Settings → Security' },
+              { icon: <Key size={14} className="text-violet-400" />, title: 'API Keys', desc: 'For the MCP server and external integrations, via the X-API-Key header. A key is shown once — save it right away. Settings → API Keys' },
+              { icon: <Upload size={14} className="text-sky-400" />, title: 'Import', desc: 'Bring your notes over from Notion and Obsidian. Settings → Import' },
             ].map(({ icon, title, desc }) => (
               <div key={title} className="bg-surface-800 rounded-xl p-4 border border-slate-700/50">
                 <div className="flex items-center gap-2 mb-1.5">
@@ -914,6 +948,10 @@ function buildSections(cloud: boolean, solo: boolean): HelpSection[] {
               { icon: <MessageSquare size={14} className="text-green-400" />, title: 'Інтэграцыі', desc: 'Telegram і Viber — паўнавартасны канал асістэнта: голас, фота, дакументы. Slack і Discord — апавяшчэнні. Налады → Інтэграцыі' },
               { icon: <Timer size={14} className="text-orange-400" />, title: 'Pomodoro', desc: 'Таймер помадора — кнопка ў правым ніжнім куце інтэрфейсу' },
               { icon: <Share2 size={14} className="text-cyan-400" />, title: 'Публічныя старонкі', desc: 'Падзяліся старонкай — кнопка Share у рэдактары. Спасылка /p/токен даступная без аўтарызацыі' },
+              { icon: <Database size={14} className="text-amber-400" />, title: 'Бэкап', desc: 'Поўная копія інстанса — база і файлы — па кнопцы ці па раскладзе, з выбарам дыска. Налады → Бэкап' },
+              { icon: <ShieldCheck size={14} className="text-red-400" />, title: 'Бяспека', desc: 'Змена пароля і двухфактарная аўтэнтыфікацыя. Налады → Бяспека' },
+              { icon: <Key size={14} className="text-violet-400" />, title: 'API ключы', desc: 'Для MCP-сервера і знешніх інтэграцый, загаловак X-API-Key. Ключ паказваецца адзін раз — захавайце адразу. Налады → API ключы' },
+              { icon: <Upload size={14} className="text-sky-400" />, title: 'Імпарт', desc: 'Перанос з Notion і Obsidian. Налады → Імпарт' },
             ].map(({ icon, title, desc }) => (
               <div key={title} className="bg-surface-800 rounded-xl p-4 border border-slate-700/50">
                 <div className="flex items-center gap-2 mb-1.5">
@@ -932,73 +970,144 @@ function buildSections(cloud: boolean, solo: boolean): HelpSection[] {
   ]
 }
 
+/** Темы, которых в справке не было вовсе, хотя в продукте они есть. */
+function featureSections(cloud: boolean): HelpSection[] {
+  return [
+    cardsSection('memory', <Brain size={18} />, 'text-primary-400 bg-primary-400/10',
+      L('Память ассистента', 'Assistant memory', 'Памяць асістэнта'), [
+      L('Помнит между разговорами', 'It remembers between conversations', 'Памятае паміж размовамі'),
+      L('Факты о вас, устойчивые правила, людей и события. Скажите «запомни это» — или он сохранит важное сам.',
+        'Facts about you, standing rules, people and events. Say "remember this" — or it saves what matters on its own.',
+        'Факты пра вас, устойлівыя правілы, людзей і падзеі. Скажыце «запомні гэта» — або ён захавае важнае сам.'),
+      L('Вспоминает по смыслу', 'It recalls by meaning', 'Успамінае па сэнсе'),
+      L('Перед ответом он ищет в памяти относящееся к вопросу — по смыслу, а не по совпадению слов. Просить «вспомни» отдельно не нужно.',
+        'Before answering it searches memory for what relates to your question — by meaning, not by matching words. You need not ask it to recall.',
+        'Перад адказам ён шукае ў памяці тое, што датычыцца пытання — па сэнсе, а не па супадзенні слоў. Прасіць «успомні» асобна не трэба.'),
+      L('Всё лежит открыто', 'Nothing is hidden from you', 'Усё ляжыць адкрыта'),
+      L('Запомненное живёт в модуле «Память»: откройте, прочитайте, поправьте или удалите. Скрытого хранилища нет.',
+        'What it remembers lives in the Memory module: open it, read it, correct it, delete it. There is no hidden store.',
+        'Запомненае жыве ў модулі «Памяць»: адкрыйце, прачытайце, папраўце ці выдаліце. Схаванага сховішча няма.'),
+      L('Экспертизы', 'Expertise', 'Экспертызы'),
+      L('Попросите собрать экспертизу по теме — он соберёт базу знаний и плейбук, а потом работает в ней как специалист. Готовую можно «надеть» в любой момент.',
+        'Ask it to build an expertise in a domain — it assembles a knowledge base and a playbook, then works in that domain as a specialist. A ready one can be put on at any time.',
+        'Папрасіце сабраць экспертызу па тэме — ён збярэ базу ведаў і плэйбук, а потым працуе ў ёй як спецыяліст. Гатовую можна «надзець» у любы момант.'),
+    ]),
+
+    cardsSection('modules', <Layers size={18} />, 'text-violet-400 bg-violet-400/10',
+      L('Модули и реестры', 'Modules and registries', 'Модулі і рэестры'), [
+      L('Готовые разделы', 'Ready-made sections', 'Гатовыя раздзелы'),
+      L('Медкарта, Финансы, Сейф паролей, Авто, Личный рост, Память — ставятся из витрины в разделе «Модули».',
+        'Medical record, Finance, password Vault, Car, Personal growth, Memory — installed from the catalogue under Modules.',
+        'Медкарта, Фінансы, Сейф пароляў, Аўто, Асабісты рост, Памяць — ставяцца з вітрыны ў раздзеле «Модулі».'),
+      L('Реестры', 'Registries', 'Рэестры'),
+      L('Внутри модуля — таблицы с полями нужного типа: числа, даты, файлы. Ассистент пишет в них сам: скажите ему замер давления, и он положит его в нужную строку, а не просто ответит.',
+        'Inside a module are tables with typed fields: numbers, dates, files. The assistant writes into them itself: tell it a blood-pressure reading and it files the row, instead of merely replying.',
+        'Унутры модуля — табліцы з палямі патрэбнага тыпу: лікі, даты, файлы. Асістэнт піша ў іх сам: скажыце яму замер ціску, і ён пакладзе яго ў патрэбны радок.'),
+      L('Распознавание документов', 'Document recognition', 'Распазнаванне дакументаў'),
+      L('Пришлите скан или фотографию — чек, анализ, договор. Ассистент прочитает и разложит по полям реестра, а не просто приложит файл.',
+        'Send a scan or a photo — a receipt, a lab result, a contract. The assistant reads it and files the values, instead of just attaching the file.',
+        'Дашліце скан ці фотаздымак — чэк, аналіз, дагавор. Асістэнт прачытае і разложыць па палях рэестра, а не проста прыкладзе файл.'),
+      L('Сейф', 'The Vault', 'Сейф'),
+      L(cloud
+          ? 'Пароли, карты и секреты. Значения шифруются на диске, и ассистент их НЕ видит: он найдёт запись, но покажет содержимое только по прямой просьбе.'
+          : 'Пароли, карты и секреты. Значения шифруются ключом ENCRYPTION_KEY из настроек сервера — потеряете его, и не расшифрует даже бэкап. Ассистент значений НЕ видит: найдёт запись, но покажет содержимое только по прямой просьбе.',
+        cloud
+          ? 'Passwords, cards and secrets. Values are encrypted at rest and the assistant does NOT see them: it can find a record but reveals the contents only when asked outright.'
+          : 'Passwords, cards and secrets. Values are encrypted with ENCRYPTION_KEY from the server settings — lose it and not even a backup can decrypt them. The assistant does NOT see values: it finds a record but reveals contents only when asked outright.',
+        cloud
+          ? 'Паролі, карты і сакрэты. Значэнні шыфруюцца на дыску, і асістэнт іх НЕ бачыць: ён знойдзе запіс, але пакажа змест толькі па прамой просьбе.'
+          : 'Паролі, карты і сакрэты. Значэнні шыфруюцца ключом ENCRYPTION_KEY з налад сервера — згубіце яго, і не расшыфруе нават бэкап. Асістэнт значэнняў НЕ бачыць.'),
+    ]),
+
+    cardsSection('channels', <MessageSquare size={18} />, 'text-green-400 bg-green-400/10',
+      L('За пределами приложения', 'Outside the app', 'За межамі дадатку'), [
+      L('Telegram и Viber', 'Telegram and Viber', 'Telegram і Viber'),
+      L('Тот же ассистент в мессенджере: голосовые, фотографии, документы. Пишет в те же проекты и помнит тот же контекст. Подключается в Настройках → Интеграции.',
+        'The same assistant in a messenger: voice notes, photos, documents. It writes into the same projects and remembers the same context. Connect it in Settings → Integrations.',
+        'Той жа асістэнт у месэнджары: галасавыя, фотаздымкі, дакументы. Піша ў тыя ж праекты і памятае той жа кантэкст. Падключаецца ў Наладах → Інтэграцыі.'),
+      L('Что он умеет прислать', 'What it can send back', 'Што ён умее дасылаць'),
+      L('Файл из воркспейса, страницу в PDF или DOCX, выгрузку реестра таблицей, найденные в интернете картинки.',
+        'A file from the workspace, a page as PDF or DOCX, a registry exported as a spreadsheet, images found on the web.',
+        'Файл з воркспейса, старонку ў PDF ці DOCX, выгрузку рэестра табліцай, знойдзеныя ў інтэрнэце карцінкі.'),
+      L('Внешние агенты (MCP)', 'External agents (MCP)', 'Знешнія агенты (MCP)'),
+      L('Инстанс отдаёт MCP-сервер: подключите Claude или другого агента, и он получит доступ к вашим проектам, страницам и задачам. Ключ создаётся в Настройках → API ключи и показывается один раз.',
+        'The instance exposes an MCP server: connect Claude or another agent and it gets access to your projects, pages and tasks. Create the key in Settings → API keys — it is shown once.',
+        'Інстанс аддае MCP-сервер: падключыце Claude ці іншага агента, і ён атрымае доступ да вашых праектаў, старонак і задач. Ключ ствараецца ў Наладах → API ключы і паказваецца адзін раз.'),
+    ]),
+  ]
+}
+
+/** Совместная работа — только там, где есть с кем работать. */
+function collabSection(): HelpSection {
+  return cardsSection('collab', <Share2 size={18} />, 'text-cyan-400 bg-cyan-400/10',
+    L('Совместная работа', 'Working together', 'Сумесная праца'), [
+    L('Доступ к проекту, а не ко всему', 'Access to a project, not everything', 'Доступ да праекта, а не да ўсяго'),
+    L('Делятся отдельным проектом и выдают роль: читатель или редактор. Остальное ваше пространство остаётся закрытым.',
+      'You share an individual project and grant a role: viewer or editor. The rest of your workspace stays private.',
+      'Дзеляцца асобным праектам і выдаюць ролю: чытач або рэдактар. Астатняя ваша прастора застаецца закрытай.'),
+    L('Одновременное редактирование', 'Editing at the same time', 'Адначасовае рэдагаванне'),
+    L('Двое могут править одну страницу разом — правки видны сразу, без блокировок и без «кто последний сохранил, того и текст».',
+      'Two people can edit one page at once — changes appear immediately, with no locking and no "last save wins".',
+      'Двое могуць правіць адну старонку разам — праўкі відаць адразу, без блакіровак і без «хто апошні захаваў, таго і тэкст».'),
+  ])
+}
+
 /** Чем эта установка отличается от другой — единственный раздел, который
  *  зависит от того, где человек читает. */
 function editionSection(cloud: boolean, solo: boolean): HelpSection {
-  const line = (ru: string, en: string, be: string) => ({ ru, en, be })
   const rows = cloud
     ? [
-        line('Ассистент готов сразу', 'The assistant works out of the box', 'Асістэнт гатовы адразу'),
-        line('Модель уже подключена — платите за токены по счётчику. Свой ключ в Настройках → AI убирает эту плату совсем.',
+        L('Ассистент готов сразу', 'The assistant works out of the box', 'Асістэнт гатовы адразу'),
+        L('Модель уже подключена — платите за токены по счётчику. Свой ключ в Настройках → AI убирает эту плату совсем.',
              'A model is already connected — you pay per token. Your own key in Settings → AI removes that charge entirely.',
              'Мадэль ужо падключана — плаціце за токены па лічыльніку. Свой ключ у Налады → AI прыбірае гэту плату зусім.'),
-        line('Один баланс на всё', 'One balance for everything', 'Адзін баланс на ўсё'),
-        line('Хостинг, место и токены списываются с общего баланса. Он на странице «Тариф» в боковом меню, не во вкладках настроек.',
+        L('Один баланс на всё', 'One balance for everything', 'Адзін баланс на ўсё'),
+        L('Хостинг, место и токены списываются с общего баланса. Он на странице «Тариф» в боковом меню, не во вкладках настроек.',
              'Hosting, storage and tokens are charged to one balance. It lives on the Plan page in the sidebar, not in the settings tabs.',
              'Хостынг, месца і токены спісваюцца з агульнага балансу. Ён на старонцы «Тарыф» у бакавым меню, не ва ўкладках налад.'),
-        line('Пустой баланс — только чтение', 'Empty balance means read-only', 'Пусты баланс — толькі чытанне'),
-        line('Запись приостанавливается, данные остаются на месте: чтение, поиск и экспорт работают всегда.',
+        L('Пустой баланс — только чтение', 'Empty balance means read-only', 'Пусты баланс — толькі чытанне'),
+        L('Запись приостанавливается, данные остаются на месте: чтение, поиск и экспорт работают всегда.',
              'Writing pauses, the data stays put: reading, search and export keep working.',
              'Запіс прыпыняецца, даныя застаюцца на месцы: чытанне, пошук і экспарт працуюць заўсёды.'),
-        line('Инстансом управляет оператор', 'The instance is run by its operator', 'Інстансам кіруе аператар'),
-        line('Обновления, резервные копии и параметры сервера — на его стороне. Ваши собственные копии делаются в Настройках → Бэкап.',
+        L('Инстансом управляет оператор', 'The instance is run by its operator', 'Інстансам кіруе аператар'),
+        L('Обновления, резервные копии и параметры сервера — на его стороне. Ваши собственные копии делаются в Настройках → Бэкап.',
              'Updates, backups and server parameters are on their side. Your own copies are made in Settings → Backup.',
              'Абнаўленні, рэзервовыя копіі і параметры сервера — на яго баку. Вашы ўласныя копіі робяцца ў Налады → Бэкап.'),
       ]
     : [
-        line('Ассистенту нужен ваш ключ', 'The assistant needs your key', 'Асістэнту патрэбны ваш ключ'),
-        line('Встроенной модели здесь нет: пока ключ не указан в Настройках → AI, ассистент молчит. Платите вы напрямую провайдеру, без наценки.',
+        L('Ассистенту нужен ваш ключ', 'The assistant needs your key', 'Асістэнту патрэбны ваш ключ'),
+        L('Встроенной модели здесь нет: пока ключ не указан в Настройках → AI, ассистент молчит. Платите вы напрямую провайдеру, без наценки.',
              'There is no built-in model here: until a key is set in Settings → AI the assistant stays silent. You pay the provider directly, with no markup.',
              'Убудаванай мадэлі тут няма: пакуль ключ не пазначаны ў Налады → AI, асістэнт маўчыць. Плаціце вы напрамую правайдэру, без нацэнкі.'),
-        line('Платы и лимитов нет', 'No fees, no limits', 'Платы і лімітаў няма'),
-        line('Это ваш сервер: ни подписки, ни счётчиков, ни ограничений на проекты, страницы и место.',
+        L('Платы и лимитов нет', 'No fees, no limits', 'Платы і лімітаў няма'),
+        L('Это ваш сервер: ни подписки, ни счётчиков, ни ограничений на проекты, страницы и место.',
              'This is your server: no subscription, no meters, no limits on projects, pages or storage.',
              'Гэта ваш сервер: ні падпіскі, ні лічыльнікаў, ні абмежаванняў на праекты, старонкі і месца.'),
         ...(solo
-          ? [line('Один человек', 'One person', 'Адзін чалавек'),
-             line('Регистрация закрылась на вас: личное издание — это один владелец. Админки нет, параметры инстанса живут в файле .env.',
+          ? [L('Один человек', 'One person', 'Адзін чалавек'),
+             L('Регистрация закрылась на вас: личное издание — это один владелец. Админки нет, параметры инстанса живут в файле .env.',
                   'Registration closed with you: the personal edition is a single owner. There is no admin panel; instance settings live in the .env file.',
                   'Рэгістрацыя зачынілася на вас: асабістае выданне — гэта адзін уладальнік. Адмінкі няма, параметры інстанса жывуць у файле .env.')]
-          : [line('Несколько человек', 'Several people', 'Некалькі чалавек'),
-             line('Владелец управляет пользователями и параметрами в админке, доступ выдаётся к отдельным проектам.',
+          : [L('Несколько человек', 'Several people', 'Некалькі чалавек'),
+             L('Владелец управляет пользователями и параметрами в админке, доступ выдаётся к отдельным проектам.',
                   'The owner manages users and settings in the admin panel; access is granted to individual projects.',
                   'Уладальнік кіруе карыстальнікамі і параметрамі ў адмінцы, доступ выдаецца да асобных праектаў.')]),
-        line('Обновления и копии — на вас', 'Updates and backups are yours', 'Абнаўленні і копіі — на вас'),
-        line('Обновление: git pull и пересборка. Резервные копии — в Настройках → Бэкап, включая расписание.',
+        L('Обновления и копии — на вас', 'Updates and backups are yours', 'Абнаўленні і копіі — на вас'),
+        L('Обновление: git pull и пересборка. Резервные копии — в Настройках → Бэкап, включая расписание.',
              'Updating: git pull and rebuild. Backups are in Settings → Backup, schedule included.',
              'Абнаўленне: git pull і перазборка. Рэзервовыя копіі — у Налады → Бэкап, уключаючы расклад.'),
       ]
 
-  const render = (lang: 'ru' | 'en' | 'be') => (
-    <div className="space-y-3">
-      {Array.from({ length: rows.length / 2 }, (_, i) => (
-        <div key={i} className="bg-surface-800 rounded-xl p-4 border border-slate-700/50">
-          <p className="text-sm font-semibold text-slate-200 mb-1.5">{rows[i * 2][lang]}</p>
-          <p className="text-xs text-slate-400 leading-relaxed">{rows[i * 2 + 1][lang]}</p>
-        </div>
-      ))}
-    </div>
+  return cardsSection(
+    'edition',
+    <Globe size={18} />,
+    cloud ? 'text-sky-400 bg-sky-400/10' : 'text-emerald-400 bg-emerald-400/10',
+    cloud
+      ? L('Облако: как здесь всё устроено', 'The cloud: how things work here', 'Воблака: як тут усё зроблена')
+      : L('Ваш сервер: как здесь всё устроено', 'Your server: how things work here', 'Ваш сервер: як тут усё зроблена'),
+    rows,
+    true,
   )
-
-  return {
-    id: 'edition',
-    icon: <Globe size={18} />,
-    color: cloud ? 'text-sky-400 bg-sky-400/10' : 'text-emerald-400 bg-emerald-400/10',
-    title: cloud
-      ? { ru: 'Облако: как здесь всё устроено', en: 'The cloud: how things work here', be: 'Воблака: як тут усё зроблена' }
-      : { ru: 'Ваш сервер: как здесь всё устроено', en: 'Your server: how things work here', be: 'Ваш сервер: як тут усё зроблена' },
-    content: { ru: render('ru'), en: render('en'), be: render('be') },
-  }
 }
 
 function SectionAccordion({ section, lang }: { section: HelpSection; lang: 'ru' | 'en' | 'be' }) {
