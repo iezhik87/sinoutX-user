@@ -302,29 +302,47 @@ async function processEpisodeCapture(prisma: PrismaClient) {
   }
 }
 
+/**
+ * Напоминания о задачах и событиях.
+ *
+ * Прежде здесь было окно ровно в минуту: `r >= now-60s AND r <= now`. Пока
+ * сервер работает без перерыва, это верно; но простой в две минуты — отключили
+ * питание, перезапустили контейнер, тик задержался под нагрузкой — означал, что
+ * напоминание не придёт НИКОГДА. Признака «отправлено» не существовало, догнать
+ * было нечем, и никто об этом не узнавал.
+ *
+ * Теперь берём просроченные за последние часы и не отправленные. Горизонт
+ * ограничен намеренно: напоминание суточной давности уже бесполезно, а после
+ * долгого простоя человек получил бы лавину вчерашнего.
+ */
+const REMINDER_CATCHUP_HOURS = 6
+
 async function processReminders(prisma: PrismaClient) {
   const now = new Date()
-  const windowStart = new Date(now.getTime() - 60_000)
+  const from = new Date(now.getTime() - REMINDER_CATCHUP_HOURS * 3600_000)
 
-  // Raw query: find tasks with a reminderAt value within the last minute
-  const tasks = await prisma.$queryRaw<Array<{ id: string; title: string; project_id: string }>>`
-    SELECT t.id, t.title, t.project_id
-    FROM tasks t
+  // unnest разворачивает массив напоминаний в строки: у задачи их может быть
+  // несколько, и каждое отмечается отдельно.
+  const tasks = await prisma.$queryRaw<Array<{ id: string; title: string; project_id: string; remind_at: Date }>>`
+    SELECT t.id, t.title, t.project_id, r AS remind_at
+    FROM tasks t, unnest(t.reminder_at) AS r
     WHERE t.is_deleted = false
       AND t.status NOT IN ('DONE', 'CANCELLED')
-      AND EXISTS (
-        SELECT 1 FROM unnest(t.reminder_at) AS r
-        WHERE r >= ${windowStart} AND r <= ${now}
+      AND r >= ${from} AND r <= ${now}
+      AND NOT EXISTS (
+        SELECT 1 FROM reminder_sent s
+        WHERE s.kind = 'task' AND s.ref_id = t.id AND s.remind_at = r
       )
   `
 
-  const events = await prisma.$queryRaw<Array<{ id: string; title: string; project_id: string }>>`
-    SELECT e.id, e.title, e.project_id
-    FROM calendar_events e
-    WHERE EXISTS (
-      SELECT 1 FROM unnest(e.reminder_at) AS r
-      WHERE r >= ${windowStart} AND r <= ${now}
-    )
+  const events = await prisma.$queryRaw<Array<{ id: string; title: string; project_id: string; remind_at: Date }>>`
+    SELECT e.id, e.title, e.project_id, r AS remind_at
+    FROM calendar_events e, unnest(e.reminder_at) AS r
+    WHERE r >= ${from} AND r <= ${now}
+      AND NOT EXISTS (
+        SELECT 1 FROM reminder_sent s
+        WHERE s.kind = 'event' AND s.ref_id = e.id AND s.remind_at = r
+      )
   `
 
   if (tasks.length === 0 && events.length === 0) return
@@ -343,22 +361,51 @@ async function processReminders(prisma: PrismaClient) {
   })
   if (reachable === 0) return
 
+  /**
+   * Сначала занимаем напоминание, потом отправляем.
+   *
+   * Порядок именно такой: уникальный индекс не даёт двум тикам взять одно и то
+   * же, а если отправка не удалась — отметку снимаем, и следующий тик попробует
+   * снова. Обратный порядок (отправить, потом отметить) при падении между
+   * шагами слал бы одно и то же каждую минуту все шесть часов.
+   */
+  async function deliver(kind: 'task' | 'event', refId: string, remindAt: Date, text: string, workspaceId: string): Promise<boolean> {
+    try {
+      await prisma.reminderSent.create({ data: { kind, refId, remindAt } })
+    } catch {
+      return false // уже занято другим тиком — не наше дело
+    }
+    try {
+      const n = await notifyChannels(prisma, workspaceId, text)
+      if (n) return true
+      throw new Error('no channel accepted the message')
+    } catch (e) {
+      await prisma.reminderSent.deleteMany({ where: { kind, refId, remindAt } }).catch(() => null)
+      console.error(`[cron] reminder ${kind}/${refId} not delivered, will retry:`, e instanceof Error ? e.message : e)
+      return false
+    }
+  }
+
+  // Опоздавшее напоминание должно честно сказать, что оно опоздало: «прими
+  // лекарство» через четыре часа после срока без пометки вводит в заблуждение.
+  const lateMark = (at: Date): string => {
+    const lateMin = Math.round((now.getTime() - at.getTime()) / 60_000)
+    return lateMin >= 10 ? `\n_(с опозданием на ${lateMin >= 120 ? Math.round(lateMin / 60) + ' ч' : lateMin + ' мин'} — сервер был недоступен)_` : ''
+  }
+
   let sent = 0
   for (const task of tasks) {
     const project = projectMap.get(task.project_id)
     if (!project) continue
-    // Every connected messenger gets it — Telegram, Viber, or both.
-    const n = await notifyChannels(prisma, project.workspaceId, `⏰ **Напоминание о задаче**\n${task.title}\nПроект: ${project.name}`)
-    if (n) sent++
+    const text = `⏰ **Напоминание о задаче**\n${task.title}\nПроект: ${project.name}${lateMark(task.remind_at)}`
+    if (await deliver('task', task.id, task.remind_at, text, project.workspaceId)) sent++
   }
 
   for (const event of events) {
     const project = projectMap.get(event.project_id)
     if (!project) continue
-    const n = await notifyChannels(prisma, project.workspaceId, `📅 **Напоминание о событии**
-${event.title}
-Проект: ${project.name}`)
-    if (n) sent++
+    const text = `📅 **Напоминание о событии**\n${event.title}\nПроект: ${project.name}${lateMark(event.remind_at)}`
+    if (await deliver('event', event.id, event.remind_at, text, project.workspaceId)) sent++
   }
 
   if (sent > 0) console.log(`[cron] Sent ${sent} reminders`)
@@ -490,14 +537,34 @@ async function processScheduledBackup(prisma: PrismaClient) {
   const s = await prisma.appSettings.findUnique({ where: { id: 'singleton' } })
   if (!s || s.backupSchedule === 'off') return
 
-  // Runs from the hourly cron tick: fire only at the configured hour (server
-  // time), and for weekly only on the configured weekday. A 23h dedupe guards
-  // against double-runs (restarts / clock quirks).
+  // Считаем по СРОКУ ДАВНОСТИ, а не по попаданию в нужный час.
+  //
+  // Раньше условие было `now.getHours() !== backupHour → выход`. Пока сервер
+  // работает без перерыва, это одно и то же; но отключение питания в три ночи
+  // означало, что копии за этот день нет вовсе, следующая попытка через сутки, и
+  // никто об этом не узнавал. Защита, которая молча не сработала, хуже
+  // отсутствующей: человек уверен, что копия есть.
+  //
+  // Теперь первый же тик после включения делает пропущенное. Час и день недели
+  // остаются ПРЕДПОЧТЕНИЕМ: пока срок не вышел, ждём своего окна и не тревожим
+  // диск среди рабочего дня.
   const now = new Date()
-  if (now.getHours() !== (s.backupHour ?? 3)) return
-  if (s.backupSchedule === 'weekly' && now.getDay() !== (s.backupWeekday ?? 1)) return
   const last = s.backupLastRunAt ? s.backupLastRunAt.getTime() : 0
-  if (now.getTime() - last < 23 * 3600_000) return
+  const age = now.getTime() - last
+  const period = s.backupSchedule === 'weekly' ? 7 * 24 * 3600_000 : 24 * 3600_000
+
+  // Час запаса: при ровно суточном возрасте это обычный дневной запуск, а не
+  // пропущенное окно — иначе каждый нормальный день писался бы в лог как авария.
+  const overdue = age >= period + 3600_000
+
+  if (!overdue) {
+    // Срок не вышел — ждём своего часа, как и раньше.
+    if (now.getHours() !== (s.backupHour ?? 3)) return
+    if (s.backupSchedule === 'weekly' && now.getDay() !== (s.backupWeekday ?? 1)) return
+    if (age < 23 * 3600_000) return
+  } else if (last > 0) {
+    console.log(`[cron] scheduled backup overdue by ${Math.round((age - period) / 3600_000)}h — running now (missed window)`)
+  }
 
   const dir = dirByLabel(s.backupDir ?? undefined)
   if (!dir) { console.error('[cron] scheduled backup: no destination dir'); return }
@@ -874,6 +941,11 @@ export function startCronJobs(prisma: PrismaClient) {
     await processMemoryConsolidation(prisma).catch((e) => console.error('[cron] memory consolidation error:', e))
     await processEpisodeCapture(prisma).catch((e) => console.error('[cron] episode capture error:', e))
     await processScheduledSkills(prisma).catch((e) => console.error('[cron] scheduled skills error:', e))
+    // Отметки об отправленных напоминаниях нужны ровно на горизонт догона.
+    // Без уборки таблица росла бы вечно ради данных, бесполезных через сутки.
+    await prisma.reminderSent
+      .deleteMany({ where: { sentAt: { lt: new Date(Date.now() - 24 * 3600_000) } } })
+      .catch((e) => console.error('[cron] reminder marks cleanup error:', e))
   })
 
   // Daily at 03:10 UTC — quiet hours, and far from the hourly batch above.

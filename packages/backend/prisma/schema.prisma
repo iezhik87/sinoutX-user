@@ -1121,3 +1121,26 @@ model WalletTransaction {
   @@index([status])
   @@map("wallet_transactions")
 }
+
+/// Отметка «напоминание отправлено».
+///
+/// Появилась потому, что прежде напоминания искались в окне ровно в минуту:
+/// сервер полежал две минуты — напоминание не приходило НИКОГДА, и следов не
+/// оставалось. Теперь ищем просроченные за несколько часов, а эта таблица не
+/// даёт отправить одно и то же дважды.
+///
+/// Почему не Redis: авария, от которой мы защищаемся (пропало питание), его же
+/// и обнуляет — после включения хлынули бы дубли за весь горизонт.
+model ReminderSent {
+  id       String   @id @default(cuid())
+  /// task | event
+  kind     String
+  refId    String   @map("ref_id")
+  /// Конкретный момент из массива напоминаний — их у задачи может быть несколько.
+  remindAt DateTime @map("remind_at")
+  sentAt   DateTime @default(now()) @map("sent_at")
+
+  @@unique([kind, refId, remindAt])
+  @@index([sentAt])
+  @@map("reminder_sent")
+}
