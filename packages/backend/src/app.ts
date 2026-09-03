@@ -59,6 +59,7 @@ import { auditRoutes } from './modules/audit/audit.routes.js'
 import { billingRoutes } from './modules/billing/billing.routes.js'
 import { adminBackupRoutes } from './modules/admin/admin-backup.routes.js'
 import { startCronJobs } from './lib/cron.js'
+import { encryptStoredIntegrationSecrets } from './modules/integration/secrets.js'
 import { startTriggerDispatcher } from './lib/triggers.js'
 import { startMonitoring } from './lib/monitoring.js'
 import { syncBuiltinModules, resyncInstalledModules } from './lib/modules/service.js'
@@ -344,6 +345,12 @@ async function bootstrap() {
     void primeManaged(prisma)
     void primePricing(prisma)
     void primeFrozenCache(prisma).then((n) => n && console.log(`[billing] ${n} frozen account(s)`))
+
+    // Учётные данные интеграций, сохранённые до перехода на шифрование. Проход
+    // идемпотентен, со второго запуска не делает ничего.
+    void encryptStoredIntegrationSecrets(prisma)
+      .then((n) => n && console.log(`[integrations] encrypted secrets for ${n} integration(s)`))
+      .catch((e) => console.error('[integrations] secret sweep failed', e))
 
     startCronJobs(prisma)
 

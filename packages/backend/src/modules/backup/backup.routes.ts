@@ -8,6 +8,7 @@ import { denyIfNotMember } from '../../lib/requireAccess.js'
 import { writeAuditLog } from '../../lib/audit.js'
 import { getWorkspaceOwnerId } from '../../lib/personal.js'
 import { exportWorkspace, importWorkspace, unclassifiedModels, mapRecordSecrets } from '../../lib/workspaceExport.js'
+import { countUnreadableIntegrations } from '../integration/secrets.js'
 import {
   decryptSecret, encryptSecret, isEncrypted,
   newSecretsSalt, derivePassphraseKey, encryptPortable, decryptPortable,
@@ -242,11 +243,15 @@ export async function backupRoutes(app: FastifyInstance, prisma: PrismaClient) {
         }
       }
 
+      // Интеграции, чьи токены зашифрованы ключом другого инстанса, работать не
+      // будут. Молчать об этом нельзя: бот просто перестанет отвечать.
+      const integrationsNeedReconnect = await countUnreadableIntegrations(prisma, w.id).catch(() => 0)
+
       await writeAuditLog(prisma, { action: 'backup.restored', workspaceId: w.id, userId: req.authUser!.id, resourceType: 'workspace', resourceId: w.id, resourceName: w.name, ip: req.ip })
       // `stats` прежней формы — панель результата в настройках читает именно её.
       // Полная разбивка по моделям остаётся рядом, в `restored`.
       return reply.send({
-        ok: true, workspaceId: w.id, version, files, secrets, ...report,
+        ok: true, workspaceId: w.id, version, files, secrets, integrationsNeedReconnect, ...report,
         stats: {
           projects: report.restored.Project ?? 0,
           pages: report.restored.Page ?? 0,

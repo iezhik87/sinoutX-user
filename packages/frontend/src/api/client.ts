@@ -1600,6 +1600,8 @@ export interface RestoreStats {
   stats: { projects: number; pages: number; tasks: number; notes: number; records?: number; files: number; links: number }
   /** Сколько секретов Сейфа открылось парольной фразой. Только для архивов 3.x. */
   secrets?: { total: number; changed: number; failed: number }
+  /** Интеграции, чьи токены зашифрованы ключом другого сервера — их надо подключить заново. */
+  integrationsNeedReconnect?: number
 }
 
 export interface Notification {

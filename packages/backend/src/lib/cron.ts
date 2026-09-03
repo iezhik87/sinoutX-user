@@ -1,4 +1,5 @@
 import cron from 'node-cron'
+import { decryptIntegrationConfig } from '../modules/integration/secrets.js'
 import type { PrismaClient } from '@prisma/client'
 import { publish, redis } from './redis.js'
 import { sendDeadlineReminderEmail, sendLicenseExpiryReminderEmail, isEmailConfigured, normalizeAppUrl } from './email.js'
@@ -452,7 +453,7 @@ async function processWebhookHealth(prisma: PrismaClient) {
   }
 
   for (const i of integrations) {
-    const cfg = (i.config as Record<string, unknown> | null) ?? {}
+    const cfg = decryptIntegrationConfig(i.config)
     const botToken = typeof cfg.botToken === 'string' ? cfg.botToken : ''
     if (!botToken) continue
 

@@ -1,4 +1,5 @@
 import type { PrismaClient } from '@prisma/client'
+import { encryptIntegrationConfig, maskIntegrationConfig } from './secrets.js'
 import { IntegrationType, IntegrationStatus } from '@prisma/client'
 import { publish } from '../../lib/redis.js'
 
@@ -66,18 +67,24 @@ export const TELEGRAM_TXT: Record<TgLang, {
 export class IntegrationService {
   constructor(private prisma: PrismaClient) {}
 
+  /** Список для интерфейса. Учётные данные маскируются: браузеру нужно знать,
+   *  что токен задан, а не какой он. Раньше конфиг уходил в него целиком. */
   async list(workspaceId: string) {
-    return this.prisma.integration.findMany({
+    const rows = await this.prisma.integration.findMany({
       where: { workspaceId },
       orderBy: { createdAt: 'desc' },
     })
+    return rows.map((r) => ({ ...r, config: maskIntegrationConfig(r.config) }))
   }
 
+  /** Единственная точка записи конфига — поэтому шифрование стоит здесь, а не в
+   *  каждом вызывающем месте. */
   async upsert(workspaceId: string, type: IntegrationType, config: Record<string, unknown>) {
+    const enc = encryptIntegrationConfig(config) as object
     return this.prisma.integration.upsert({
       where: { workspaceId_type: { workspaceId, type } },
-      create: { workspaceId, type, config: config as object, status: IntegrationStatus.ACTIVE },
-      update: { config: config as object, status: IntegrationStatus.ACTIVE, updatedAt: new Date() },
+      create: { workspaceId, type, config: enc, status: IntegrationStatus.ACTIVE },
+      update: { config: enc, status: IntegrationStatus.ACTIVE, updatedAt: new Date() },
     })
   }
 

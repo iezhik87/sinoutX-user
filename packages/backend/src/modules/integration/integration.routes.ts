@@ -5,6 +5,7 @@ import { randomBytes, randomUUID } from 'crypto'
 import { IntegrationService } from './integration.service.js'
 import { denyIfNotMember } from '../../lib/requireAccess.js'
 import { isSafeWebhookUrl } from '../../lib/webhook.js'
+import { encryptIntegrationConfig, decryptIntegrationConfig } from './secrets.js'
 import { config } from '../../config/index.js'
 import { uploadFile } from '../../lib/storage.js'
 import { redis } from '../../lib/redis.js'
@@ -821,7 +822,8 @@ export async function integrationRoutes(app: FastifyInstance, prisma: PrismaClie
         where: { workspaceId_type: { workspaceId: body.workspaceId, type: 'VIBER' } },
         select: { config: true },
       })
-      const prevCfg = (existing?.config as Record<string, unknown> | null) ?? {}
+      // Расшифровываем: в поле формы могло прийти пусто, и тогда берём сохранённый.
+      const prevCfg = decryptIntegrationConfig(existing?.config)
       const token = ((body.config as Record<string, unknown>).token as string | undefined)?.trim()
         || (prevCfg.token as string | undefined)
       if (!token) return reply.status(400).send({ error: 'token required' })
@@ -855,7 +857,8 @@ export async function integrationRoutes(app: FastifyInstance, prisma: PrismaClie
         where: { workspaceId_type: { workspaceId: body.workspaceId, type: 'TELEGRAM' } },
         select: { config: true },
       })
-      const prevCfg = (existing?.config as Record<string, unknown> | null) ?? {}
+      // Расшифровываем: в поле формы могло прийти пусто, и тогда берём сохранённый.
+      const prevCfg = decryptIntegrationConfig(existing?.config)
       const botToken = ((body.config as Record<string, unknown>).botToken as string | undefined)?.trim()
         || (prevCfg.botToken as string | undefined)
       if (!botToken) return reply.status(400).send({ error: 'botToken required' })
@@ -919,7 +922,7 @@ export async function integrationRoutes(app: FastifyInstance, prisma: PrismaClie
     const integration = await prisma.integration.findUnique({ where: { id }, select: { workspaceId: true, type: true, config: true } })
     if (!integration) return reply.status(404).send({ error: 'Not found' })
     if (await denyIfNotMember(prisma, integration.workspaceId, req.authUser!.id, reply)) return
-    await unregisterWebhook(integration.type, (integration.config ?? {}) as Record<string, unknown>)
+    await unregisterWebhook(integration.type, decryptIntegrationConfig(integration.config))
     return reply.send(await svc.disable(id))
   })
 
@@ -929,7 +932,7 @@ export async function integrationRoutes(app: FastifyInstance, prisma: PrismaClie
     const integration = await prisma.integration.findUnique({ where: { id }, select: { workspaceId: true, type: true, config: true } })
     if (!integration) return reply.status(404).send({ error: 'Not found' })
     if (await denyIfNotMember(prisma, integration.workspaceId, req.authUser!.id, reply)) return
-    await unregisterWebhook(integration.type, (integration.config ?? {}) as Record<string, unknown>)
+    await unregisterWebhook(integration.type, decryptIntegrationConfig(integration.config))
     await svc.delete(id)
     return reply.status(204).send()
   })
@@ -944,7 +947,7 @@ export async function integrationRoutes(app: FastifyInstance, prisma: PrismaClie
     })
     if (!integration) return reply.status(404).send({ error: 'Integration not found' })
 
-    const cfg = integration.config as Record<string, unknown>
+    const cfg = decryptIntegrationConfig(integration.config)
     // Verify Telegram's secret token (set at registration) — the route is public.
     if (cfg.secret && req.headers['x-telegram-bot-api-secret-token'] !== cfg.secret) {
       return reply.status(401).send({ error: 'Invalid secret token' })
@@ -983,9 +986,11 @@ export async function integrationRoutes(app: FastifyInstance, prisma: PrismaClie
     const chatId = ((update.message as Record<string, unknown> | undefined)?.chat as Record<string, unknown> | undefined)?.id
     if (chatId !== undefined && cfg.chatId !== chatId) {
       cfg.chatId = chatId
+      // Пишем МИМО сервиса, поэтому шифруем сами: cfg здесь расшифрован, и
+      // прямая запись вернула бы токен в базу открытым текстом.
       await prisma.integration.update({
         where: { id: integration.id },
-        data: { config: { ...cfg } as object },
+        data: { config: encryptIntegrationConfig(cfg) as object },
       }).catch(() => null)
     }
 
@@ -1074,7 +1079,7 @@ export async function integrationRoutes(app: FastifyInstance, prisma: PrismaClie
       })
       if (!integration) return reply.status(404).send({ error: 'Integration not found' })
 
-      const cfg = integration.config as Record<string, unknown>
+      const cfg = decryptIntegrationConfig(integration.config)
       const token = cfg.token as string | undefined
       if (!token) return reply.status(400).send({ error: 'Viber token missing' })
 

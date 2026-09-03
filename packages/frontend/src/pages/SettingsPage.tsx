@@ -1360,6 +1360,7 @@ function BackupTab({ workspaceId }: { workspaceId: string }) {
   const [uploadPct, setUploadPct] = useState(0)
   const [restoreResult, setRestoreResult] = useState<{ projects: number; pages: number; tasks: number; notes: number; records?: number; files: number; links: number } | null>(null)
   const [restoreSecrets, setRestoreSecrets] = useState<{ total: number; changed: number; failed: number } | null>(null)
+  const [needReconnect, setNeedReconnect] = useState(0)
   const [restoreError, setRestoreError] = useState<string | null>(null)
   // Фраза, под которую перешифровать Сейф. Пустая — архив останется читаемым
   // только на этом сервере, потому что ключ шифрования принадлежит ему.
@@ -1388,6 +1389,7 @@ function BackupTab({ workspaceId }: { workspaceId: string }) {
       const result = await backupApi.restore(restoreFile, restorePass.trim() || undefined, setUploadPct)
       setRestoreResult(result.stats)
       setRestoreSecrets(result.secrets ?? null)
+      setNeedReconnect(result.integrationsNeedReconnect ?? 0)
     } catch (err) {
       setRestoreError(err instanceof Error ? err.message : t.settings.backup.restoreErrorDefault)
     } finally {
@@ -1516,6 +1518,9 @@ function BackupTab({ workspaceId }: { workspaceId: string }) {
                 <p className="font-semibold mb-1">{t.settings.backup.restoreDone}</p>
                 <p>{t.dashboard.projects}: {restoreResult.projects} · {t.pages.title}: {restoreResult.pages} · {t.tasks.title}: {restoreResult.tasks} · {t.notes.title}: {restoreResult.notes} · {t.common.upload}: {restoreResult.files}
                   {restoreResult.records ? ` · ${t.settings.backup.recordsRestored}: ${restoreResult.records}` : ''}</p>
+                {needReconnect > 0 && (
+                  <p className="mt-1 text-amber-300">{t.settings.backup.reconnectNeeded}</p>
+                )}
                 {restoreSecrets && restoreSecrets.total > 0 && (
                   <p className={restoreSecrets.failed ? 'mt-1 text-amber-300' : 'mt-1'}>
                     {t.settings.backup.secretsRestored}: {restoreSecrets.changed} / {restoreSecrets.total}

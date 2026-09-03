@@ -1,4 +1,5 @@
 import type { PrismaClient } from '@prisma/client'
+import { decryptIntegrationConfig } from '../modules/integration/secrets.js'
 import { createHmac } from 'node:crypto'
 
 export type WebhookEvent =
@@ -49,7 +50,9 @@ export async function fireWebhooks(
   })
 
   for (const integration of integrations) {
-    const config = integration.config as unknown as WebhookConfig
+    // Расшифровываем: `secret` служит ключом подписи, и шифротекст вместо него
+    // дал бы подпись, которую получатель не примет.
+    const config = decryptIntegrationConfig(integration.config) as unknown as WebhookConfig
     if (!config?.url) continue
     if (config.events?.length && !config.events.includes(event)) continue
 

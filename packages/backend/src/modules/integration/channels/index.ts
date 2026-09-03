@@ -1,4 +1,5 @@
 import type { PrismaClient } from '@prisma/client'
+import { decryptIntegrationConfig } from '../secrets.js'
 import type { ChannelAdapter } from './types.js'
 import { telegramAdapter } from './telegram.js'
 import { viberAdapter } from './viber.js'
@@ -22,7 +23,7 @@ export async function outboundChannels(prisma: PrismaClient, workspaceId: string
 
   const out: ChannelAdapter[] = []
   for (const ig of rows) {
-    const cfg = (ig.config ?? {}) as Record<string, unknown>
+    const cfg = decryptIntegrationConfig(ig.config)
     if (ig.type === 'TELEGRAM') {
       const botToken = cfg.botToken as string | undefined
       const chatId = cfg.chatId as number | string | undefined

@@ -548,6 +548,7 @@ const ru = {
       recordsRestored: 'записей реестров',
       secretsRestored: 'секретов Сейфа открыто',
       secretsFailed: 'не расшифровано',
+      reconnectNeeded: 'Интеграции с мессенджерами перенесены, но их токены зашифрованы ключом того сервера, где снят архив. Подключите их заново в Настройках → Интеграции — иначе бот будет молчать.',
       downloadZip: 'Скачать ZIP бэкап',
       includedTitle: 'Что включено в бэкап',
       includedItems: [
@@ -2689,6 +2690,7 @@ const en: typeof ru = {
       recordsRestored: 'registry records',
       secretsRestored: 'Vault secrets opened',
       secretsFailed: 'not decrypted',
+      reconnectNeeded: 'Messenger integrations came across, but their tokens are encrypted with the key of the server the archive came from. Reconnect them in Settings → Integrations — otherwise the bot stays silent.',
       downloadZip: 'Download ZIP Backup',
       includedTitle: "What's Included",
       includedItems: [
@@ -4783,6 +4785,7 @@ const be: typeof ru = {
       recordsRestored: 'запісаў рэестраў',
       secretsRestored: 'сакрэтаў Сейфа адкрыта',
       secretsFailed: 'не расшыфравана',
+      reconnectNeeded: 'Інтэграцыі з месэнджарамі перанесены, але іх токены зашыфраваны ключом таго сервера, дзе зняты архіў. Падключыце іх нанова ў Наладах → Інтэграцыі — інакш бот будзе маўчаць.',
       downloadZip: 'Спампаваць ZIP-рэзерв',
       includedTitle: 'Што ўваходзіць у рэзерв',
       includedItems: [

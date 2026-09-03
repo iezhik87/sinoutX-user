@@ -4,6 +4,7 @@
 // the agent answers SKIP, delivers the result to every messenger the workspace
 // has connected.
 import Redis from 'ioredis'
+import { decryptIntegrationConfig } from '../modules/integration/secrets.js'
 import type { PrismaClient } from '@prisma/client'
 import { config } from '../config/index.js'
 import { redis } from './redis.js'
@@ -34,7 +35,7 @@ async function handleEvent(prisma: PrismaClient, raw: string) {
   // `telegram` is the file-upload channel (export_project sends a document);
   // Viber can only serve files from a public URL, so it stays out of this.
   const tg = await prisma.integration.findFirst({ where: { workspaceId, type: 'TELEGRAM', status: 'ACTIVE' }, select: { config: true } })
-  const cfg = (tg?.config ?? {}) as Record<string, unknown>
+  const cfg = decryptIntegrationConfig(tg?.config)
   const botToken = cfg.botToken as string | undefined
   const chatId = cfg.chatId as string | number | undefined
   const owner = await prisma.workspaceMember.findFirst({ where: { workspaceId, role: 'OWNER' }, orderBy: { createdAt: 'asc' }, select: { userId: true } })
