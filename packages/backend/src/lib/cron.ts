@@ -425,6 +425,10 @@ async function processReminders(prisma: PrismaClient) {
  * Поэтому: адрес не тот или пустой — переставляем молча, это наша работа, а не
  * повод будить человека. Зовём только если Телеграм жалуется на доставку или
  * если переставить не удалось.
+ *
+ * Запускается при старте и раз в сутки, а не ежечасно: поломка редкая и не
+ * срочная, а ломается она как раз при перезагрузке — то есть тогда, когда мы
+ * только что поднялись и проверяем.
  */
 async function processWebhookHealth(prisma: PrismaClient) {
   if (!config.APP_URL) return
@@ -438,9 +442,11 @@ async function processWebhookHealth(prisma: PrismaClient) {
   const svc = new NotificationService(prisma)
 
   const alert = async (workspaceId: string, dedupeKey: string, title: string, body: string) => {
-    // Раз в сутки на проблему: вебхук, сломанный со вчера, не нужно
-    // напоминать о себе каждый час.
-    if (await redis.set(`webhook:alert:${dedupeKey}`, '1', 'EX', 86400, 'NX') !== 'OK') return
+    // Не чаще раза в двадцать часов на проблему. Сутки ровно брать нельзя:
+    // проверка тоже суточная, и алерт гасился бы через раз из-за пары секунд
+    // расхождения. Двадцать часов заодно прикрывают перезагрузку по кругу —
+    // проверка при старте не превратится в поток одинаковых сообщений.
+    if (await redis.set(`webhook:alert:${dedupeKey}`, '1', 'EX', 20 * 3600, 'NX') !== 'OK') return
     await svc.create({ workspaceId, type: 'system', title, body, link: '/settings?tab=integrations' }).catch(() => null)
     console.error(`[cron] webhook health: ${title} — ${body}`)
   }
@@ -1022,7 +1028,6 @@ export function startCronJobs(prisma: PrismaClient) {
     await processMemoryConsolidation(prisma).catch((e) => console.error('[cron] memory consolidation error:', e))
     await processEpisodeCapture(prisma).catch((e) => console.error('[cron] episode capture error:', e))
     await processScheduledSkills(prisma).catch((e) => console.error('[cron] scheduled skills error:', e))
-    await processWebhookHealth(prisma).catch((e) => console.error('[cron] webhook health error:', e))
     // Отметки об отправленных напоминаниях нужны ровно на горизонт догона.
     // Без уборки таблица росла бы вечно ради данных, бесполезных через сутки.
     await prisma.reminderSent
@@ -1039,6 +1044,7 @@ export function startCronJobs(prisma: PrismaClient) {
       .then((ms) => console.log(`[cron] model catalogue refreshed: ${ms.length} models`))
       .catch((e) => console.error('[cron] catalogue refresh error:', e))
     await checkOpenRouterPriceDrift(prisma).catch((e) => console.error('[cron] price drift check error:', e))
+    await processWebhookHealth(prisma).catch((e) => console.error('[cron] webhook health error:', e))
   })
 
   // Run every minute: send Telegram reminders for tasks/events, and write off
@@ -1055,6 +1061,16 @@ export function startCronJobs(prisma: PrismaClient) {
     await processEmailDeadlineReminders(prisma).catch((e) => console.error('[cron] deadline reminders error:', e))
     await processLicenseExpiryReminders(prisma).catch((e) => console.error('[cron] license expiry reminders error:', e))
   })
+
+  // Вебхук ломается не сам по себе, а при перезагрузке, смене адреса или
+  // обновлении сертификата — то есть именно тогда, когда мы только что
+  // поднялись. Проверить один раз здесь полезнее, чем дёргать Телеграм круглые
+  // сутки: остальное ловит суточный проход. Минута задержки — чтобы nginx и
+  // сеть успели встать, иначе проверим сами себя в момент, когда снаружи ещё
+  // ничего не отвечает.
+  setTimeout(() => {
+    void processWebhookHealth(prisma).catch((e) => console.error('[cron] webhook health (startup) error:', e))
+  }, 60_000).unref()
 
   console.log('[cron] Recurring jobs scheduled (hourly + reminders every minute)')
 }
