@@ -26,6 +26,20 @@ Underneath is a full workspace: a block editor, projects and tasks, a knowledge 
 
 You bring your own AI keys. Requests go straight to the provider you chose, with no markup on tokens and no vendor lock-in. An external agent (Claude Desktop, for example) can use the workspace as long-term memory over MCP.
 
+> **Status: young and actively developed.** It runs in production and is used
+> daily, but it is not a decade-old product — expect rough edges, and expect
+> things to change between versions. Database migrations run on deploy; read the
+> commit log before a big jump.
+>
+> What does not change: **your data stays yours and leaves whole.** Settings →
+> Backup exports the entire workspace — every module, file and note — and the
+> password Vault travels too, re-encrypted under a passphrase only you know. If
+> this project ever stops, the self-hosted edition you already have keeps
+> running on your own server, for free. Nothing here holds you hostage.
+>
+> Found something broken? Open an issue — at this stage a single report changes
+> what gets built next.
+
 ### Why SinoutX?
 
 | | Notion | Obsidian | SinoutX |
