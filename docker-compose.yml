@@ -72,10 +72,10 @@ services:
     image: searxng/searxng:latest
     restart: unless-stopped
     volumes:
-      # Только файл настроек и только на чтение. Каталог целиком в режиме
-      # записи давал контейнеру сменить владельца (у него есть CHOWN), и после
-      # первого же старта git не мог обновить settings.yml: «Permission
-      # denied» на каждом деплое, который эту настройку трогает.
+      # The settings file only, and read-only. Mounting the whole directory
+      # writable let the container chown it (it has CHOWN), and after the very
+      # first start git could no longer update settings.yml: "Permission denied"
+      # on every deploy that touches this setting.
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
     environment:
       SEARXNG_SECRET: ${SEARXNG_SECRET:-sinout_searxng_secret_key_2024}
@@ -95,12 +95,12 @@ services:
       WHISPER__MODEL: ${WHISPER_MODEL:-Systran/faster-whisper-base}
       WHISPER__INFERENCE_DEVICE: cpu
       WHISPER__COMPUTE_TYPE: int8
-    # Единственный сервис в стеке без потолка памяти — а без него под нехватку
-    # попадает не он, а случайный сосед (например Postgres). Замер на минутном
-    # голосовом: base берёт 419 МБ на пике, small 818 МБ. Гигабайта хватает
-    # обеим, поэтому смена модели не превращается в тихую поломку. Для medium
-    # (веса 1.46 ГБ) поднимите WHISPER_MEM до 2g — это осознанный выбор, и он
-    # не должен проходить незаметно.
+    # The only service here that used to run without a memory ceiling — and
+    # without one the shortage hits a random neighbour (Postgres, say) rather
+    # than this container. Measured on a one-minute voice note: base peaks at
+    # 419 MB, small at 818 MB. A gigabyte covers both, so switching the model is
+    # not a silent breakage. For medium (1.46 GB of weights) raise WHISPER_MEM
+    # to 2g — a deliberate choice, and one that should not pass unnoticed.
     mem_limit: ${WHISPER_MEM:-1g}
     volumes:
       - whisper_models:/root/.cache/huggingface

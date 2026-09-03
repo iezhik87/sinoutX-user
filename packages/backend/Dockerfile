@@ -1,8 +1,9 @@
 FROM node:22-alpine AS base
 WORKDIR /app
-# postgresql16-client — ради pg_dump/pg_restore: бэкап снимает ВСЮ базу, а не
-# перечисленные руками таблицы (такой список молча стареет с каждой новой
-# сущностью). Версия клиента должна совпадать с сервером из docker-compose.
+# postgresql16-client — for pg_dump/pg_restore: the backup takes the WHOLE
+# database rather than a hand-written list of tables (such a list goes stale
+# silently with every new entity). The client version must match the server
+# declared in docker-compose.
 RUN apk add --no-cache curl openssl postgresql16-client \
     chromium nss freetype harfbuzz ca-certificates ttf-freefont
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
@@ -35,5 +36,5 @@ COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 
 EXPOSE 3010
 
-# Запускаем миграции и сервер
+# Run migrations, then start the server
 CMD ["sh", "-c", "npx prisma migrate deploy && node dist/app.js"]
