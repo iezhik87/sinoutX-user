@@ -8,7 +8,7 @@ import { NotificationService } from '../modules/notification/notification.servic
 import { completeOnce, getEmbeddingsConfig, getAISettings, appendEpisode, tipTapToText, textToTipTap, EXPERTISE_PLAYBOOK_TITLE, EXPERTISE_LOG_TITLE } from '../modules/ai/ai.service.js'
 import { getCustomTools, saveCustomTools } from '../modules/ai/ai.customtools.js'
 import { runChannelAgent } from '../modules/integration/integration.routes.js'
-import { outboundChannels, notifyChannels } from '../modules/integration/channels/index.js'
+import { outboundChannels, notifyChannels, tgApi } from '../modules/integration/channels/index.js'
 import { chargeMonth } from './subscription.js'
 import { isBillingEnabled } from './billingMode.js'
 import { expireStalePendingTopups } from './wallet.js'
@@ -409,6 +409,87 @@ async function processReminders(prisma: PrismaClient) {
   }
 
   if (sent > 0) console.log(`[cron] Sent ${sent} reminders`)
+}
+
+// ─── Здоровье вебхука Телеграма ───────────────────────────────────────────────
+
+/**
+ * Проверяет, доходят ли до нас сообщения, и чинит вебхук, если он отвалился.
+ *
+ * Вебхук ставится ОДИН раз — при подключении интеграции в интерфейсе. Ни при
+ * старте, ни потом его никто не переставляет. Короткий обрыв связи Телеграм
+ * переживёт сам: он копит обновления и повторяет доставку. Но если вебхук
+ * сломается всерьёз — сменился адрес, протух сертификат, сутки простоя, — бот
+ * замолчит навсегда, и узнает об этом владелец от пользователя, а не от нас.
+ *
+ * Поэтому: адрес не тот или пустой — переставляем молча, это наша работа, а не
+ * повод будить человека. Зовём только если Телеграм жалуется на доставку или
+ * если переставить не удалось.
+ */
+async function processWebhookHealth(prisma: PrismaClient) {
+  if (!config.APP_URL) return
+
+  const integrations = await prisma.integration.findMany({
+    where: { type: 'TELEGRAM', status: 'ACTIVE' },
+    select: { workspaceId: true, config: true },
+  })
+  if (integrations.length === 0) return
+
+  const svc = new NotificationService(prisma)
+
+  const alert = async (workspaceId: string, dedupeKey: string, title: string, body: string) => {
+    // Раз в сутки на проблему: вебхук, сломанный со вчера, не нужно
+    // напоминать о себе каждый час.
+    if (await redis.set(`webhook:alert:${dedupeKey}`, '1', 'EX', 86400, 'NX') !== 'OK') return
+    await svc.create({ workspaceId, type: 'system', title, body, link: '/settings?tab=integrations' }).catch(() => null)
+    console.error(`[cron] webhook health: ${title} — ${body}`)
+  }
+
+  for (const i of integrations) {
+    const cfg = (i.config as Record<string, unknown> | null) ?? {}
+    const botToken = typeof cfg.botToken === 'string' ? cfg.botToken : ''
+    if (!botToken) continue
+
+    const info = await tgApi(botToken, 'getWebhookInfo', {}) as {
+      ok?: boolean
+      result?: { url?: string; pending_update_count?: number; last_error_date?: number; last_error_message?: string }
+    } | null
+
+    // Телеграм не ответил — это наш интернет, а не его поломка. Молчим: через
+    // час проверим снова, а орать при каждом обрыве связи бессмысленно.
+    if (!info?.ok || !info.result) continue
+
+    const r = info.result
+    const expected = `${config.APP_URL}/api/v1/webhooks/telegram/${i.workspaceId}`
+
+    if (r.url !== expected) {
+      const secret = typeof cfg.secret === 'string' ? cfg.secret : undefined
+      const res = await tgApi(botToken, 'setWebhook', {
+        url: expected,
+        ...(secret ? { secret_token: secret } : {}),
+        allowed_updates: ['message', 'callback_query'],
+      }) as { ok?: boolean; description?: string } | null
+
+      if (res?.ok) {
+        console.log(`[cron] webhook health: re-registered for workspace ${i.workspaceId} (was ${r.url || 'empty'})`)
+      } else {
+        await alert(i.workspaceId, `set:${i.workspaceId}`, 'Бот в Телеграме не отвечает',
+          `Вебхук слетел, и переставить его не удалось: ${res?.description ?? 'Телеграм отклонил запрос'}. Сообщения боту не доходят — переподключите интеграцию.`)
+      }
+      continue
+    }
+
+    // Адрес верный, но доставка не идёт. Смотрим только СВЕЖУЮ ошибку: та, что
+    // случилась при вчерашней перезагрузке, уже неинтересна.
+    const errAgeSec = r.last_error_date ? Math.floor(Date.now() / 1000) - r.last_error_date : Infinity
+    if (errAgeSec < 3600) {
+      await alert(i.workspaceId, `err:${i.workspaceId}`, 'Телеграм не может доставить сообщения боту',
+        `${r.last_error_message ?? 'причина не указана'}. В очереди ${r.pending_update_count ?? 0} сообщений. Обычно это значит, что сервер был недоступен или истёк сертификат.`)
+    } else if ((r.pending_update_count ?? 0) > 50) {
+      await alert(i.workspaceId, `queue:${i.workspaceId}`, 'В Телеграме копится очередь сообщений',
+        `${r.pending_update_count} сообщений не доставлено. Ошибок Телеграм не сообщает — возможно, бот отвечает слишком медленно.`)
+    }
+  }
 }
 
 // ─── Email deadline reminders ─────────────────────────────────────────────────
@@ -941,6 +1022,7 @@ export function startCronJobs(prisma: PrismaClient) {
     await processMemoryConsolidation(prisma).catch((e) => console.error('[cron] memory consolidation error:', e))
     await processEpisodeCapture(prisma).catch((e) => console.error('[cron] episode capture error:', e))
     await processScheduledSkills(prisma).catch((e) => console.error('[cron] scheduled skills error:', e))
+    await processWebhookHealth(prisma).catch((e) => console.error('[cron] webhook health error:', e))
     // Отметки об отправленных напоминаниях нужны ровно на горизонт догона.
     // Без уборки таблица росла бы вечно ради данных, бесполезных через сутки.
     await prisma.reminderSent
