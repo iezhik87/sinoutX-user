@@ -2,9 +2,12 @@
 
 # SinoutX
 
-**A private workspace with an assistant that does the work — not one that advises**
+**The self-hosted second brain your AI can write to**
 
-*Notes, projects, health, money and passwords in one place. In the app and in your messenger. On your server, on your own AI keys (BYOK) — no markup on tokens.*
+*Every other AI notebook lets an assistant read your notes. This one lets it keep your
+medical record, your finances and your password vault — as typed data it fills in from a
+photo, a voice note or a message in Telegram. Your server, your API keys, no markup on
+tokens, and it plugs into Claude over MCP as long-term memory.*
 
 [![License: FSL-1.1-MIT](https://img.shields.io/badge/License-FSL--1.1--MIT-purple.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](docker-compose.yml)
@@ -25,7 +28,13 @@ the modules and the assistant in Telegram, before you install anything.
 
 SinoutX is a **self-hosted** workspace built around an assistant that *acts*. Write to it in the app, in Telegram or in Viber — it captures notes and tasks, recognizes documents and receipts, tracks calories and balances, searches the web and files everything into the right place. It is proactive: it sends morning briefs, reminds you, reacts to events and sets up its own recurring skills.
 
-Underneath is a full workspace: a block editor, projects and tasks, a knowledge graph, semantic search, real-time collaboration — plus **pluggable modules** for verticals like a medical record, personal finance and a password vault.
+The part nobody else has is the **modules**. A module is not a folder of notes — it is a
+set of typed registries the assistant fills in: lab results with reference ranges, blood
+pressure and weight over time, prescriptions and doctor visits; accounts, transactions,
+budgets and receipts read straight off a photo; passwords and cards encrypted at rest,
+which the assistant can find for you but never reads back into a chat. Underneath sits a
+full workspace — block editor, projects and tasks, knowledge graph, semantic search,
+real-time collaboration — but that part you can get elsewhere.
 
 You bring your own AI keys. Requests go straight to the provider you chose, with no markup on tokens and no vendor lock-in. An external agent (Claude Desktop, for example) can use the workspace as long-term memory over MCP.
 
@@ -42,6 +51,21 @@ You bring your own AI keys. Requests go straight to the provider you chose, with
 >
 > Found something broken? Open an issue — at this stage a single report changes
 > what gets built next.
+
+### What it looks like
+
+A module is not a folder of notes — it is a typed registry the assistant writes into.
+Tell it what you spent and it files the row; hand it a receipt and it reads the numbers
+off the photo.
+
+![Finance module: accounts, monthly income and expenses, spending by category and a
+budget with planned-versus-actual columns](docs/img/finance.jpg)
+
+Every request runs on **your** provider key. There is no markup on tokens and no
+middleman holding your data — pick a provider, paste the key, set the parameters.
+
+![Settings, AI tab: DeepSeek selected as the language model with the API key, base URL,
+a connection test and generation parameters](docs/img/byok.jpg)
 
 ### Why SinoutX?
 
