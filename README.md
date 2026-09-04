@@ -12,6 +12,9 @@
 [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](packages/frontend)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)](packages/backend/prisma)
 
+**[See it in action →](https://sinout.dasp.top)** — screenshots and video of the app,
+the modules and the assistant in Telegram, before you install anything.
+
 </div>
 
 ---
