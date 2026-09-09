@@ -505,6 +505,11 @@ function extractLinksFromHtml(html: string, baseUrl: string): Array<{ href: stri
 
 // ─── Universal document text extractor ───────────────────────────────────────
 
+/** Расширения, которые читаются как обычный текст. HTML сюда НЕ входит — он
+ *  разбирается отдельной веткой выше. */
+const TEXT_EXT = ['txt', 'md', 'csv', 'json', 'xml', 'yaml', 'yml', 'ts', 'tsx',
+  'js', 'jsx', 'py', 'sh', 'sql', 'css', 'ini', 'conf', 'log', 'env']
+
 async function extractFileText(
   buffer: Buffer,
   mimeType: string,
@@ -517,7 +522,11 @@ async function extractFileText(
   const isPdf  = mimeType.includes('pdf')  || ext === 'pdf'
   const isDocx = mimeType.includes('wordprocessingml') || mimeType.includes('msword') || ext === 'docx' || ext === 'doc'
   const isXlsx = mimeType.includes('spreadsheetml') || mimeType.includes('ms-excel') || ext === 'xlsx' || ext === 'xls' || ext === 'csv'
-  const isText = mimeType.startsWith('text/') || ['txt', 'md', 'csv', 'json', 'xml', 'yaml', 'yml', 'ts', 'js', 'py', 'sh', 'sql'].includes(ext)
+  // HTML проверяется ОТДЕЛЬНО и раньше текста. `text/html` начинается с `text/`,
+  // поэтому общая текстовая ветка перехватывала его первой, и ветка ниже не
+  // срабатывала никогда для правильно определённого HTML.
+  const isHtml = mimeType.includes('html') || ext === 'html' || ext === 'htm'
+  const isText = !isHtml && (mimeType.startsWith('text/') || TEXT_EXT.includes(ext))
 
   if (isPdf) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -562,17 +571,45 @@ async function extractFileText(
     return { text: csvLines.join('\n').slice(0, maxLen), sheets: sheetNames }
   }
 
+  // HTML отдаём ИСХОДНИКОМ, а не вычищенным текстом. Это файл, сохранённый
+  // человеком, а не страница из интернета: его просят поправить, перевести или
+  // сменить кодировку, и для всего этого нужна разметка. Вычистка тегов — дело
+  // read_document_url, где на входе действительно веб-страница.
+  if (isHtml) {
+    return { text: buffer.toString('utf-8').slice(0, maxLen) }
+  }
+
   if (isText) {
     return { text: buffer.toString('utf-8').slice(0, maxLen) }
   }
 
-  // HTML fallback
-  if (mimeType.includes('html')) {
-    const { content } = extractArticleContent(buffer.toString('utf-8'), maxLen)
-    return { text: content }
+  // Тип неизвестен, расширение незнакомо — но файл может быть обычным текстом.
+  // Смотрим в содержимое, а не в ярлык: мессенджеры типы теряют, и отказ
+  // «формат не поддерживается» для читаемого файла — наша проблема, а не
+  // человека. Двоичное содержимое проверку не пройдёт и отказ получит честно.
+  if (looksLikeText(buffer)) {
+    return { text: buffer.toString('utf-8').slice(0, maxLen) }
   }
 
-  throw new Error(`Неподдерживаемый формат файла: ${mimeType || ext}. Поддерживается: PDF, DOCX, XLSX, XLS, CSV, TXT, JSON, XML, HTML, MD`)
+  throw new Error(`Неподдерживаемый формат файла: ${mimeType || ext}. Поддерживается: PDF, DOCX, XLSX, XLS, CSV, TXT, JSON, XML, HTML, MD и любой текстовый файл`)
+}
+
+/**
+ * Похоже ли содержимое на текст.
+ *
+ * Два признака, обоих достаточно и оба дешёвые: нулевой байт в тексте не
+ * встречается, а осмысленный текст декодируется из UTF-8 без ошибок. Смотрим
+ * начало файла — этого хватает, чтобы отличить исходник от архива или картинки.
+ */
+function looksLikeText(buffer: Buffer): boolean {
+  const head = buffer.subarray(0, 4096)
+  if (head.includes(0)) return false
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(head)
+    return true
+  } catch {
+    return false
+  }
 }
 
 // Renders a scanned (no text layer) PDF's pages to images and reads them with the
@@ -3268,12 +3305,28 @@ async function executeTool(
       })
     }
 
-    case 'list_sources':
+    case 'list_sources': {
+      // Проект НЕОБЯЗАТЕЛЕН, и это не удобство, а исправление.
+      //
+      // Раньше он требовался, и агент, которого просили «прочитай тот файл»,
+      // называл проект наугад. Файл, присланный в мессенджер, лежал в проекте по
+      // умолчанию для канала — агент спрашивал другой, получал пустой список и
+      // отвечал человеку, что файлов нет. Файл при этом лежал на месте.
+      //
+      // Без проекта смотрим всё пространство: лучше показать лишнее, чем сказать
+      // «ничего нет» о том, что есть.
+      const projectId = input.projectId as string | undefined
+      const where = projectId
+        ? { projectId }
+        : { workspaceId: (context?.lockWorkspaceId ?? context?.workspaceId) as string }
+      if (!projectId && !where.workspaceId) return { error: 'Не удалось определить пространство — укажи projectId.' }
       return prisma.attachment.findMany({
-        where: { projectId: input.projectId as string },
+        where,
         orderBy: [{ isImportant: 'desc' }, { createdAt: 'desc' }],
-        select: { id: true, filename: true, description: true, mimeType: true, size: true, isImportant: true, createdAt: true, metadata: true },
+        take: 50,
+        select: { id: true, filename: true, description: true, mimeType: true, size: true, isImportant: true, createdAt: true, projectId: true, metadata: true },
       })
+    }
 
     case 'fetch_and_save_source': {
       const url = input.url as string

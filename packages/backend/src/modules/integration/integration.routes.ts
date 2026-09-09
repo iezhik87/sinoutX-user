@@ -5,6 +5,7 @@ import { randomBytes, randomUUID } from 'crypto'
 import { IntegrationService } from './integration.service.js'
 import { denyIfNotMember } from '../../lib/requireAccess.js'
 import { isSafeWebhookUrl } from '../../lib/webhook.js'
+import { resolveMime } from '../../lib/mime.js'
 import { encryptIntegrationConfig, decryptIntegrationConfig } from './secrets.js'
 import { config } from '../../config/index.js'
 import { uploadFile } from '../../lib/storage.js'
@@ -26,7 +27,7 @@ type TgLang = 'ru' | 'en' | 'be'
 // Localized bot replies for media capture and the /new command.
 const MEDIA_TXT: Record<TgLang, {
   dlVoiceFail: string; noWhisper: string; transcribeFail: string; emptyTranscript: string
-  dlFileFail: string; savedSource: string; imageToAgent: string; newDialog: string; noSpace: (used: number, limit: number) => string; ocrDone: string; ocrFail: string; ocrStudy: string; ocrVisit: string; ocrDoc: string; ocrPremium: string; dxSuffix: string; medSuffix: string; ocrReceipt: string; ocrStatement: string; txSuffix: string
+  dlFileFail: string; savedSource: (proj: string) => string; imageToAgent: string; newDialog: string; noSpace: (used: number, limit: number) => string; ocrDone: string; ocrFail: string; ocrStudy: string; ocrVisit: string; ocrDoc: string; ocrPremium: string; dxSuffix: string; medSuffix: string; ocrReceipt: string; ocrStatement: string; txSuffix: string
   viberWelcome: string
 }> = {
   ru: {
@@ -35,7 +36,7 @@ const MEDIA_TXT: Record<TgLang, {
     transcribeFail: 'Не удалось расшифровать голосовое.',
     emptyTranscript: 'Пустая расшифровка.',
     dlFileFail: 'Не смог скачать файл.',
-    savedSource: '📎 Сохранено в источники проекта.',
+    savedSource: (proj: string) => `📎 Файл сохранён в проект «${proj}». Спроси о нём в любой момент — прочитаю.`,
     imageToAgent: 'Посмотри это изображение.',
     noSpace: (u, l) => `💾 Место закончилось: ${u} из ${l} МБ. Купите пакет в Настройки → Тариф или удалите ненужные файлы — тогда пришлите ещё раз.`,
     newDialog: '🆕 Начат новый диалог. Контекст очищен.',
@@ -55,7 +56,7 @@ const MEDIA_TXT: Record<TgLang, {
     transcribeFail: 'Could not transcribe the voice message.',
     emptyTranscript: 'Empty transcript.',
     dlFileFail: 'Could not download the file.',
-    savedSource: '📎 Saved to the project sources.',
+    savedSource: (proj: string) => `📎 Saved to the project “${proj}”. Ask me about it any time — I will read it.`,
     imageToAgent: 'Take a look at this image.',
     noSpace: (u, l) => `💾 Out of space: ${u} of ${l} MB. Buy a pack in Settings → Plan or delete something, then send it again.`,
     newDialog: '🆕 New conversation started. Context cleared.',
@@ -75,7 +76,7 @@ const MEDIA_TXT: Record<TgLang, {
     transcribeFail: 'Не ўдалося распазнаць галасавое.',
     emptyTranscript: 'Пусты тэкст.',
     dlFileFail: 'Не змог спампаваць файл.',
-    savedSource: '📎 Захавана ў крыніцы праекта.',
+    savedSource: (proj: string) => `📎 Файл захаваны ў праект «${proj}». Спытай пра яго ў любы момант — прачытаю.`,
     imageToAgent: 'Паглядзі гэтую выяву.',
     noSpace: (u, l) => `💾 Месца скончылася: ${u} з ${l} МБ. Купіце пакет у Налады → Тарыф або выдаліце файлы і дашліце зноў.`,
     newDialog: '🆕 Пачаты новы дыялог. Кантэкст ачышчаны.',
@@ -575,6 +576,13 @@ async function ingestMedia(
   const M = MEDIA_TXT[lang]
   const ext = (file.filename.split('.').pop() || 'bin').toLowerCase()
 
+  // Тип определяем ЗДЕСЬ, в единственной точке приёма, а не в каждом канале.
+  // Telegram присылает документ то с mime_type, то без него; Viber не сообщает
+  // его никогда. Раньше в таких случаях писался application/octet-stream, и
+  // дальше файл считался двоичным: присланный в чат .html ассистент отказывался
+  // читать, хотя расширение стояло прямо в имени.
+  file = { ...file, mime: resolveMime(file.mime, file.filename) }
+
   // The messenger is a door into the same disk: without this a user could fill
   // the quota through the bot while the web upload politely refused him.
   //
@@ -699,7 +707,12 @@ async function ingestMedia(
     const agentText = `${ask}\n\n[Вложение доступно: attachmentId="${att.id}", файл "${name}", тип ${mime}. Если нужно ответить по содержимому вложения (распознать текст, перевести, посчитать суммы) — прочитай его через read_attachment с этим attachmentId.]`
     return { agentText }
   }
-  return { reply: M.savedSource }
+  // Называем проект: человеку это единственный способ узнать, куда файл делся,
+  // а агенту — прочитать это в истории, когда его позже спросят о файле.
+  const proj = projectId
+    ? (await prisma.project.findUnique({ where: { id: projectId }, select: { name: true } }))?.name
+    : undefined
+  return { reply: M.savedSource(proj ?? 'Входящие') }
 }
 
 // Telegram media capture: pulls the file out of the update shape, downloads it,

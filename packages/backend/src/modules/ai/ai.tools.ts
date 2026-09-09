@@ -42,7 +42,7 @@ export const TOOL_CATALOG: ToolMeta[] = [
   { name: 'add_budget_entry',       category: 'workspace', description: 'Добавить запись в бюджет',                                                     description_en: 'Add a budget entry' },
   { name: 'create_link',            category: 'workspace', description: 'Создать связь между объектами на графе',                                       description_en: 'Create a link between objects in the graph' },
   { name: 'create_links_batch',     category: 'workspace', description: 'Создать несколько связей между объектами за один вызов',                       description_en: 'Create multiple links between objects in one call' },
-  { name: 'list_sources',           category: 'workspace', description: 'Получить список файлов/источников проекта',                                    description_en: 'List project files/sources' },
+  { name: 'list_sources',           category: 'workspace', description: 'Список файлов: всего пространства или одного проекта',                        description_en: 'List files: whole workspace, or one project' },
   { name: 'fetch_and_save_source',  category: 'workspace', description: 'Скачать URL и сохранить как источник в проект (с опциональной автосвязью)',    description_en: 'Fetch a URL and save as a project source (with optional auto-linking)' },
   { name: 'save_sources_batch',     category: 'workspace', description: 'Скачать несколько URL параллельно и сохранить как источники + создать связи',  description_en: 'Fetch multiple URLs in parallel, save as sources and create links' },
   // ── Research (web search) ─────────────────────────────────────
@@ -609,11 +609,12 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
   },
   {
     name: 'list_sources',
-    description: 'Получить список источников (вложений) проекта',
+    description: 'Список файлов (вложений). Без projectId — по всему пространству, включая присланные в мессенджер; с projectId — только этого проекта. Если человек спрашивает про файл и ты не знаешь, где он, вызывай БЕЗ projectId.',
     input_schema: {
       type: 'object',
-      properties: { projectId: { type: 'string' } },
-      required: ['projectId'],
+      properties: {
+        projectId: { type: 'string', description: 'Необязательно. Опусти, чтобы искать во всём пространстве.' },
+      },
     },
   },
 
