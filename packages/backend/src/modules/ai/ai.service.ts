@@ -1683,7 +1683,8 @@ ${langInstruction}
 • Держись КОНКРЕТНОГО последнего запроса, не уходи в смежные темы.
 • Если пользователь ссылается на файл/фото/чек/скрин (или в диалоге есть attachmentId) — СНАЧАЛА прочитай его через read_attachment, потом отвечай. Никогда не говори «ты не прикрепил», не проверив вложения.
 • Не знаешь, где лежит файл — вызови list_sources БЕЗ projectId: он посмотрит всё пространство. Не говори «файлов нет», пока не проверил так.
-• Просят ИСПРАВИТЬ файл (поправить, перевести, сменить кодировку, дописать) — прочитай его, собери новое содержимое ЦЕЛИКОМ и сохрани через save_file: в мессенджере он придёт человеку сразу. НИКОГДА не отправляй его править вручную в блокноте и не проси переименовать файл — это твоя работа, а не его.
+• Просят ИСПРАВИТЬ файл (поправить, перевести, сменить кодировку, дописать) — сделай это сам. Меняешь ЧАСТЬ файла — edit_file: правка идёт на сервере, поэтому размер и обрезка при чтении не мешают. Файл собирается заново целиком (перевод, новый документ) — save_file. В мессенджере результат придёт человеку сразу.
+• НИКОГДА не отправляй человека править файл вручную в блокноте, не проси переименовать его и не отказывайся из-за того, что чтение обрезано: обрезка — повод взять edit_file, а не повод сдаться.
 • Коротко и по делу: без длинных вступлений и пересказа очевидного.
 Правила ниже про создание проектов/страниц/реестров применяются ТОЛЬКО когда пользователь реально просит что-то создать или сохранить.
 1. Сначала ДЕЙСТВИЕ (tool call), потом краткий комментарий пользователю.
@@ -1746,7 +1747,8 @@ WORKING RULES:
 • Hold to the user's SPECIFIC latest request; don't drift into adjacent topics.
 • If the user refers to a file/photo/receipt/screenshot (or an attachmentId is present in the conversation) — READ it via read_attachment FIRST, then answer. Never say "you didn't attach anything" without checking attachments.
 • If you do not know where a file is, call list_sources WITHOUT projectId — it searches the whole workspace. Never say "there are no files" before checking that way.
-• Asked to FIX a file (correct it, translate it, change its encoding, extend it) — read it, rebuild the WHOLE content and store it with save_file: in a messenger it reaches the person immediately. NEVER send them to edit it by hand in a text editor and never ask them to rename the file — that is your job, not theirs.
+• Asked to FIX a file (correct it, translate it, change its encoding, extend it) — do it yourself. Changing PART of a file — edit_file: the edit happens on the server, so size and read truncation do not matter. Rebuilding it whole (a translation, a new document) — save_file. In a messenger the result reaches the person immediately.
+• NEVER send someone to edit a file by hand in a text editor, never ask them to rename it, and never give up because the read was truncated: truncation is a reason to use edit_file, not a reason to quit.
 • Be concise and to the point: no long preambles or restating the obvious.
 The rules below about creating projects/pages/collections apply ONLY when the user actually asks to create or save something.
 1. ACTION first (tool call), then a brief comment to the user.
@@ -2977,6 +2979,112 @@ async function executeTool(
         return { ok: false, message: `Не удалось отправить «${filename}» в чат — скачайте его в приложении, кнопкой экспорта в проекте.` }
       }
       return { ok: true, message: `Экспорт «${filename}» готов. В приложении используй кнопку экспорта в проекте.` }
+    }
+
+    case 'edit_file': {
+      // Правка идёт НА СЕРВЕРЕ, содержимое через модель не проходит.
+      //
+      // Иначе получалось так: файл на 32 КБ, чтение обрезано на 20 000 знаках,
+      // агент видит обрезку, понимает, что целиком не соберёт, и отправляет
+      // человека править вручную. Чтобы вставить одну строку, незачем гонять
+      // весь файл туда и обратно — достаточно сказать, ЧТО на ЧТО заменить.
+      const attachmentId = String(input.attachmentId ?? '')
+      const edits = input.edits as { find?: string; replace?: string }[] | undefined
+      if (!attachmentId) return { error: 'Укажи attachmentId файла.' }
+      if (!Array.isArray(edits) || edits.length === 0) return { error: 'Нужен хотя бы один пункт правки: что найти и на что заменить.' }
+
+      const att = await prisma.attachment.findUnique({ where: { id: attachmentId } })
+      if (!att) return { error: 'Файл не найден.' }
+      const allowedWs = context?.lockWorkspaceId ?? context?.workspaceId
+      if (allowedWs && att.workspaceId !== allowedWs) return { error: 'Нет доступа к этому файлу.' }
+
+      let raw: Buffer
+      try {
+        const stream = await minio.getObject(BUCKET, att.storagePath)
+        const chunks: Buffer[] = []
+        for await (const c of stream) chunks.push(c as Buffer)
+        raw = Buffer.concat(chunks)
+      } catch (e) {
+        return { error: 'Не удалось прочитать файл из хранилища: ' + (e instanceof Error ? e.message : String(e)).slice(0, 150) }
+      }
+
+      if (!looksLikeText(raw)) {
+        return { error: `Это не текстовый файл (${att.mimeType}) — правка заменой строк к нему неприменима.` }
+      }
+
+      // Кодировка исходника. Русский текст в Windows-1251 из UTF-8 не
+      // декодируется — ловим это и читаем правильно, а пишем всегда UTF-8.
+      // Ради этого правку и просили: файл был нечитаем именно из-за кодировки.
+      let text: string
+      let sourceEncoding = 'utf-8'
+      try {
+        text = new TextDecoder('utf-8', { fatal: true }).decode(raw)
+      } catch {
+        try {
+          text = new TextDecoder('windows-1251').decode(raw)
+          sourceEncoding = 'windows-1251'
+        } catch {
+          return { error: 'Не удалось определить кодировку файла.' }
+        }
+      }
+
+      // Каждая замена должна попасть РОВНО один раз. Ноль — правка не та;
+      // несколько — агент не знает, какое из мест он меняет, и молча испортит
+      // остальные. И то и другое лучше вернуть ошибкой, чем сделать наугад.
+      for (let i = 0; i < edits.length; i++) {
+        const find = edits[i]?.find
+        const replace = edits[i]?.replace ?? ''
+        if (typeof find !== 'string' || find === '') return { error: `Пункт ${i + 1}: не указано, что искать.` }
+        const parts = text.split(find)
+        const hits = parts.length - 1
+        if (hits === 0) return { error: `Пункт ${i + 1}: фрагмент не найден в файле. Прочитай файл и возьми точную строку из него.` }
+        if (hits > 1) return { error: `Пункт ${i + 1}: фрагмент встречается ${hits} раз — уточни его, добавив соседний текст, иначе непонятно, какое место править.` }
+        text = parts.join(replace)
+      }
+
+      const outName = String(input.filename ?? att.filename)
+      const buffer = Buffer.from(text, 'utf-8')
+      const quota = await canUploadFile(prisma, att.workspaceId, buffer.byteLength)
+      if (!quota.ok) return { error: `Место закончилось: занято ${quota.usedMb} из ${quota.limitMb} МБ.` }
+
+      const ext = outName.split('.').pop()?.toLowerCase() || 'txt'
+      const key = `${att.workspaceId}/${randomUUID()}.${ext}`
+      try {
+        await uploadFile(key, buffer, att.mimeType, buffer.byteLength)
+      } catch (e) {
+        return { error: 'Не удалось записать файл: ' + (e instanceof Error ? e.message : String(e)).slice(0, 150) }
+      }
+
+      // Исходник не трогаем. Человек просил исправленную версию, а не потерю
+      // оригинала; если правка окажется неверной, откатываться будет к чему.
+      const saved = await prisma.attachment.create({
+        data: {
+          workspaceId: att.workspaceId,
+          projectId: att.projectId,
+          filename: outName,
+          description: (input.description as string | undefined) ?? `Исправлено из «${att.filename}»`,
+          mimeType: att.mimeType,
+          size: buffer.byteLength,
+          storagePath: key,
+          isImportant: false,
+          metadata: { source: 'agent-edit', from: att.id },
+        },
+      })
+
+      const note = sourceEncoding === 'utf-8' ? '' : ` Исходник был в ${sourceEncoding}, сохранил в UTF-8.`
+      if (context?.sendFile) {
+        const sent = await context.sendFile({ buffer, filename: outName, mime: att.mimeType }, `📎 ${outName}`)
+        return {
+          ok: true, attachmentId: saved.id, filename: outName, sourceEncoding, edits: edits.length, sent,
+          message: sent
+            ? `Готово: ${edits.length} правк(и) внесены, файл «${outName}» отправлен в чат.${note}`
+            : `Правки внесены, файл сохранён, но отправить в чат не удалось — откройте его в приложении.${note}`,
+        }
+      }
+      return {
+        ok: true, attachmentId: saved.id, filename: outName, sourceEncoding, edits: edits.length, sent: false,
+        message: `Готово: ${edits.length} правк(и) внесены, файл «${outName}» сохранён.${note}`,
+      }
     }
 
     case 'save_file': {

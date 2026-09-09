@@ -29,6 +29,7 @@ export const TOOL_CATALOG: ToolMeta[] = [
   { name: 'create_event',           category: 'workspace', description: 'Создать событие календаря с напоминанием (день рождения, встреча, дедлайн)',     description_en: 'Create a calendar event with a reminder (birthday, meeting, deadline)' },
   { name: 'list_events',            category: 'workspace', description: 'Найти события календаря (ДР/встречи) по имени или диапазону — перед «такого нет» вызови это', description_en: 'Find calendar events (birthdays/meetings) by name or date range — call before saying "no such event"' },
   { name: 'export_project',         category: 'workspace', description: 'Экспортировать проект в PDF или DOCX (в Telegram файл придёт прямо в чат)',     description_en: 'Export a project to PDF or DOCX (in Telegram the file is sent to the chat)' },
+  { name: 'edit_file',              category: 'workspace', description: 'Исправить сохранённый файл заменой фрагментов, не пересобирая целиком',        description_en: 'Fix a stored file by replacing fragments, without rebuilding it whole' },
   { name: 'save_file',              category: 'workspace', description: 'Создать текстовый файл и отдать его человеку (в мессенджере — сразу в чат)',   description_en: 'Create a text file and hand it to the user (sent straight to the chat in a messenger)' },
   { name: 'send_attachment',        category: 'workspace', description: 'Отправить в чат уже загруженный файл из воркспейса (до 50 МБ)',            description_en: 'Send an already uploaded workspace file to the chat (up to 50 MB)' },
   { name: 'export_page',            category: 'workspace', description: 'Экспортировать одну страницу в PDF или DOCX; в мессенджере файл придёт в чат',  description_en: 'Export a single page to PDF or DOCX; in a messenger the file is sent to the chat' },
@@ -369,6 +370,31 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
         format: { type: 'string', enum: ['pdf', 'docx'], description: 'Формат файла. По умолчанию pdf.' },
       },
       required: ['projectId'],
+    },
+  },
+  {
+    name: 'edit_file',
+    description: 'Точечно исправить УЖЕ СОХРАНЁННЫЙ текстовый файл: заменить фрагменты, не пересобирая его целиком. Правка идёт на сервере, поэтому размер файла и обрезка при чтении значения не имеют. Выбирай это, а не save_file, когда надо изменить часть большого файла. Каждый искомый фрагмент должен встречаться в файле ровно один раз — если встречается чаще, добавь соседний текст. Кодировка исходника определяется сама, результат всегда в UTF-8.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        attachmentId: { type: 'string', description: 'ID исправляемого файла' },
+        edits: {
+          type: 'array',
+          description: 'Список правок по порядку',
+          items: {
+            type: 'object',
+            properties: {
+              find: { type: 'string', description: 'Точный фрагмент из файла' },
+              replace: { type: 'string', description: 'Чем заменить. Пустая строка — удалить фрагмент.' },
+            },
+            required: ['find', 'replace'],
+          },
+        },
+        filename: { type: 'string', description: 'Имя результата. По умолчанию — как у исходника.' },
+        description: { type: 'string' },
+      },
+      required: ['attachmentId', 'edits'],
     },
   },
   {
@@ -902,7 +928,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       type: 'object',
       properties: {
         attachmentId: { type: 'string', description: 'ID вложения (из list_sources или fetch_and_save_source)' },
-        maxLength:    { type: 'number', description: 'Максимальная длина извлечённого текста (по умолчанию 20000)' },
+        maxLength:    { type: 'number', description: 'Максимальная длина извлечённого текста (по умолчанию 20000). Если в ответе truncated=true, а тебе нужен файл целиком — либо перечитай с бо́льшим значением, либо, если файл надо ИСПРАВИТЬ, не собирай его заново, а используй edit_file.' },
         sheetName:    { type: 'string', description: 'Для XLSX: название листа' },
         prompt:       { type: 'string', description: 'Только для изображений и сканов PDF: что именно распознать/посчитать (напр. «перечисли позиции с ценами и посчитай сумму»). По умолчанию — весь текст + позиции и итог.' },
       },
