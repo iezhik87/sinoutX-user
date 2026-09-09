@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client'
 import { randomUUID, createHash } from 'crypto'
 import { config } from '../../config/index.js'
 import { uploadFile, getPublicUrl, minio, BUCKET } from '../../lib/storage.js'
+import { canUploadFile } from '../../lib/plans.js'
 import { meili, INDEX_PAGES, INDEX_TASKS, INDEX_NOTES, extractText } from '../../lib/meilisearch.js'
 import { TOOL_DEFINITIONS, toOpenAITools } from './ai.tools.js'
 import { getCustomTools, saveCustomTools, toAnthropicTool, executeCustomTool, parseAssembled, type CustomTool } from './ai.customtools.js'
@@ -1681,6 +1682,8 @@ ${langInstruction}
 • Не «доделывай» по своей инициативе (не добавляй разделы, советы, расчёты сверх запроса). Видишь, что можно больше — сперва коротко предложи, не делай молча.
 • Держись КОНКРЕТНОГО последнего запроса, не уходи в смежные темы.
 • Если пользователь ссылается на файл/фото/чек/скрин (или в диалоге есть attachmentId) — СНАЧАЛА прочитай его через read_attachment, потом отвечай. Никогда не говори «ты не прикрепил», не проверив вложения.
+• Не знаешь, где лежит файл — вызови list_sources БЕЗ projectId: он посмотрит всё пространство. Не говори «файлов нет», пока не проверил так.
+• Просят ИСПРАВИТЬ файл (поправить, перевести, сменить кодировку, дописать) — прочитай его, собери новое содержимое ЦЕЛИКОМ и сохрани через save_file: в мессенджере он придёт человеку сразу. НИКОГДА не отправляй его править вручную в блокноте и не проси переименовать файл — это твоя работа, а не его.
 • Коротко и по делу: без длинных вступлений и пересказа очевидного.
 Правила ниже про создание проектов/страниц/реестров применяются ТОЛЬКО когда пользователь реально просит что-то создать или сохранить.
 1. Сначала ДЕЙСТВИЕ (tool call), потом краткий комментарий пользователю.
@@ -1742,6 +1745,8 @@ WORKING RULES:
 • Do not "finish the job" on your own (no extra sections, advice, or calculations beyond the request). If more could be done, briefly offer it first — don't do it silently.
 • Hold to the user's SPECIFIC latest request; don't drift into adjacent topics.
 • If the user refers to a file/photo/receipt/screenshot (or an attachmentId is present in the conversation) — READ it via read_attachment FIRST, then answer. Never say "you didn't attach anything" without checking attachments.
+• If you do not know where a file is, call list_sources WITHOUT projectId — it searches the whole workspace. Never say "there are no files" before checking that way.
+• Asked to FIX a file (correct it, translate it, change its encoding, extend it) — read it, rebuild the WHOLE content and store it with save_file: in a messenger it reaches the person immediately. NEVER send them to edit it by hand in a text editor and never ask them to rename the file — that is your job, not theirs.
 • Be concise and to the point: no long preambles or restating the obvious.
 The rules below about creating projects/pages/collections apply ONLY when the user actually asks to create or save something.
 1. ACTION first (tool call), then a brief comment to the user.
@@ -2972,6 +2977,72 @@ async function executeTool(
         return { ok: false, message: `Не удалось отправить «${filename}» в чат — скачайте его в приложении, кнопкой экспорта в проекте.` }
       }
       return { ok: true, message: `Экспорт «${filename}» готов. В приложении используй кнопку экспорта в проекте.` }
+    }
+
+    case 'save_file': {
+      // Агент умел ЧИТАТЬ файлы и не умел отдавать исправленные. На просьбу
+      // «поправь кодировку в этом html» он читал файл, находил причину — и
+      // отправлял человека править вручную в Блокноте, потому что записать
+      // результат было нечем. Внешние агенты через MCP могли (sinout_upload_file),
+      // встроенный — нет.
+      const rawName = String(input.filename ?? '').trim()
+      const content = String(input.content ?? '')
+      if (!rawName) return { error: 'Укажи имя файла.' }
+      if (!content) return { error: 'Пустое содержимое — нечего сохранять.' }
+
+      const workspaceId = (context?.lockWorkspaceId ?? context?.workspaceId) as string | undefined
+      if (!workspaceId) return { error: 'Не удалось определить пространство.' }
+
+      // Имя приходит от модели, а уходит в путь и в заголовок ответа. Режем
+      // разделители пути и управляющие символы, а не «всё непонятное»: кириллица
+      // в имени файла — норма.
+      const filename = rawName.replace(/[^0-9A-Za-zА-Яа-яЁё._ ()-]+/gu, '_').slice(0, 120)
+      const buffer = Buffer.from(content, 'utf-8')
+
+      const MAX = 5 * 1024 * 1024
+      if (buffer.byteLength > MAX) {
+        return { error: `Файл слишком велик: ${Math.round(buffer.byteLength / 1024)} КБ. Предел для создаваемых файлов — 5 МБ.` }
+      }
+      const quota = await canUploadFile(prisma, workspaceId, buffer.byteLength)
+      if (!quota.ok) {
+        return { error: `Место закончилось: занято ${quota.usedMb} из ${quota.limitMb} МБ. Освободите место или купите пакет.` }
+      }
+
+      const { mimeFromFilename } = await import('../../lib/mime.js')
+      const mime = mimeFromFilename(filename) ?? 'text/plain'
+      const ext = filename.split('.').pop()?.toLowerCase() || 'txt'
+      const key = `${workspaceId}/${randomUUID()}.${ext}`
+
+      try {
+        await uploadFile(key, buffer, mime, buffer.byteLength)
+      } catch (e) {
+        return { error: 'Не удалось записать файл в хранилище: ' + (e instanceof Error ? e.message : String(e)).slice(0, 150) }
+      }
+
+      const projectId = (input.projectId as string | undefined) ?? context?.projectId ?? null
+      const att = await prisma.attachment.create({
+        data: {
+          workspaceId,
+          projectId,
+          filename,
+          description: (input.description as string | undefined) ?? null,
+          mimeType: mime,
+          size: buffer.byteLength,
+          storagePath: key,
+          isImportant: false,
+          metadata: { source: 'agent' },
+        },
+      })
+
+      // В мессенджере файл отдаём сразу: человек просил результат, а не запись
+      // в хранилище, до которой ещё надо дойти через приложение.
+      if (context?.sendFile) {
+        const sent = await context.sendFile({ buffer, filename, mime }, `📎 ${filename}`)
+        return sent
+          ? { ok: true, attachmentId: att.id, filename, sent: true, message: `Файл «${filename}» отправлен в чат и сохранён.` }
+          : { ok: true, attachmentId: att.id, filename, sent: false, message: `Файл «${filename}» сохранён, но отправить в чат не удалось — откройте его в приложении.` }
+      }
+      return { ok: true, attachmentId: att.id, filename, sent: false, message: `Файл «${filename}» сохранён в файлы.` }
     }
 
     case 'send_attachment': {

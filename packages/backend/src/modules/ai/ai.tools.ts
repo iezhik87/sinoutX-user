@@ -29,6 +29,7 @@ export const TOOL_CATALOG: ToolMeta[] = [
   { name: 'create_event',           category: 'workspace', description: 'Создать событие календаря с напоминанием (день рождения, встреча, дедлайн)',     description_en: 'Create a calendar event with a reminder (birthday, meeting, deadline)' },
   { name: 'list_events',            category: 'workspace', description: 'Найти события календаря (ДР/встречи) по имени или диапазону — перед «такого нет» вызови это', description_en: 'Find calendar events (birthdays/meetings) by name or date range — call before saying "no such event"' },
   { name: 'export_project',         category: 'workspace', description: 'Экспортировать проект в PDF или DOCX (в Telegram файл придёт прямо в чат)',     description_en: 'Export a project to PDF or DOCX (in Telegram the file is sent to the chat)' },
+  { name: 'save_file',              category: 'workspace', description: 'Создать текстовый файл и отдать его человеку (в мессенджере — сразу в чат)',   description_en: 'Create a text file and hand it to the user (sent straight to the chat in a messenger)' },
   { name: 'send_attachment',        category: 'workspace', description: 'Отправить в чат уже загруженный файл из воркспейса (до 50 МБ)',            description_en: 'Send an already uploaded workspace file to the chat (up to 50 MB)' },
   { name: 'export_page',            category: 'workspace', description: 'Экспортировать одну страницу в PDF или DOCX; в мессенджере файл придёт в чат',  description_en: 'Export a single page to PDF or DOCX; in a messenger the file is sent to the chat' },
   { name: 'export_records',         category: 'workspace', description: 'Выгрузить записи реестра в Excel (.xlsx); в мессенджере файл придёт в чат',   description_en: 'Export registry records to Excel (.xlsx); in a messenger the file is sent to the chat' },
@@ -368,6 +369,20 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
         format: { type: 'string', enum: ['pdf', 'docx'], description: 'Формат файла. По умолчанию pdf.' },
       },
       required: ['projectId'],
+    },
+  },
+  {
+    name: 'save_file',
+    description: 'Создать текстовый файл (html, txt, md, json, csv, код) и отдать его человеку. В мессенджере файл сразу приходит в чат. Используй, когда просят ИСПРАВИТЬ или ПЕРЕСОБРАТЬ файл: прочитай исходный через read_attachment, собери новое содержимое целиком и сохрани сюда. Не отправляй человека править вручную.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        filename: { type: 'string', description: 'Имя файла с расширением, например page.html' },
+        content: { type: 'string', description: 'Полное содержимое файла' },
+        description: { type: 'string', description: 'Короткое пояснение, что это за файл' },
+        projectId: { type: 'string', description: 'Проект. По умолчанию — текущий.' },
+      },
+      required: ['filename', 'content'],
     },
   },
   {
