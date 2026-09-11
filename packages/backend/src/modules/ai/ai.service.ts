@@ -602,6 +602,24 @@ async function extractFileText(
  * встречается, а осмысленный текст декодируется из UTF-8 без ошибок. Смотрим
  * начало файла — этого хватает, чтобы отличить исходник от архива или картинки.
  */
+/**
+ * Сколько ответа инструмента увидит модель.
+ *
+ * Общий потолок 8000 знаков стоит против мегабайтов из web_search. Но он же
+ * молча резал чтение файла: read_attachment с maxLength 60000 всё равно отдавал
+ * модели 8000, агент видел обрезку, пробовал снова с бо́льшим лимитом, получал
+ * те же 8000 — и сдавался, отправляя человека в Блокнот. Для чтения файла
+ * потолок — это его собственный maxLength, а не общий.
+ */
+const READ_MAX = 60000
+// С запасом: в JSON каждый перевод строки и кавычка удваиваются, а в HTML их много.
+const TOOL_RESULT_CAP: Record<string, number> = { read_attachment: Math.round(READ_MAX * 1.4) }
+
+function capToolResult(tool: string, s: string): string {
+  const limit = TOOL_RESULT_CAP[tool] ?? 8000
+  return s.length > limit ? s.slice(0, limit) + '…[truncated]' : s
+}
+
 function looksLikeText(buffer: Buffer): boolean {
   const head = buffer.subarray(0, 4096)
   if (head.includes(0)) return false
@@ -1684,7 +1702,10 @@ ${langInstruction}
 • Если пользователь ссылается на файл/фото/чек/скрин (или в диалоге есть attachmentId) — СНАЧАЛА прочитай его через read_attachment, потом отвечай. Никогда не говори «ты не прикрепил», не проверив вложения.
 • Не знаешь, где лежит файл — вызови list_sources БЕЗ projectId: он посмотрит всё пространство. Не говори «файлов нет», пока не проверил так.
 • Просят ИСПРАВИТЬ файл (поправить, перевести, сменить кодировку, дописать) — сделай это сам. Меняешь ЧАСТЬ файла — edit_file: правка идёт на сервере, поэтому размер и обрезка при чтении не мешают. Файл собирается заново целиком (перевод, новый документ) — save_file. В мессенджере результат придёт человеку сразу.
-• НИКОГДА не отправляй человека править файл вручную в блокноте, не проси переименовать его и не отказывайся из-за того, что чтение обрезано: обрезка — повод взять edit_file, а не повод сдаться.
+• НИКОГДА не отправляй человека править файл вручную в блокноте, не проси переименовать его или вставить текст в чат и не отказывайся из-за того, что чтение обрезано: обрезка — повод взять edit_file, а не повод сдаться.
+• Правка по всему файлу («убери лишние пробелы, пустые строки, полоски», «замени везде») — edit_file с all: true, при нужде regex: true. Файл при этом читать целиком не нужно.
+• .docx и .pdf правкой строк не меняются: прочитай текст через read_attachment, приведи его в нужный вид и сохрани через save_file. Присланное вордом отдавай вордом — имя с .docx.
+• КАКОЙ файл: тот, что пришёл в ЭТОМ сообщении, или помеченный как «последний присланный». Не бери файл из прошлой переписки только потому, что о нём недавно говорили. Файла в сообщении нет и неясно, о каком речь, — коротко спроси.
 • Коротко и по делу: без длинных вступлений и пересказа очевидного.
 Правила ниже про создание проектов/страниц/реестров применяются ТОЛЬКО когда пользователь реально просит что-то создать или сохранить.
 1. Сначала ДЕЙСТВИЕ (tool call), потом краткий комментарий пользователю.
@@ -1748,7 +1769,10 @@ WORKING RULES:
 • If the user refers to a file/photo/receipt/screenshot (or an attachmentId is present in the conversation) — READ it via read_attachment FIRST, then answer. Never say "you didn't attach anything" without checking attachments.
 • If you do not know where a file is, call list_sources WITHOUT projectId — it searches the whole workspace. Never say "there are no files" before checking that way.
 • Asked to FIX a file (correct it, translate it, change its encoding, extend it) — do it yourself. Changing PART of a file — edit_file: the edit happens on the server, so size and read truncation do not matter. Rebuilding it whole (a translation, a new document) — save_file. In a messenger the result reaches the person immediately.
-• NEVER send someone to edit a file by hand in a text editor, never ask them to rename it, and never give up because the read was truncated: truncation is a reason to use edit_file, not a reason to quit.
+• NEVER send someone to edit a file by hand in a text editor, never ask them to rename it or paste its text into the chat, and never give up because the read was truncated: truncation is a reason to use edit_file, not a reason to quit.
+• A change across the whole file ("remove extra spaces, blank lines, rules", "replace everywhere") — edit_file with all: true, and regex: true if needed. No need to read the file whole for that.
+• .docx and .pdf cannot be edited line by line: read the text via read_attachment, shape it as asked and save it via save_file. What came as Word goes back as Word — a name ending in .docx.
+• WHICH file: the one that came with THIS message, or the one marked as "last received". Do not pick a file from earlier conversation just because it was discussed recently. No file in the message and unclear which one is meant — ask briefly.
 • Be concise and to the point: no long preambles or restating the obvious.
 The rules below about creating projects/pages/collections apply ONLY when the user actually asks to create or save something.
 1. ACTION first (tool call), then a brief comment to the user.
@@ -2989,7 +3013,7 @@ async function executeTool(
       // человека править вручную. Чтобы вставить одну строку, незачем гонять
       // весь файл туда и обратно — достаточно сказать, ЧТО на ЧТО заменить.
       const attachmentId = String(input.attachmentId ?? '')
-      const edits = input.edits as { find?: string; replace?: string }[] | undefined
+      const edits = input.edits as { find?: string; replace?: string; all?: boolean; regex?: boolean }[] | undefined
       if (!attachmentId) return { error: 'Укажи attachmentId файла.' }
       if (!Array.isArray(edits) || edits.length === 0) return { error: 'Нужен хотя бы один пункт правки: что найти и на что заменить.' }
 
@@ -3009,7 +3033,7 @@ async function executeTool(
       }
 
       if (!looksLikeText(raw)) {
-        return { error: `Это не текстовый файл (${att.mimeType}) — правка заменой строк к нему неприменима.` }
+        return { error: `Это не текстовый файл (${att.mimeType}) — правка заменой строк к нему неприменима. Для .docx/.pdf: прочитай текст через read_attachment, приведи его в нужный вид и сохрани через save_file (имя с .docx даст документ Word).` }
       }
 
       // Кодировка исходника. Русский текст в Windows-1251 из UTF-8 не
@@ -3028,19 +3052,40 @@ async function executeTool(
         }
       }
 
-      // Каждая замена должна попасть РОВНО один раз. Ноль — правка не та;
+      // По умолчанию замена должна попасть РОВНО один раз. Ноль — правка не та;
       // несколько — агент не знает, какое из мест он меняет, и молча испортит
       // остальные. И то и другое лучше вернуть ошибкой, чем сделать наугад.
+      //
+      // all — осознанная замена ВСЕХ вхождений, regex — шаблон. Вместе они
+      // закрывают правки по всему файлу («убери лишние пробелы и пустые строки»),
+      // которые иначе требовали бы прочитать файл целиком — а большой файл
+      // целиком модели не виден.
+      const counts: number[] = []
       for (let i = 0; i < edits.length; i++) {
         const find = edits[i]?.find
         const replace = edits[i]?.replace ?? ''
+        const all = edits[i]?.all === true
         if (typeof find !== 'string' || find === '') return { error: `Пункт ${i + 1}: не указано, что искать.` }
+        if (edits[i]?.regex === true) {
+          let re: RegExp
+          try { re = new RegExp(find, 'gu') } catch (e) {
+            return { error: `Пункт ${i + 1}: неверное регулярное выражение — ${(e instanceof Error ? e.message : String(e)).slice(0, 120)}` }
+          }
+          const hits = text.match(re)?.length ?? 0
+          if (hits === 0) return { error: `Пункт ${i + 1}: шаблон ничего не нашёл в файле.` }
+          if (hits > 1 && !all) return { error: `Пункт ${i + 1}: шаблон находит ${hits} мест. Если менять надо все — поставь all: true.` }
+          text = text.replace(re, replace)
+          counts.push(hits)
+          continue
+        }
         const parts = text.split(find)
         const hits = parts.length - 1
         if (hits === 0) return { error: `Пункт ${i + 1}: фрагмент не найден в файле. Прочитай файл и возьми точную строку из него.` }
-        if (hits > 1) return { error: `Пункт ${i + 1}: фрагмент встречается ${hits} раз — уточни его, добавив соседний текст, иначе непонятно, какое место править.` }
+        if (hits > 1 && !all) return { error: `Пункт ${i + 1}: фрагмент встречается ${hits} раз — уточни его, добавив соседний текст, или поставь all: true, если менять надо все.` }
         text = parts.join(replace)
+        counts.push(hits)
       }
+      const replaced = counts.reduce((a, b) => a + b, 0)
 
       const outName = String(input.filename ?? att.filename)
       const buffer = Buffer.from(text, 'utf-8')
@@ -3071,19 +3116,20 @@ async function executeTool(
         },
       })
 
-      const note = sourceEncoding === 'utf-8' ? '' : ` Исходник был в ${sourceEncoding}, сохранил в UTF-8.`
+      const note = (sourceEncoding === 'utf-8' ? '' : ` Исходник был в ${sourceEncoding}, сохранил в UTF-8.`)
+        + ` Размер: ${Math.round(raw.byteLength / 1024)} → ${Math.round(buffer.byteLength / 1024)} КБ.`
       if (context?.sendFile) {
         const sent = await context.sendFile({ buffer, filename: outName, mime: att.mimeType }, `📎 ${outName}`)
         return {
-          ok: true, attachmentId: saved.id, filename: outName, sourceEncoding, edits: edits.length, sent,
+          ok: true, attachmentId: saved.id, filename: outName, sourceEncoding, edits: edits.length, replaced, sent,
           message: sent
-            ? `Готово: ${edits.length} правк(и) внесены, файл «${outName}» отправлен в чат.${note}`
+            ? `Готово: замен ${replaced}, файл «${outName}» отправлен в чат.${note}`
             : `Правки внесены, файл сохранён, но отправить в чат не удалось — откройте его в приложении.${note}`,
         }
       }
       return {
-        ok: true, attachmentId: saved.id, filename: outName, sourceEncoding, edits: edits.length, sent: false,
-        message: `Готово: ${edits.length} правк(и) внесены, файл «${outName}» сохранён.${note}`,
+        ok: true, attachmentId: saved.id, filename: outName, sourceEncoding, edits: edits.length, replaced, sent: false,
+        message: `Готово: замен ${replaced}, файл «${outName}» сохранён.${note}`,
       }
     }
 
@@ -3105,7 +3151,12 @@ async function executeTool(
       // разделители пути и управляющие символы, а не «всё непонятное»: кириллица
       // в имени файла — норма.
       const filename = rawName.replace(/[^0-9A-Za-zА-Яа-яЁё._ ()-]+/gu, '_').slice(0, 120)
-      const buffer = Buffer.from(content, 'utf-8')
+      // .docx собираем настоящим документом Word, а не текстом с чужим
+      // расширением: присланный вордом файл человек ждёт обратно вордом.
+      const isDocx = filename.toLowerCase().endsWith('.docx')
+      const buffer = isDocx
+        ? await (await import('../export/docx-export.js')).textToDocxBuffer(content)
+        : Buffer.from(content, 'utf-8')
 
       const MAX = 5 * 1024 * 1024
       if (buffer.byteLength > MAX) {
@@ -4412,7 +4463,7 @@ async function executeTool(
 
     case 'read_attachment': {
       const attachmentId = input.attachmentId as string
-      const maxLen       = (input.maxLength as number) ?? 20000
+      const maxLen       = Math.min((input.maxLength as number) ?? 20000, READ_MAX)
       const sheetName    = input.sheetName as string | undefined
       try {
         const attachment = await prisma.attachment.findUnique({ where: { id: attachmentId } })
@@ -6343,8 +6394,7 @@ async function* streamAnthropic(
               if (tid) yield `data: ${JSON.stringify({ type: 'entity', kind: 'task', id: tid, title: r.title })}\n\n`
             }
             // Truncate large tool results to prevent context overflow (web_search can return MBs)
-            const resultStr = JSON.stringify(result)
-            const truncated = resultStr.length > 8000 ? resultStr.slice(0, 8000) + '…[truncated]' : resultStr
+            const truncated = capToolResult(tu.name, JSON.stringify(result))
             toolResults.push({ type: 'tool_result', tool_use_id: tu.id, content: truncated })
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err)
@@ -6396,8 +6446,7 @@ async function* streamAnthropic(
               try {
                 const result = await executeTool(tu.name, tu.input as Record<string, unknown>, prisma, context)
                 yield `data: ${JSON.stringify({ type: 'tool_done', tool: tu.name })}\n\n`
-                const resultStr = JSON.stringify(result)
-                const truncated = resultStr.length > 8000 ? resultStr.slice(0, 8000) + '…[truncated]' : resultStr
+                const truncated = capToolResult(tu.name, JSON.stringify(result))
                 toolResults.push({ type: 'tool_result', tool_use_id: tu.id, content: truncated })
               } catch (toolErr) {
                 const toolMsg = toolErr instanceof Error ? toolErr.message : String(toolErr)
@@ -6501,8 +6550,7 @@ async function* streamOpenAI(
             const result = outcome ? outcome.r : await executeTool(tc.name, tc.input, prisma, context)
             yield `data: ${JSON.stringify({ type: 'tool_done', tool: tc.name })}\n\n`
             // Truncate large tool results to prevent context overflow
-            const resultStr = JSON.stringify(result)
-            const truncated = resultStr.length > 8000 ? resultStr.slice(0, 8000) + '…[truncated]' : resultStr
+            const truncated = capToolResult(tc.name, JSON.stringify(result))
             oaiMessages.push({ role: 'tool', tool_call_id: tc.id, content: truncated })
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err)
@@ -6563,8 +6611,7 @@ async function* streamOpenAI(
                 try {
                   const result = await executeTool(tc.name, tc.input, prisma, context)
                   yield `data: ${JSON.stringify({ type: 'tool_done', tool: tc.name })}\n\n`
-                  const rs = JSON.stringify(result)
-                  oaiMessages.push({ role: 'tool', tool_call_id: tc.id, content: rs.length > 8000 ? rs.slice(0, 8000) + '…[truncated]' : rs })
+                  oaiMessages.push({ role: 'tool', tool_call_id: tc.id, content: capToolResult(tc.name, JSON.stringify(result)) })
                 } catch (te) {
                   const tm = te instanceof Error ? te.message : String(te)
                   yield `data: ${JSON.stringify({ type: 'tool_error', tool: tc.name, error: tm })}\n\n`

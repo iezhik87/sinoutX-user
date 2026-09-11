@@ -236,6 +236,24 @@ async function processListItem(
 
 // ─── Public API ──────────────────────────────────────────
 
+/**
+ * Plain text → Word document, for files the agent hands back (save_file).
+ *
+ * One line becomes one paragraph; a line starting with `#`/`##`/`###` becomes a
+ * heading. Deliberately nothing more: the agent writes text, and inventing
+ * formatting it did not ask for would be worse than none. Paragraph spacing is
+ * zero so a compacted text stays compact on the page.
+ */
+export async function textToDocxBuffer(text: string): Promise<Buffer> {
+  const paragraphs = text.replace(/\r\n?/g, '\n').split('\n').map((line) => {
+    const h = line.match(/^(#{1,3})\s+(.*)$/)
+    if (h) return new Paragraph({ heading: HEADING_LEVELS[h[1].length - 1], children: [new TextRun(h[2])] })
+    return new Paragraph({ children: [new TextRun(line)], spacing: { before: 0, after: 0 } })
+  })
+  const doc = new Document({ sections: [{ properties: {}, children: paragraphs }] })
+  return Packer.toBuffer(doc)
+}
+
 export async function tipTapToDocxBuffer(
   title: string,
   content: Record<string, unknown>,

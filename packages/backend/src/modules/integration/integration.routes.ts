@@ -27,7 +27,7 @@ type TgLang = 'ru' | 'en' | 'be'
 // Localized bot replies for media capture and the /new command.
 const MEDIA_TXT: Record<TgLang, {
   dlVoiceFail: string; noWhisper: string; transcribeFail: string; emptyTranscript: string
-  dlFileFail: string; savedSource: (proj: string) => string; imageToAgent: string; newDialog: string; noSpace: (used: number, limit: number) => string; ocrDone: string; ocrFail: string; ocrStudy: string; ocrVisit: string; ocrDoc: string; ocrPremium: string; dxSuffix: string; medSuffix: string; ocrReceipt: string; ocrStatement: string; txSuffix: string
+  dlFileFail: string; savedSource: (name: string, proj: string) => string; imageToAgent: string; newDialog: string; noSpace: (used: number, limit: number) => string; ocrDone: string; ocrFail: string; ocrStudy: string; ocrVisit: string; ocrDoc: string; ocrPremium: string; dxSuffix: string; medSuffix: string; ocrReceipt: string; ocrStatement: string; txSuffix: string
   viberWelcome: string
 }> = {
   ru: {
@@ -36,7 +36,7 @@ const MEDIA_TXT: Record<TgLang, {
     transcribeFail: 'Не удалось расшифровать голосовое.',
     emptyTranscript: 'Пустая расшифровка.',
     dlFileFail: 'Не смог скачать файл.',
-    savedSource: (proj: string) => `📎 Файл сохранён в проект «${proj}». Спроси о нём в любой момент — прочитаю.`,
+    savedSource: (name: string, proj: string) => `📎 «${name}» сохранён в проект «${proj}». Скажи, что с ним сделать, — или спроси о нём позже.`,
     imageToAgent: 'Посмотри это изображение.',
     noSpace: (u, l) => `💾 Место закончилось: ${u} из ${l} МБ. Купите пакет в Настройки → Тариф или удалите ненужные файлы — тогда пришлите ещё раз.`,
     newDialog: '🆕 Начат новый диалог. Контекст очищен.',
@@ -56,7 +56,7 @@ const MEDIA_TXT: Record<TgLang, {
     transcribeFail: 'Could not transcribe the voice message.',
     emptyTranscript: 'Empty transcript.',
     dlFileFail: 'Could not download the file.',
-    savedSource: (proj: string) => `📎 Saved to the project “${proj}”. Ask me about it any time — I will read it.`,
+    savedSource: (name: string, proj: string) => `📎 “${name}” saved to the project “${proj}”. Tell me what to do with it — or ask about it later.`,
     imageToAgent: 'Take a look at this image.',
     noSpace: (u, l) => `💾 Out of space: ${u} of ${l} MB. Buy a pack in Settings → Plan or delete something, then send it again.`,
     newDialog: '🆕 New conversation started. Context cleared.',
@@ -76,7 +76,7 @@ const MEDIA_TXT: Record<TgLang, {
     transcribeFail: 'Не ўдалося распазнаць галасавое.',
     emptyTranscript: 'Пусты тэкст.',
     dlFileFail: 'Не змог спампаваць файл.',
-    savedSource: (proj: string) => `📎 Файл захаваны ў праект «${proj}». Спытай пра яго ў любы момант — прачытаю.`,
+    savedSource: (name: string, proj: string) => `📎 «${name}» захаваны ў праект «${proj}». Скажы, што з ім зрабіць, — або спытай пра яго пазней.`,
     imageToAgent: 'Паглядзі гэтую выяву.',
     noSpace: (u, l) => `💾 Месца скончылася: ${u} з ${l} МБ. Купіце пакет у Налады → Тарыф або выдаліце файлы і дашліце зноў.`,
     newDialog: '🆕 Пачаты новы дыялог. Кантэкст ачышчаны.',
@@ -191,6 +191,92 @@ const commandPrompt = (text: string) => CMD[text.split(/[\s@]/)[0].toLowerCase()
  *  `/new` must clear exactly what the agent writes. */
 export const agentHistKey = (channel: string, workspaceId: string, chatKey: string) =>
   `${channel}:agent:${workspaceId}:${chatKey}`
+
+// ─── Текст и файл, присланные двумя сообщениями ──────────────────────────────
+//
+// «Поделиться → Telegram» с комментарием шлёт СНАЧАЛА текст, потом файл — двумя
+// сообщениями, с разницей во время загрузки. Текст уходил агенту сразу, файла
+// ещё не было, и агент подставлял тот, о котором говорили раньше: человек
+// прислал партитуру в .docx, а ему начали «сжимать» вчерашний html. Сам файл
+// потом молча ложился во «Входящие», и просьба к нему так и не доходила.
+//
+// Поэтому текст ждёт PAIR_HOLD_MS. Пришёл файл — это одна просьба: файл забирает
+// текст себе как подпись, и агент видит их вместе. Не пришёл — текст уходит
+// агенту, но ещё PAIR_LATE_S помнится: опоздавший (долго грузившийся) файл
+// запустит агента с пометкой «к сообщению выше».
+//
+// Файл без всякого текста агента не зовёт, но оставляет указатель «последний
+// присланный»: следующая просьба получает его явно, а не угадывает по истории.
+const PAIR_HOLD_MS = 2000
+const PAIR_LATE_S = 30
+const LAST_FILE_S = 6 * 3600
+const pairKey = (ch: string, ws: string, chat: string) => `pair:text:${ch}:${ws}:${chat}`
+const lastFileKey = (ch: string, ws: string, chat: string) => `pair:file:${ch}:${ws}:${chat}`
+
+type PendingText = { token: string; text: string; agent: string; ran: boolean }
+type SavedFile = { id: string; name: string; mime: string }
+
+/** Прочитать и удалить одним шагом: забрать может только кто-то один. */
+async function take(key: string): Promise<string | null> {
+  const res = await redis.multi().get(key).del(key).exec()
+  return (res?.[0]?.[1] as string | null | undefined) ?? null
+}
+
+const fileNote = (f: SavedFile) => `attachmentId="${f.id}", файл "${f.name}", тип ${f.mime}`
+
+/**
+ * Текст ждёт возможный файл. Возвращает то, что отдать агенту, или null — текст
+ * забрал пришедший следом файл, и агента запустит уже он.
+ */
+async function holdTextForFile(ch: string, ws: string, chat: string, text: string, agent: string): Promise<string | null> {
+  const key = pairKey(ch, ws, chat)
+  const token = randomUUID()
+  try {
+    await redis.set(key, JSON.stringify({ token, text, agent, ran: false } satisfies PendingText), 'EX', PAIR_LATE_S)
+  } catch {
+    return withLastFile(ch, ws, chat, agent) // без Redis склейки нет, но и молчать нельзя
+  }
+  await new Promise((r) => setTimeout(r, PAIR_HOLD_MS))
+
+  let raw: string | null
+  try { raw = await take(key) } catch { return withLastFile(ch, ws, chat, agent) }
+  if (!raw) return null // забрал файл
+
+  const p = JSON.parse(raw) as PendingText
+  // Ключ перезаписало следующее сообщение из того же чата. Это не наш текст —
+  // возвращаем его на место, а свой отдаём агенту: его файл не забирал.
+  const mine = p.token === token
+  const keep: PendingText = mine ? { ...p, ran: true } : p
+  await redis.set(key, JSON.stringify(keep), 'EX', PAIR_LATE_S).catch(() => {})
+  return withLastFile(ch, ws, chat, agent)
+}
+
+/** Файл забирает текст, пришедший перед ним. late — агент на текст уже ответил. */
+async function claimTextForFile(ch: string, ws: string, chat: string): Promise<{ text: string; late: boolean } | null> {
+  const raw = await take(pairKey(ch, ws, chat)).catch(() => null)
+  if (!raw) return null
+  const p = JSON.parse(raw) as PendingText
+  return { text: p.text, late: p.ran }
+}
+
+async function rememberLastFile(ch: string, ws: string, chat: string, f: SavedFile): Promise<void> {
+  await redis.set(lastFileKey(ch, ws, chat), JSON.stringify(f), 'EX', LAST_FILE_S).catch(() => {})
+}
+
+/**
+ * Первая просьба после присланного файла получает его явно. Указатель забирается
+ * один раз: дальше он живёт в истории как часть этого сообщения.
+ */
+async function withLastFile(ch: string, ws: string, chat: string, agent: string): Promise<string> {
+  const raw = await take(lastFileKey(ch, ws, chat)).catch(() => null)
+  if (!raw) return agent
+  const f = JSON.parse(raw) as SavedFile
+  return `${agent}\n\n[Последний присланный файл: ${fileNote(f)}. Если просьба касается файла и другой файл явно не назван — речь об этом, а не о файлах из прошлой переписки.]`
+}
+
+/** Опоздавший файл: агент уже ответил на текст, не зная о нём. */
+const lateFileText = (f: SavedFile, text: string) =>
+  `[Следом за сообщением «${text.slice(0, 300)}» пришёл файл: ${fileNote(f)}. Если просьба из того сообщения относится к файлу — выполни её для этого файла; свой прошлый ответ, данный без файла, не повторяй. Если не относится — коротко подтверди, что файл сохранён.]`
 
 // ─── Channel AI agent ─────────────────────────────────────────────────────────
 // Runs the full tool-calling agent (provider-agnostic via streamChat) for a free
@@ -559,6 +645,9 @@ async function findOcrTarget(prisma: PrismaClient, workspaceId: string, pipeline
   return null
 }
 
+/** saved — файл просто сохранён, агент не звался (нет подписи и это не картинка). */
+type MediaResult = { reply?: string; agentText?: string; echo?: string; saved?: SavedFile }
+
 // ─── Shared media ingest ──────────────────────────────────────────────────────
 // Channel-agnostic: takes already-downloaded bytes and decides what they are.
 //   voice → Whisper transcript, handed back to the agent as if it were typed
@@ -572,7 +661,7 @@ async function ingestMedia(
   file: { buf: Buffer; mime: string; filename: string },
   caption: string | undefined,
   channel: 'telegram' | 'viber',
-): Promise<{ reply?: string; agentText?: string; echo?: string }> {
+): Promise<MediaResult> {
   const M = MEDIA_TXT[lang]
   const ext = (file.filename.split('.').pop() || 'bin').toLowerCase()
 
@@ -685,7 +774,7 @@ async function ingestMedia(
     data: {
       workspaceId, ...(projectId ? { projectId } : {}),
       filename: name,
-      description: caption ?? null,
+      description: caption?.slice(0, 200) ?? null,
       mimeType: mime, size: buf.byteLength, storagePath: key, isImportant: false,
       metadata: { source: channel },
     },
@@ -707,12 +796,12 @@ async function ingestMedia(
     const agentText = `${ask}\n\n[Вложение доступно: attachmentId="${att.id}", файл "${name}", тип ${mime}. Если нужно ответить по содержимому вложения (распознать текст, перевести, посчитать суммы) — прочитай его через read_attachment с этим attachmentId.]`
     return { agentText }
   }
-  // Называем проект: человеку это единственный способ узнать, куда файл делся,
-  // а агенту — прочитать это в истории, когда его позже спросят о файле.
+  // Называем и файл, и проект: человеку это единственный способ убедиться, что
+  // дошло именно то и куда оно делось.
   const proj = projectId
     ? (await prisma.project.findUnique({ where: { id: projectId }, select: { name: true } }))?.name
     : undefined
-  return { reply: M.savedSource(proj ?? 'Входящие') }
+  return { reply: M.savedSource(name, proj ?? 'Входящие'), saved: { id: att.id, name, mime } }
 }
 
 // Telegram media capture: pulls the file out of the update shape, downloads it,
@@ -724,12 +813,13 @@ async function handleTelegramMedia(
   message: Record<string, unknown>,
   projectId: string | undefined,
   lang: 'ru' | 'en' | 'be',
-): Promise<{ reply?: string; agentText?: string; echo?: string } | null> {
+  pairedText?: string, // текст, присланный отдельным сообщением прямо перед файлом
+): Promise<MediaResult | null> {
   const M = MEDIA_TXT[lang]
   const voice = (message.voice ?? message.audio) as Record<string, unknown> | undefined
   const photoArr = message.photo as Array<Record<string, unknown>> | undefined
   const doc = message.document as Record<string, unknown> | undefined
-  const caption = (message.caption as string | undefined)?.slice(0, 200)
+  const caption = (message.caption as string | undefined)?.trim() || pairedText
   if (!voice && !photoArr?.length && !doc) return null
 
   const download = async (fileId: string): Promise<{ buf: Buffer; filePath: string } | null> => {
@@ -766,7 +856,8 @@ async function handleViberMedia(
   message: Record<string, unknown>,
   projectId: string | undefined,
   lang: 'ru' | 'en' | 'be',
-): Promise<{ reply?: string; agentText?: string; echo?: string } | null> {
+  pairedText?: string,
+): Promise<MediaResult | null> {
   const M = MEDIA_TXT[lang]
   const type = String(message.type ?? '')
   if (!['picture', 'file', 'video'].includes(type)) return null
@@ -790,7 +881,7 @@ async function handleViberMedia(
     buf = Buffer.from(await res.arrayBuffer())
   } catch { return { reply: M.dlFileFail } }
 
-  const caption = (message.text as string | undefined)?.slice(0, 200)
+  const caption = (message.text as string | undefined)?.trim() || pairedText
   return ingestMedia(prisma, workspaceId, projectId, lang, { buf, mime, filename }, caption, 'viber')
 }
 
@@ -1033,17 +1124,30 @@ export async function integrationRoutes(app: FastifyInstance, prisma: PrismaClie
         .catch((err) => app.log.error({ err }, 'telegram agent failed'))
     }
 
-    let result: { reply?: string; agentText?: string; echo?: string } | null | undefined = null
+    let result: MediaResult | null | undefined = null
 
     if (message && botToken && (message.voice || message.audio || message.photo || message.document)) {
+      // Файл без подписи забирает текст, присланный прямо перед ним. Забираем
+      // ДО скачивания: пока файл качается, ожидание у текста истекло бы.
+      const chat = msgChatId !== undefined ? String(msgChatId) : undefined
+      const bareFile = !!(message.photo || message.document) && !(message.caption as string | undefined)?.trim()
+      const paired = bareFile && chat ? await claimTextForFile('telegram', workspaceId, chat) : null
+
       // Media: voice → transcript handed to the agent; photo/document → source.
-      result = await handleTelegramMedia(prisma, botToken, workspaceId, message, projectId, userLanguage)
+      result = await handleTelegramMedia(prisma, botToken, workspaceId, message, projectId, userLanguage, paired && !paired.late ? paired.text : undefined)
       if (result?.agentText && msgChatId !== undefined) {
         // Echo only the human-facing text (voice transcript); an image's agentText
         // carries an internal attachment hint that must not be shown.
         if (result.echo) await tgApi(botToken, 'sendMessage', { chat_id: msgChatId, text: result.echo.slice(0, 300) })
         await fireAgent(botToken, msgChatId, result.agentText)
         return reply.send({ ok: true })
+      }
+      if (result?.saved && chat && msgChatId !== undefined) {
+        if (paired?.late) {
+          await fireAgent(botToken, msgChatId, lateFileText(result.saved, paired.text))
+          return reply.send({ ok: true })
+        }
+        await rememberLastFile('telegram', workspaceId, chat, result.saved)
       }
     } else if (text === '/new' || text === '/reset') {
       // Reset BOTH the short Redis window AND the durable-conversation pointer, so
@@ -1061,7 +1165,11 @@ export async function integrationRoutes(app: FastifyInstance, prisma: PrismaClie
       // Instant acknowledgement reaction on the incoming message ("принял").
       const inMsgId = message?.message_id as number | undefined
       if (inMsgId !== undefined) void tgApi(botToken, 'setMessageReaction', { chat_id: msgChatId, message_id: inMsgId, reaction: [{ type: 'emoji', emoji: '👀' }] }).catch(() => {})
-      await fireAgent(botToken, msgChatId, agentText)
+      // Ждём в фоне: Telegram должен получить свой 200 сразу, иначе следом
+      // идущий файл (ради которого и ждём) придёт только после ожидания.
+      void holdTextForFile('telegram', workspaceId, String(msgChatId), text, agentText)
+        .then((ready) => (ready === null ? undefined : fireAgent(botToken, msgChatId, ready)))
+        .catch((err) => app.log.error({ err }, 'telegram agent failed'))
       return reply.send({ ok: true })
     }
 
@@ -1177,14 +1285,22 @@ export async function integrationRoutes(app: FastifyInstance, prisma: PrismaClie
 
       // Media first: a voice note becomes a transcript the agent then answers.
       if (['picture', 'file', 'video'].includes(String(message.type ?? ''))) {
-        const result = await handleViberMedia(prisma, workspaceId, message, projectId, userLanguage)
+        // Файл без подписи забирает текст, присланный прямо перед ним.
+        const bareFile = ['picture', 'file'].includes(String(message.type)) && !(message.text as string | undefined)?.trim()
+        const paired = bareFile ? await claimTextForFile('viber', workspaceId, senderId) : null
+        const result = await handleViberMedia(prisma, workspaceId, message, projectId, userLanguage, paired && !paired.late ? paired.text : undefined)
+        const runAgent = (t: string) => void runChannelAgent(prisma, adapter, workspaceId, senderId, owner?.userId, projectId, t, userLanguage)
+          .catch((err) => app.log.error({ err }, 'viber agent failed'))
         if (result?.agentText) {
           // Echo only the human-facing text (voice transcript), never the image's
           // internal attachment hint.
           if (result.echo) void adapter.send(result.echo.slice(0, 300)).catch(() => {})
-          void runChannelAgent(prisma, adapter, workspaceId, senderId, owner?.userId, projectId, result.agentText, userLanguage)
-            .catch((err) => app.log.error({ err }, 'viber agent failed'))
+          runAgent(result.agentText)
           return reply.send({ status: 0 })
+        }
+        if (result?.saved) {
+          if (paired?.late) { runAgent(lateFileText(result.saved, paired.text)); return reply.send({ status: 0 }) }
+          await rememberLastFile('viber', workspaceId, senderId, result.saved)
         }
         if (result?.reply) void adapter.send(result.reply).catch(() => {})
         return reply.send({ status: 0 })
@@ -1201,7 +1317,8 @@ export async function integrationRoutes(app: FastifyInstance, prisma: PrismaClie
       // Fire the agent in the background so Viber gets its 200 fast; the agent
       // pushes its own reply. Viber has no typing indicator, so the user sees
       // nothing until the answer lands — that is the trade-off of the channel.
-      void runChannelAgent(prisma, adapter, workspaceId, senderId, owner?.userId, projectId, commandPrompt(text), userLanguage)
+      void holdTextForFile('viber', workspaceId, senderId, text, commandPrompt(text))
+        .then((ready) => (ready === null ? undefined : runChannelAgent(prisma, adapter, workspaceId, senderId, owner?.userId, projectId, ready, userLanguage)))
         .catch((err) => app.log.error({ err }, 'viber agent failed'))
       return reply.send({ status: 0 })
     })
