@@ -71,6 +71,16 @@ const envSchema = z.object({
   PRICE_STORAGE_PACK_USD: z.coerce.number().default(0.6),
   STORAGE_PACK_MB: z.coerce.number().default(200),
   SEARXNG_URL: z.string().url().optional(),
+  // ─── Внешний поисковый API (необязательный, но надёжный) ──────────────────
+  // Свой SearXNG ходит в Google и Brave с адреса сервера, а дата-центровые
+  // адреса они режут молча: он отвечает 200 с пустым списком. Прямая выдача
+  // DuckDuckGo держится дольше, но и её режут. Ключ снимает вопрос совсем:
+  // поиск по ключу работает с любого адреса и не ломается от смены вёрстки.
+  // Пусто — ходим как раньше, бесплатными путями.
+  SEARCH_API: z.enum(['google_cse', 'brave', 'serper', 'tavily']).optional(),
+  SEARCH_API_KEY: z.string().optional(),
+  // Только для google_cse: идентификатор «поисковой системы» (cx).
+  SEARCH_CX: z.string().optional(),
   // OpenAI-compatible local transcription endpoint (faster-whisper-server).
   // When set, Telegram voice messages are transcribed here instead of OpenAI.
   WHISPER_URL: z.string().url().optional(),

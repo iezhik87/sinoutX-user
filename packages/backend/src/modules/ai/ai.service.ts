@@ -414,6 +414,75 @@ export function textToTipTap(text: string): any {
   return { type: 'doc', content: nodes.length ? nodes : [{ type: 'paragraph', content: [] }] }
 }
 
+type WebHit = { title: string; url: string; snippet: string }
+
+/**
+ * Поиск по ключу: четыре распространённых поставщика за одним switch.
+ *
+ * Нужен не ради «ещё одного источника», а потому что бесплатные пути упираются
+ * в адрес сервера: Google и Bing режут дата-центры молча, прямую выдачу
+ * DuckDuckGo — следом. У всех четырёх есть бесплатный тариф, которого на личный
+ * инстанс хватает; какой заводить — дело владельца, поэтому поддержаны все.
+ *
+ * Поставщики возвращают разную форму — приводим к одной здесь, чтобы выше по
+ * коду разницы не существовало.
+ */
+async function apiSearch(query: string, limit: number): Promise<WebHit[]> {
+  const key = config.SEARCH_API_KEY
+  if (!config.SEARCH_API || !key) return []
+  const n = Math.min(limit, 10)
+  const timeout = AbortSignal.timeout(15_000)
+
+  switch (config.SEARCH_API) {
+    case 'google_cse': {
+      // Единственный из четырёх, кому нужен второй параметр: cx — это
+      // «поисковая система», созданная в панели Google и настроенная искать по
+      // всему вебу. Без него ключ бесполезен, поэтому говорим об этом прямо.
+      if (!config.SEARCH_CX) throw new Error('SEARCH_CX is required for google_cse')
+      const u = new URL('https://www.googleapis.com/customsearch/v1')
+      u.searchParams.set('key', key)
+      u.searchParams.set('cx', config.SEARCH_CX)
+      u.searchParams.set('q', query)
+      u.searchParams.set('num', String(n))
+      const r = await fetch(u, { signal: timeout })
+      if (!r.ok) throw new Error(`google_cse ${r.status}: ${(await r.text()).slice(0, 200)}`)
+      const d = await r.json() as { items?: Array<{ title?: string; link?: string; snippet?: string }> }
+      return (d.items ?? []).map((i) => ({ title: i.title ?? '', url: i.link ?? '', snippet: i.snippet ?? '' }))
+    }
+    case 'brave': {
+      const u = new URL('https://api.search.brave.com/res/v1/web/search')
+      u.searchParams.set('q', query)
+      u.searchParams.set('count', String(n))
+      const r = await fetch(u, { headers: { 'X-Subscription-Token': key, Accept: 'application/json' }, signal: timeout })
+      if (!r.ok) throw new Error(`brave ${r.status}: ${(await r.text()).slice(0, 200)}`)
+      const d = await r.json() as { web?: { results?: Array<{ title?: string; url?: string; description?: string }> } }
+      return (d.web?.results ?? []).map((i) => ({ title: i.title ?? '', url: i.url ?? '', snippet: stripHtml(i.description ?? '').replace(/\s+/g, ' ') }))
+    }
+    case 'serper': {
+      const r = await fetch('https://google.serper.dev/search', {
+        method: 'POST',
+        headers: { 'X-API-KEY': key, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ q: query, num: n }),
+        signal: timeout,
+      })
+      if (!r.ok) throw new Error(`serper ${r.status}: ${(await r.text()).slice(0, 200)}`)
+      const d = await r.json() as { organic?: Array<{ title?: string; link?: string; snippet?: string }> }
+      return (d.organic ?? []).map((i) => ({ title: i.title ?? '', url: i.link ?? '', snippet: i.snippet ?? '' }))
+    }
+    case 'tavily': {
+      const r = await fetch('https://api.tavily.com/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+        body: JSON.stringify({ query, max_results: n }),
+        signal: timeout,
+      })
+      if (!r.ok) throw new Error(`tavily ${r.status}: ${(await r.text()).slice(0, 200)}`)
+      const d = await r.json() as { results?: Array<{ title?: string; url?: string; content?: string }> }
+      return (d.results ?? []).map((i) => ({ title: i.title ?? '', url: i.url ?? '', snippet: (i.content ?? '').slice(0, 400) }))
+    }
+  }
+}
+
 /**
  * Запасной поиск: обычная веб-выдача DuckDuckGo через их же HTML-форму.
  *
@@ -3782,6 +3851,20 @@ async function executeTool(
         // We must treat "empty" the same as "failed" and fall through to the
         // fallback — otherwise the agent reports "search doesn't work" on a
         // perfectly reachable SearXNG.
+        // ── Ключ поставщика, если заведён ──────────────────────────
+        // Первым ходом: он работает с любого адреса, остальные пути зависят от
+        // того, не режут ли сегодня наш. Молча падать на бесплатные нельзя —
+        // владелец платит за ключ и должен узнать, что тот не сработал.
+        if (config.SEARCH_API && config.SEARCH_API_KEY) {
+          try {
+            const hits = await apiSearch(query, limit)
+            if (hits.length) return { query, results: hits, count: hits.length, source: config.SEARCH_API }
+            console.warn('[web_search] api returned nothing', config.SEARCH_API, query.slice(0, 60))
+          } catch (e) {
+            console.error('[web_search] api', config.SEARCH_API, e instanceof Error ? e.message : e)
+          }
+        }
+
         let unresponsive: string[] | undefined
         if (config.SEARXNG_URL) {
           try {
