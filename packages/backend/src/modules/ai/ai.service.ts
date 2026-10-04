@@ -414,6 +414,52 @@ export function textToTipTap(text: string): any {
   return { type: 'doc', content: nodes.length ? nodes : [{ type: 'paragraph', content: [] }] }
 }
 
+/**
+ * Запасной поиск: обычная веб-выдача DuckDuckGo через их же HTML-форму.
+ *
+ * Прежний запасной вариант — api.duckduckgo.com — отдаёт ТОЛЬКО «быстрые
+ * ответы»: определения и карточки. На «купить фидер в Минске» он пуст всегда,
+ * и это не поломка, а его природа. Поэтому стоило SearXNG остаться без живых
+ * движков (их режут по адресу сервера), как ассистент честно докладывал
+ * «поисковики легли» — запасной ход вёл в тупик.
+ *
+ * Эта же форма отдаёт нормальную выдачу со ссылками и выдержками и работает
+ * без ключей. Разбираем разметку: лёгкая регулярка вместо разбора всей
+ * страницы — нам нужны три поля, а не дерево.
+ */
+async function ddgHtmlSearch(query: string, limit: number): Promise<Array<{ title: string; url: string; snippet: string }>> {
+  const res = await fetch('https://html.duckduckgo.com/html/', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      // Без узнаваемого браузерного представления форма отдаёт пустую страницу.
+      'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept-Language': 'ru,en;q=0.8',
+    },
+    body: new URLSearchParams({ q: query }).toString(),
+    signal: AbortSignal.timeout(15_000),
+  })
+  if (!res.ok) throw new Error(`duckduckgo html ${res.status}`)
+  const html = await res.text()
+
+  const out: Array<{ title: string; url: string; snippet: string }> = []
+  const linkRe = /class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g
+  const snipRe = /class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g
+  const snippets: string[] = []
+  for (let m = snipRe.exec(html); m; m = snipRe.exec(html)) snippets.push(stripHtml(m[1]))
+  for (let m = linkRe.exec(html); m && out.length < limit; m = linkRe.exec(html)) {
+    // Иногда ссылка завёрнута в редирект DuckDuckGo — разворачиваем, иначе
+    // агент пойдёт читать страницу-перенаправление вместо источника.
+    let url = m[1].startsWith('//') ? `https:${m[1]}` : m[1]
+    const wrapped = url.match(/[?&]uddg=([^&]+)/)
+    if (wrapped) url = decodeURIComponent(wrapped[1])
+    const title = stripHtml(m[2])
+    if (!title || !/^https?:/.test(url)) continue
+    out.push({ title, url, snippet: snippets[out.length] ?? '' })
+  }
+  return out
+}
+
 function stripHtml(html: string): string {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
@@ -1706,6 +1752,9 @@ ${langInstruction}
 • Правка по всему файлу («убери лишние пробелы, пустые строки, полоски», «замени везде») — edit_file с all: true, при нужде regex: true. Файл при этом читать целиком не нужно.
 • .docx и .pdf правкой строк не меняются: прочитай текст через read_attachment, приведи его в нужный вид и сохрани через save_file. Присланное вордом отдавай вордом — имя с .docx.
 • КАКОЙ файл: тот, что пришёл в ЭТОМ сообщении, или помеченный как «последний присланный». Не бери файл из прошлой переписки только потому, что о нём недавно говорили. Файла в сообщении нет и неясно, о каком речь, — коротко спроси.
+• Поиск ничего не дал — так и скажи. НИКОГДА не заменяй найденное своими знаниями: цены, адреса, наличие, ассортимент, отзывы и «актуально на сегодня» без источника не называй вообще. Лучше короткое «сейчас не нашёл» или общий совет без конкретики, чем правдоподобный список, который человек поедет проверять.
+• Не создавай проекты, страницы и отчёты «по памяти» вместо несостоявшегося исследования. Нет источников — нет отчёта: скажи об этом и спроси, повторить ли позже.
+• Не жалуйся на инструменты по кругу. Один раз назови, что недоступно, и предложи, что делать дальше.
 • Коротко и по делу: без длинных вступлений и пересказа очевидного.
 Правила ниже про создание проектов/страниц/реестров применяются ТОЛЬКО когда пользователь реально просит что-то создать или сохранить.
 1. Сначала ДЕЙСТВИЕ (tool call), потом краткий комментарий пользователю.
@@ -1773,6 +1822,9 @@ WORKING RULES:
 • A change across the whole file ("remove extra spaces, blank lines, rules", "replace everywhere") — edit_file with all: true, and regex: true if needed. No need to read the file whole for that.
 • .docx and .pdf cannot be edited line by line: read the text via read_attachment, shape it as asked and save it via save_file. What came as Word goes back as Word — a name ending in .docx.
 • WHICH file: the one that came with THIS message, or the one marked as "last received". Do not pick a file from earlier conversation just because it was discussed recently. No file in the message and unclear which one is meant — ask briefly.
+• If the search returned nothing, say so. NEVER substitute your own knowledge for findings: no prices, addresses, availability, stock, reviews or "as of today" claims without a source. A short "couldn't find it right now" beats a plausible list the person will drive across town to check.
+• Do not create projects, pages or reports "from memory" in place of research that did not happen. No sources, no report: say so and ask whether to retry later.
+• Do not complain about tools repeatedly. State once what is unavailable, then offer the next step.
 • Be concise and to the point: no long preambles or restating the obvious.
 The rules below about creating projects/pages/collections apply ONLY when the user actually asks to create or save something.
 1. ACTION first (tool call), then a brief comment to the user.
@@ -3787,7 +3839,22 @@ async function executeTool(
           }
         }
 
-        // ── Fallback: DuckDuckGo instant answers API ────────────────
+        // ── Запасной 1: обычная выдача DuckDuckGo ───────────────────
+        // SearXNG не ответил или вернул пустоту: его движки режут по адресу
+        // сервера. Это самый частый случай, и до сих пор он кончался тупиком.
+        try {
+          const ddg = await ddgHtmlSearch(query, limit)
+          if (ddg.length) {
+            console.warn('[web_search] searxng empty, duckduckgo html served', query.slice(0, 60),
+              unresponsive?.length ? `(unresponsive: ${unresponsive.join(', ')})` : '')
+            return { query, results: ddg, count: ddg.length, source: 'duckduckgo_html' }
+          }
+        } catch (e) {
+          console.error('[web_search] duckduckgo html', e instanceof Error ? e.message : e)
+        }
+
+        // ── Запасной 2: быстрые ответы DuckDuckGo ───────────────────
+        // Только карточки и определения: для «где купить» пусто по устройству.
         const iaRes = await fetch(
           `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`,
           { signal: AbortSignal.timeout(10_000) },
@@ -3804,11 +3871,17 @@ async function executeTool(
         // Genuinely nothing — say so plainly, and surface engine health so the
         // agent tells the user "no results" instead of "search is broken". If
         // SearXNG's engines were all blocked, that is the actionable signal.
+        // Пусто ВЕЗДЕ. Такое бывает по двум совершенно разным причинам, и
+        // агенту важно их различать: запрос без ответов — это один разговор с
+        // человеком, а недоступные движки — совсем другой.
+        console.error('[web_search] no results anywhere', query.slice(0, 80),
+          unresponsive?.length ? `unresponsive: ${unresponsive.join(', ')}` : '')
         return {
           query, results: [], count: 0,
+          searchUnavailable: !!unresponsive?.length,
           note: unresponsive?.length
-            ? `No results — the search engines did not respond (${unresponsive.join(', ')}). Try rephrasing or retry.`
-            : 'No results found for this query.',
+            ? `Поиск недоступен: ни один движок не ответил (${unresponsive.join(', ')}), запасной тоже. Скажи это человеку прямо и НЕ выдавай свои знания за найденное — особенно цены, адреса и наличие.`
+            : 'Ничего не найдено по этому запросу. Это не поломка поиска: переформулируй или попробуй другой запрос.',
           ...(unresponsive?.length ? { unresponsiveEngines: unresponsive } : {}),
         }
       } catch (err) {
@@ -4572,7 +4645,26 @@ async function executeTool(
         } catch { report.workspaceResults = null }
       }
 
-      report.summary = `Research complete. Found: ${webResults.length} web results, ${((report.articles as unknown[]) ?? []).length} articles read, Wikipedia: ${((report.wikipedia as Record<string, unknown>)?.results as unknown[])?.length ?? 0} entries${includeAcademic ? `, academic: ${((report.academic as Record<string, unknown>)?.results as unknown[])?.length ?? 0} papers` : ''}.`
+      const articleCount = ((report.articles as unknown[]) ?? []).length
+      const wikiCount = ((report.wikipedia as Record<string, unknown>)?.results as unknown[])?.length ?? 0
+      const academicCount = ((report.academic as Record<string, unknown>)?.results as unknown[])?.length ?? 0
+      const sourcesFound = webResults.length + articleCount + wikiCount + academicCount
+      report.sourcesFound = sourcesFound
+
+      // Ноль источников — это НЕ «исследование готово». Раньше здесь всё равно
+      // писалось «Research complete», и модель, получив пустой отчёт с таким
+      // заголовком, добросовестно писала его из головы: появлялись страницы с
+      // ценами, адресами магазинов и «отзывами», которых никто не видел.
+      // Выдуманное исследование хуже отсутствующего: его нельзя отличить от
+      // настоящего.
+      if (sourcesFound === 0) {
+        report.ok = false
+        report.summary = 'ИССЛЕДОВАНИЕ НЕ ВЫПОЛНЕНО: не получено ни одного источника (поиск недоступен или ничего не нашёл). Скажи человеку прямо, что собрать материал не удалось, и предложи повторить позже. НЕ пиши отчёт, страницы или выводы по памяти и не выдавай свои знания за найденное — особенно цены, адреса, наличие и отзывы.'
+        return report
+      }
+
+      report.ok = true
+      report.summary = `Research complete. Found: ${webResults.length} web results, ${articleCount} articles read, Wikipedia: ${wikiCount} entries${includeAcademic ? `, academic: ${academicCount} papers` : ''}.`
       return report
     }
 
