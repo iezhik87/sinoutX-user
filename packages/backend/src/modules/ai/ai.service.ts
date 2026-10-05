@@ -414,6 +414,15 @@ export function textToTipTap(text: string): any {
   return { type: 'doc', content: nodes.length ? nodes : [{ type: 'paragraph', content: [] }] }
 }
 
+/**
+ * Движки, чья выдача годится только вместо пустоты.
+ *
+ * Seznam держит свой индекс и отвечает всегда — этим и ценен, когда замолчали
+ * все остальные. Но по русским запросам попадает мимо, поэтому его результаты
+ * не должны закрывать дорогу путям, которые ещё не пробованы.
+ */
+const WEAK_ENGINES = new Set(['seznam'])
+
 type WebHit = { title: string; url: string; snippet: string }
 
 /**
@@ -3874,6 +3883,7 @@ async function executeTool(
         }
 
         let unresponsive: string[] | undefined
+        let weak: Array<{ title: string; url: string; snippet: string; engine?: string }> | undefined
         if (config.SEARXNG_URL) {
           try {
             const url = new URL('/search', config.SEARXNG_URL)
@@ -3897,7 +3907,22 @@ async function executeTool(
               const results = (data.results ?? []).slice(0, limit).map(r => ({
                 title: r.title, url: r.url, snippet: r.content ?? '', engine: r.engine,
               }))
-              if (results.length) return { query, results, count: results.length, source: 'searxng' }
+              // Выдача от ЗАПАСНОГО движка — ещё не выдача.
+              //
+              // Seznam включён последним рубежом: чтобы на запрос не вернулось
+              // пусто, когда замолчат все остальные. По русским запросам он
+              // отвечает постороним — «купить фидер» дал казино и реферат про
+              // мухоморы. Но результаты формально были, цепочка считала задачу
+              // решённой и до рабочего запасного пути не доходила: на боевом
+              // сервере прямая выдача DuckDuckGo в ту минуту отдавала ровно то,
+              // что просили. Мусор побеждал только потому, что приходил первым.
+              //
+              // Поэтому: пришло ТОЛЬКО от слабых — откладываем и пробуем дальше.
+              // Не нашлось ничего лучше — отдаём отложенное, оно лучше пустоты.
+              if (results.length && !results.every((r) => r.engine && WEAK_ENGINES.has(r.engine))) {
+                return { query, results, count: results.length, source: 'searxng' }
+              }
+              if (results.length) weak = results
 
               // Движки молчат, но карточка или прямой ответ у SearXNG есть —
               // это ровно то, что случается, когда Google и Bing режут IP
@@ -3942,6 +3967,15 @@ async function executeTool(
           }
         } catch (e) {
           console.error('[web_search] duckduckgo html', e instanceof Error ? e.message : e)
+        }
+
+        // Лучше ничего не нашлось — отдаём то, что дал слабый движок, но
+        // честно помечаем источник: агент должен видеть, чем он пользуется.
+        if (weak?.length) {
+          return {
+            query, results: weak, count: weak.length, source: 'searxng_weak',
+            note: 'Выдача получена от запасного движка и может быть не по теме — проверь, относятся ли результаты к запросу, прежде чем на них опираться.',
+          }
         }
 
         // ── Запасной 2: быстрые ответы DuckDuckGo ───────────────────
