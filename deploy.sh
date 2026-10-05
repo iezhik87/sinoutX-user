@@ -44,16 +44,28 @@ FRONTEND_CHANGED=false
 MCP_CHANGED=false
 COLLAB_CHANGED=false
 COMPOSE_CHANGED=false
+SEARXNG_CHANGED=false
 
 echo "$CHANGED" | grep -q "^packages/backend/" && BACKEND_CHANGED=true
 echo "$CHANGED" | grep -q "^packages/frontend/" && FRONTEND_CHANGED=true
 echo "$CHANGED" | grep -q "^packages/mcp-server/" && MCP_CHANGED=true
 echo "$CHANGED" | grep -q "^packages/collab-server/" && COLLAB_CHANGED=true
 echo "$CHANGED" | grep -qE "^docker-compose\.yml|^nginx/" && COMPOSE_CHANGED=true
+# Настройки поисковика живут отдельной папкой и монтируются в контейнер. Их
+# правки не трогают ни один пакет, поэтому деплой говорил «изменений нет» и
+# уходил, оставив поиск на старом конфиге.
+echo "$CHANGED" | grep -q "^searxng/" && SEARXNG_CHANGED=true
 
-if [ "$BACKEND_CHANGED" = false ] && [ "$FRONTEND_CHANGED" = false ] && [ "$MCP_CHANGED" = false ] && [ "$COLLAB_CHANGED" = false ] && [ "$COMPOSE_CHANGED" = false ]; then
+if [ "$BACKEND_CHANGED" = false ] && [ "$FRONTEND_CHANGED" = false ] && [ "$MCP_CHANGED" = false ] && [ "$COLLAB_CHANGED" = false ] && [ "$COMPOSE_CHANGED" = false ] && [ "$SEARXNG_CHANGED" = false ]; then
   echo "==> No relevant changes detected. Done."
   exit 0
+fi
+
+if [ "$SEARXNG_CHANGED" = true ]; then
+  echo "==> Search settings changed — restarting searxng..."
+  # Файл примонтирован, пересобирать нечего: контейнер читает настройки
+  # только при старте.
+  docker compose up -d --force-recreate --no-deps searxng
 fi
 
 if [ "$BACKEND_CHANGED" = true ]; then
