@@ -77,7 +77,13 @@ const envSchema = z.object({
   // DuckDuckGo держится дольше, но и её режут. Ключ снимает вопрос совсем:
   // поиск по ключу работает с любого адреса и не ломается от смены вёрстки.
   // Пусто — ходим как раньше, бесплатными путями.
-  SEARCH_API: z.enum(['google_cse', 'brave', 'serper', 'tavily']).optional(),
+  //
+  // `SEARCH_API=` в .env приходит сюда ПУСТОЙ СТРОКОЙ, а не отсутствием: compose
+  // подставляет ${SEARCH_API:-} всегда. Перечисление пустую строку не принимает
+  // и роняет проверку настроек — то есть весь бэкенд, и именно у тех, кто ключ
+  // не заводил. Поэтому пустое приравниваем к незаданному.
+  SEARCH_API: z.preprocess((v) => (v === '' ? undefined : v),
+    z.enum(['google_cse', 'brave', 'serper', 'tavily']).optional()),
   SEARCH_API_KEY: z.string().optional(),
   // Только для google_cse: идентификатор «поисковой системы» (cx).
   SEARCH_CX: z.string().optional(),
