@@ -506,8 +506,16 @@ async function ddgHtmlSearch(query: string, limit: number): Promise<Array<{ titl
       'Accept-Language': 'ru,en;q=0.8',
     },
     body: new URLSearchParams({ q: query }).toString(),
-    signal: AbortSignal.timeout(15_000),
+    // Восемь секунд, а не пятнадцать: это последний бесплатный ход перед
+    // честным «не нашёл», и затягивать ожидание ради него незачем.
+    signal: AbortSignal.timeout(8_000),
   })
+  // 202 — их «аномалия»: заглушка вместо выдачи. Прилетает после нескольких
+  // запросов подряд с одного адреса, и никакими заголовками не обходится
+  // (проверено: curl и fetch получают её одинаково). То есть путь этот живёт
+  // ровно до первого всплеска — на него рассчитывать нельзя, но пока пускает,
+  // пусть работает.
+  if (res.status === 202) throw new Error('duckduckgo html 202 (адрес временно заблокирован)')
   if (!res.ok) throw new Error(`duckduckgo html ${res.status}`)
   const html = await res.text()
 
