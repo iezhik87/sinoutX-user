@@ -1183,6 +1183,38 @@ export const integrationApi = {
   delete: (id: string) => api.delete(`/integrations/${id}`),
 }
 
+export interface RobotSettings {
+  noiseFactor: number
+  waitSpeechS: number
+  endSilenceS: number
+  followUpS: number
+  stopWords: string[]
+  answerLength: 'short' | 'normal' | 'detailed'
+  instructions: string
+  volume: number
+}
+
+export interface RobotStatus {
+  integrationId: string | null
+  connected: boolean
+  keyPrefix: string | null
+  lastSeenAt: string | null
+  defaultProjectId: string | null
+  settings: RobotSettings
+  defaults: RobotSettings
+}
+
+export const robotApi = {
+  status: (workspaceId: string) =>
+    api.get<RobotStatus>('/robot/status', { params: { workspaceId } }).then((r) => r.data),
+
+  connect: (workspaceId: string) =>
+    api.post<{ key: string; workspaceId: string }>('/robot/connect', { workspaceId }).then((r) => r.data),
+
+  saveSettings: (data: { workspaceId: string; settings: RobotSettings; defaultProjectId: string | null }) =>
+    api.put('/robot/settings', data).then((r) => r.data),
+}
+
 // ─── Export API ───────────────────────────────────────────────────────────────
 
 export const exportApi = {
@@ -1575,6 +1607,8 @@ export interface CustomTool {
   kind?: 'http' | 'scheduled' | 'trigger'
   schedule?: { hour: number }
   event?: string
+  /** Trigger on record.created: only records of these modules. Empty = any (except memory). */
+  moduleIds?: string[]
   prompt?: string
   lastRunAt?: string
 }

@@ -1,6 +1,6 @@
 import type { FastifyRequest, FastifyReply } from 'fastify'
 import type { PrismaClient } from '@prisma/client'
-import { hashApiKey } from '../lib/auth.js'
+import { hashApiKey, API_KEY_PREFIX } from '../lib/auth.js'
 import { markSeen } from '../lib/presence.js'
 
 export interface AuthUser {
@@ -18,16 +18,29 @@ declare module 'fastify' {
     // caller (MCP / Claude / integrations); used for AI-action audit.
     authVia?: 'jwt' | 'apikey'
     authApiKeyName?: string
+    authApiKeyId?: string
     // For API-key auth: the workspaces this key may access. Empty/undefined = all
     // of the user's workspaces (JWT requests are always undefined = unrestricted).
     authWorkspaceScope?: string[]
   }
 }
 
+/**
+ * The API key a request carries, if any: `x-api-key`, or `Authorization: Bearer
+ * sk_sinoutx_…` — the second is how every OpenAI-compatible client sends a key,
+ * and SinoutX Code is one. A JWT in the same header never starts with the prefix.
+ */
+export function requestApiKey(headers: FastifyRequest['headers']): string | undefined {
+  const header = headers['x-api-key'] as string | undefined
+  if (header) return header
+  const auth = headers.authorization
+  return auth?.startsWith(`Bearer ${API_KEY_PREFIX}`) ? auth.slice(7) : undefined
+}
+
 export function createAuthMiddleware(prisma: PrismaClient) {
   return async function authenticate(req: FastifyRequest, reply: FastifyReply) {
     const authorization = req.headers.authorization
-    const apiKeyHeader = req.headers['x-api-key'] as string | undefined
+    const apiKeyHeader = requestApiKey(req.headers)
 
     // ── API Key auth (for MCP / integrations) ──────────────────────────────
     if (apiKeyHeader) {
@@ -59,6 +72,7 @@ export function createAuthMiddleware(prisma: PrismaClient) {
       }
       req.authVia = 'apikey'
       req.authApiKeyName = apiKey.name ?? 'API key'
+      req.authApiKeyId = apiKey.id
       req.authWorkspaceScope = apiKey.workspaceIds?.length ? apiKey.workspaceIds : undefined
       markSeen(req.authUser, 'apikey')
       return

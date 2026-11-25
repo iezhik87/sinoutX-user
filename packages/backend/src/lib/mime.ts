@@ -65,3 +65,12 @@ export function resolveMime(declared: string | undefined | null, filename: strin
   if (!isGenericMime(declared)) return declared as string
   return mimeFromFilename(filename) ?? 'application/octet-stream'
 }
+
+// ─── Типы, которые браузер ИСПОЛНЯЕТ ──────────────────────────────────────────
+// Файлы раздаются с адреса самого приложения (/uploads/…). HTML, SVG, XML или
+// скрипт, открытый там напрямую, выполняется как страница приложения и может
+// прочитать вход того, кто его открыл. Такие файлы отдаём только на скачивание;
+// в <img> SVG при этом показывается как раньше — браузер не смотрит на
+// Content-Disposition у вложенных ресурсов.
+export const isActiveMime = (mime: string | undefined | null): boolean =>
+  /html|xml|svg|javascript|ecmascript|xsl/i.test(mime ?? '')

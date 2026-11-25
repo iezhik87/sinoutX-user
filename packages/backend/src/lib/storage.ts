@@ -1,5 +1,6 @@
 import { Client as MinioClient } from 'minio'
 import { config } from '../config/index.js'
+import { isActiveMime } from './mime.js'
 
 export const minio = new MinioClient({
   endPoint: config.MINIO_ENDPOINT,
@@ -37,7 +38,12 @@ export async function uploadFile(
   mimeType: string,
   size: number,
 ): Promise<string> {
-  await minio.putObject(BUCKET, key, buffer, size, { 'Content-Type': mimeType })
+  // A file the browser would execute (HTML, SVG, XML, scripts) is stored as a
+  // download: opened straight from /uploads/ it would run as the app itself.
+  await minio.putObject(BUCKET, key, buffer, size, {
+    'Content-Type': mimeType,
+    ...(isActiveMime(mimeType) ? { 'Content-Disposition': 'attachment' } : {}),
+  })
   return key
 }
 

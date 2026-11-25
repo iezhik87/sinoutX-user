@@ -18,10 +18,18 @@ import { fromMicroUsd, toMicroUsd, isPriced, marginPercent, setPricingOverrides,
   activePricingSlots, upsertModelPrice, DEFAULT_MARGIN_PERCENT } from '../../lib/pricing.js'
 import { resolveOpenRouterPrice, fetchOpenRouterModelList } from '../../lib/openrouterPricing.js'
 import type { ModelPrice } from '../../lib/pricing.js'
+import { usagePeriod, monthlyUsageSql, type MonthlyUsage } from '../../lib/adminUsage.js'
+import { LiveBenchClient, attachModelBenchmark } from '../../lib/modelBenchmarks.js'
 import { adjust } from '../../lib/wallet.js'
 import { setBillingMode, isBillingEnabled } from '../../lib/billingMode.js'
-import { managedForAdmin, saveManaged, MANAGED_SLOTS } from '../../lib/managed.js'
+import { managedForAdmin, saveManaged, MANAGED_SLOTS, getManagedAi, getManagedCode, getManagedRouter } from '../../lib/managed.js'
+import { checkPriceCap } from '../../lib/openRouterPolicy.js'
 import { listCatalogModels, IMAGE_TOKENS_PER_PICTURE } from '../../lib/modelCatalog.js'
+
+const liveBench = new LiveBenchClient({
+  read: () => redis.get('models:livebench:v2'),
+  write: (value) => redis.set('models:livebench:v2', value),
+})
 
 async function requireOwnerOrAdmin(req: Parameters<ReturnType<typeof createAuthMiddleware>>[0], reply: Parameters<ReturnType<typeof createAuthMiddleware>>[1]) {
   const role = req.authUser?.role
@@ -412,6 +420,14 @@ export async function adminRoutes(app: FastifyInstance, prisma: PrismaClient) {
     return reply.send(managedForAdmin())
   })
 
+  app.post('/admin/managed/price-check', { preHandler: [authenticate, requireOwnerOrAdmin] }, async (req, reply) => {
+    const { slot } = z.object({ slot: z.enum(['ai', 'code', 'codeLight', 'codeStrong', 'codeRouter']) }).parse(req.body)
+    const model = slot === 'ai' ? getManagedAi() : slot === 'codeRouter' ? getManagedRouter()
+      : getManagedCode(slot === 'codeLight' ? 'light' : slot === 'codeStrong' ? 'strong' : 'medium')
+    if (!model || model.provider !== 'openrouter') return reply.send({ status: 'unknown' })
+    return reply.send(await checkPriceCap(model.model, model.maxPrice))
+  })
+
   app.patch('/admin/managed', { preHandler: [authenticate, requireOwnerOrAdmin] }, async (req, reply) => {
     // An empty string clears a key (that is how the built-in model is turned
     // off); an absent field leaves it untouched, so saving a model name cannot
@@ -421,6 +437,7 @@ export async function adminRoutes(app: FastifyInstance, prisma: PrismaClient) {
       apiKey: z.string().max(400).optional(),
       model: z.string().max(200).optional(),
       baseUrl: z.string().max(400).optional(),
+      maxPrice: z.object({ prompt: z.number().finite().nonnegative().optional(), completion: z.number().finite().nonnegative().optional() }).strict().nullable().optional(),
     })
     // Built from MANAGED_SLOTS, not typed out by hand: zod silently DROPS unknown
     // keys, so a forgotten slot does not error — it just never saves, which is
@@ -433,6 +450,10 @@ export async function adminRoutes(app: FastifyInstance, prisma: PrismaClient) {
       image: slot.optional(),
       vision: slot.optional(),
       embeddings: slot.optional(),
+      code: slot.optional(),
+      codeLight: slot.optional(),
+      codeStrong: slot.optional(),
+      codeRouter: slot.optional(),
     } satisfies Record<typeof MANAGED_SLOTS[number], unknown>
 
     const body = z.object(shape).parse(req.body)
@@ -450,7 +471,7 @@ export async function adminRoutes(app: FastifyInstance, prisma: PrismaClient) {
     // that must always complete fast — it must never sit blocked behind a
     // third-party HTTP call. This found that out the hard way: awaited here,
     // one slow/hung fetch to OpenRouter froze the Save button for every admin.
-    const TOKEN_SLOTS = ['ai', 'vision', 'embeddings'] as const
+    const TOKEN_SLOTS = ['ai', 'vision', 'embeddings', 'code', 'codeLight', 'codeStrong', 'codeRouter'] as const
     for (const key of TOKEN_SLOTS) {
       const s = body[key]
       if (!s || s.provider !== 'openrouter' || !s.model) continue
@@ -474,11 +495,16 @@ export async function adminRoutes(app: FastifyInstance, prisma: PrismaClient) {
   app.get('/admin/models', { preHandler: [authenticate, requireOwnerOrAdmin] }, async (req, reply) => {
     const refresh = (req.query as { refresh?: string }).refresh === '1'
     try {
-      const [models, row] = await Promise.all([
+      const [models, row, benchmark] = await Promise.all([
         listCatalogModels(refresh),
         prisma.appSettings.findUnique({ where: { id: 'singleton' }, select: { modelRatings: true } }),
+        liveBench.load(refresh),
       ])
-      return reply.send({ models, ratings: (row?.modelRatings ?? {}) as Record<string, unknown> })
+      return reply.send({
+        models: models.map((m) => ({ ...m, benchmark: attachModelBenchmark(m.id, benchmark) })),
+        ratings: (row?.modelRatings ?? {}) as Record<string, unknown>,
+        benchmark: { status: benchmark.status, release: benchmark.snapshot?.release ?? null, publishedAt: benchmark.snapshot?.publishedAt ?? null, fetchedAt: benchmark.snapshot?.fetchedAt ?? null, source: benchmark.snapshot?.source ?? null },
+      })
     } catch (e) {
       return reply.status(502).send({ error: e instanceof Error ? e.message : 'Каталог моделей недоступен' })
     }
@@ -546,93 +572,106 @@ export async function adminRoutes(app: FastifyInstance, prisma: PrismaClient) {
     return reply.send({ ratings })
   })
 
-  // GET /admin/usage — what the AI actually costs, per user, last 30 days.
+  // GET /admin/usage — durable accounting, per user/model/month and any period.
   // `cost` is the provider's price of those tokens whoever paid it; `charged`
   // is what WE would take (cost x margin), and it is zero for BYOK answers.
   // Seeing both is the only way to pick a margin without guessing.
   app.get('/admin/usage', { preHandler: [authenticate, requireOwnerOrAdmin] }, async (req, reply) => {
-    const days = Math.min(Math.max(Number((req.query as { days?: string }).days ?? 30), 1), 365)
-    const since = new Date(Date.now() - days * 86_400_000)
+    let window: ReturnType<typeof usagePeriod>
+    try { window = usagePeriod(req.query) }
+    catch { return reply.status(400).send({ error: 'Invalid usage period' }) }
+    const report = await prisma.$transaction(async (tx) => {
 
-    // Split by `managed`: a BYOK answer's cost was paid by the USER to his
-    // provider, not by us. Folding it into "our cost" makes the total exceed
-    // what we charge — which is exactly the confusion it caused. Our cost is
-    // the managed rows only; BYOK cost is reported separately, as reference.
-    const rows = await prisma.aiUsage.groupBy({
-      by: ['userId', 'managed'],
-      where: { createdAt: { gte: since } },
-      _sum: {
-        inputTokens: true, cachedInputTokens: true, outputTokens: true,
-        calls: true, costMicroUsd: true, chargedMicroUsd: true,
-      },
-      _count: { _all: true },
-    })
+      // Split by `managed`: a BYOK answer's cost was paid by the USER to his
+      // provider, not by us. Folding it into "our cost" makes the total exceed
+      // what we charge — which is exactly the confusion it caused. Our cost is
+      // the managed rows only; BYOK cost is reported separately, as reference.
+      const rows = await tx.aiUsage.groupBy({
+        by: ['userId', 'managed'],
+        where: window.where,
+        _sum: {
+          inputTokens: true, cachedInputTokens: true, outputTokens: true,
+          calls: true, costMicroUsd: true, chargedMicroUsd: true,
+        },
+        _count: { _all: true },
+      })
 
-    const users = await prisma.user.findMany({
-      where: { id: { in: [...new Set(rows.map((r) => r.userId).filter((id): id is string => !!id))] } },
-      select: { id: true, email: true, name: true },
-    })
-    const userMap = new Map(users.map((u) => [u.id, u]))
+      const users = await tx.user.findMany({
+        where: { id: { in: [...new Set(rows.map((r) => r.userId).filter((id): id is string => !!id))] } },
+        select: { id: true, email: true, name: true },
+      })
+      const userMap = new Map(users.map((u) => [u.id, u]))
 
-    // Fold the two managed/BYOK rows of each user into one line.
-    type Acc = {
-      userId: string | null; answers: number; calls: number
-      inputTokens: number; cachedInputTokens: number; outputTokens: number
-      costUsd: number; byokCostUsd: number; chargedUsd: number
-    }
-    const acc = new Map<string, Acc>()
-    for (const r of rows) {
-      const key = r.userId ?? '∅'
-      const a = acc.get(key) ?? {
-        userId: r.userId, answers: 0, calls: 0,
-        inputTokens: 0, cachedInputTokens: 0, outputTokens: 0,
-        costUsd: 0, byokCostUsd: 0, chargedUsd: 0,
+      // Fold the two managed/BYOK rows of each user into one line.
+      type Acc = {
+        userId: string | null; answers: number; calls: number
+        inputTokens: number; cachedInputTokens: number; outputTokens: number
+        costUsd: number; byokCostUsd: number; chargedUsd: number
       }
-      a.answers += r._count._all
-      a.calls += r._sum.calls ?? 0
-      a.inputTokens += r._sum.inputTokens ?? 0
-      a.cachedInputTokens += r._sum.cachedInputTokens ?? 0
-      a.outputTokens += r._sum.outputTokens ?? 0
-      const cost = fromMicroUsd(r._sum.costMicroUsd ?? 0)
-      if (r.managed) a.costUsd += cost           // our real spend
-      else a.byokCostUsd += cost                 // user's own key, reference only
-      a.chargedUsd += fromMicroUsd(r._sum.chargedMicroUsd ?? 0)
-      acc.set(key, a)
-    }
+      const acc = new Map<string, Acc>()
+      for (const r of rows) {
+        const key = r.userId ?? '∅'
+        const a = acc.get(key) ?? {
+          userId: r.userId, answers: 0, calls: 0,
+          inputTokens: 0, cachedInputTokens: 0, outputTokens: 0,
+          costUsd: 0, byokCostUsd: 0, chargedUsd: 0,
+        }
+        a.answers += r._count._all
+        a.calls += r._sum.calls ?? 0
+        a.inputTokens += r._sum.inputTokens ?? 0
+        a.cachedInputTokens += r._sum.cachedInputTokens ?? 0
+        a.outputTokens += r._sum.outputTokens ?? 0
+        const cost = fromMicroUsd(r._sum.costMicroUsd ?? 0)
+        if (r.managed) a.costUsd += cost           // our real spend
+        else a.byokCostUsd += cost                 // user's own key, reference only
+        a.chargedUsd += fromMicroUsd(r._sum.chargedMicroUsd ?? 0)
+        acc.set(key, a)
+      }
 
-    const byUser = [...acc.values()].map((a) => {
-      const u = a.userId ? userMap.get(a.userId) : undefined
-      return { ...a, email: u?.email ?? null, name: u?.name ?? null }
-    }).sort((x, y) => (y.costUsd + y.byokCostUsd) - (x.costUsd + x.byokCostUsd))
+      const byUser = [...acc.values()].map((a) => {
+        const u = a.userId ? userMap.get(a.userId) : undefined
+        return { ...a, email: u?.email ?? null, name: u?.name ?? null }
+      }).sort((x, y) => (y.costUsd + y.byokCostUsd) - (x.costUsd + x.byokCostUsd))
 
-    // Models seen in the window, so an unpriced one is visible rather than
-    // silently contributing $0 to every total.
-    const models = await prisma.aiUsage.groupBy({
-      by: ['provider', 'model'],
-      where: { createdAt: { gte: since } },
-      _sum: { costMicroUsd: true },
-      _count: { _all: true },
-    })
+      // Models seen in the window, so an unpriced one is visible rather than
+      // silently contributing $0 to every total.
+      const models = await tx.aiUsage.groupBy({
+        by: ['provider', 'model'],
+        where: window.where,
+        _sum: { costMicroUsd: true },
+        _count: { _all: true },
+      })
 
-    return reply.send({
-      days,
-      marginPercent: marginPercent(),
-      totals: {
-        answers: byUser.reduce((n, u) => n + u.answers, 0),
-        // Our spend on the managed key. BYOK is a separate line, not folded in.
-        costUsd: byUser.reduce((n, u) => n + u.costUsd, 0),
-        byokCostUsd: byUser.reduce((n, u) => n + u.byokCostUsd, 0),
-        chargedUsd: byUser.reduce((n, u) => n + u.chargedUsd, 0),
-      },
-      byUser,
-      models: models.map((m) => ({
-        provider: m.provider,
-        model: m.model,
-        answers: m._count._all,
-        costUsd: fromMicroUsd(m._sum.costMicroUsd ?? 0),
-        priced: isPriced(m.model),
-      })),
-    })
+      const monthly = await tx.$queryRaw<MonthlyUsage[]>(monthlyUsageSql(window))
+      const history = await tx.aiUsage.aggregate({ _min: { createdAt: true }, _max: { createdAt: true } })
+      return {
+        days: window.days,
+        period: window.period,
+        timezone: window.timezone,
+        from: window.since?.toISOString() ?? null,
+        until: window.until?.toISOString() ?? null,
+        historyFrom: history._min.createdAt,
+        historyUntil: history._max.createdAt,
+        monthly,
+        marginPercent: marginPercent(),
+        totals: {
+          answers: byUser.reduce((n, u) => n + u.answers, 0),
+          // Our spend on the managed key. BYOK is a separate line, not folded in.
+          costUsd: byUser.reduce((n, u) => n + u.costUsd, 0),
+          byokCostUsd: byUser.reduce((n, u) => n + u.byokCostUsd, 0),
+          chargedUsd: byUser.reduce((n, u) => n + u.chargedUsd, 0),
+        },
+        byUser,
+        models: models.map((m) => ({
+          provider: m.provider,
+          model: m.model,
+          answers: m._count._all,
+          costUsd: fromMicroUsd(m._sum.costMicroUsd ?? 0),
+          priced: isPriced(m.model),
+        })),
+      }
+    }, { isolationLevel: 'RepeatableRead', timeout: 30_000 })
+    return reply.send(report)
   })
 
   // GET /admin/monitoring — live server/app load + history + online + alerts.

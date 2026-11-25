@@ -45,6 +45,7 @@ MCP_CHANGED=false
 COLLAB_CHANGED=false
 COMPOSE_CHANGED=false
 SEARXNG_CHANGED=false
+BROWSER_SEARCH_CHANGED=false
 
 echo "$CHANGED" | grep -q "^packages/backend/" && BACKEND_CHANGED=true
 echo "$CHANGED" | grep -q "^packages/frontend/" && FRONTEND_CHANGED=true
@@ -55,10 +56,31 @@ echo "$CHANGED" | grep -qE "^docker-compose\.yml|^nginx/" && COMPOSE_CHANGED=tru
 # правки не трогают ни один пакет, поэтому деплой говорил «изменений нет» и
 # уходил, оставив поиск на старом конфиге.
 echo "$CHANGED" | grep -q "^searxng/" && SEARXNG_CHANGED=true
+echo "$CHANGED" | grep -q "^search-browser/" && BROWSER_SEARCH_CHANGED=true
+# Корневые package.json / package-lock.json общие для всех пакетов (workspaces).
+# Обновление зависимостей меняло только lock-файл, скрипт говорил «изменений нет»
+# и оставлял в контейнерах старые версии библиотек, в том числе с уязвимостями.
+if echo "$CHANGED" | grep -qE "^package(-lock)?\.json$"; then
+  echo "==> Root package.json/lock changed — rebuilding all packages..."
+  BACKEND_CHANGED=true
+  FRONTEND_CHANGED=true
+  MCP_CHANGED=true
+  COLLAB_CHANGED=true
+fi
 
-if [ "$BACKEND_CHANGED" = false ] && [ "$FRONTEND_CHANGED" = false ] && [ "$MCP_CHANGED" = false ] && [ "$COLLAB_CHANGED" = false ] && [ "$COMPOSE_CHANGED" = false ] && [ "$SEARXNG_CHANGED" = false ]; then
+if [ "$BACKEND_CHANGED" = false ] && [ "$FRONTEND_CHANGED" = false ] && [ "$MCP_CHANGED" = false ] && [ "$COLLAB_CHANGED" = false ] && [ "$COMPOSE_CHANGED" = false ] && [ "$SEARXNG_CHANGED" = false ] && [ "$BROWSER_SEARCH_CHANGED" = false ]; then
   echo "==> No relevant changes detected. Done."
   exit 0
+fi
+
+if [ "$BROWSER_SEARCH_CHANGED" = true ]; then
+  if docker compose --profile browser-search ps --status running --services | grep -qx 'browser-search'; then
+    echo "==> Browser search changed — rebuilding enabled service..."
+    docker compose --profile browser-search build browser-search
+    docker compose --profile browser-search up -d --no-deps browser-search
+  else
+    echo "==> Browser search is optional and not running — leaving it disabled."
+  fi
 fi
 
 if [ "$SEARXNG_CHANGED" = true ]; then

@@ -5,8 +5,8 @@
 // is built from it, and covers the vendors through it.
 //
 // What it does NOT carry is any notion of quality: no benchmark, no ranking, and
-// the documented `order` parameter is ignored. Quality therefore comes from the
-// operator's own rating (AppSettings.modelRatings), never invented here.
+// the documented `order` parameter is ignored. Admin joins separate, attributed
+// LiveBench results and the operator's personal ratings; prices are not quality.
 
 export interface CatalogModel {
   id: string

@@ -26,23 +26,44 @@ export interface SearchHits {
   totalHits: number
 }
 
+/** Значение для фильтра Meilisearch: всегда в кавычках, чтобы вход не мог дописать условие. */
+export const meiliQuote = (v: string) => JSON.stringify(v)
+
 export class SearchService {
   constructor(private prisma: PrismaClient) {}
 
-  /** Полнотекстовый поиск по всем индексам */
+  /**
+   * id проектов воркспейса. Индекс задач не хранит workspaceId, поэтому
+   * границу воркспейса для задач задаём списком его проектов.
+   */
+  async workspaceProjectIds(workspaceId: string): Promise<string[]> {
+    const rows = await this.prisma.project.findMany({ where: { workspaceId }, select: { id: true } })
+    return rows.map((r) => r.id)
+  }
+
+  /** Полнотекстовый поиск по всем индексам. workspaceId обязателен: это граница доступа. */
   async search(
     query: string,
     opts: {
-      workspaceId?: string
+      workspaceId: string
       projectId?: string
       types?: ('page' | 'task' | 'note')[]
       limit?: number
-    } = {},
+    },
   ): Promise<SearchHits> {
     const { workspaceId, projectId, types = ['page', 'task', 'note'], limit = 20 } = opts
 
+    const projectIds = await this.workspaceProjectIds(workspaceId)
+    // Чужой проект (не из этого воркспейса) — ничего не находим, а не ищем в нём.
+    if (projectId && !projectIds.includes(projectId)) return { results: [], query, totalHits: 0 }
+
     const perIndex = Math.ceil(limit / types.length)
     const results: SearchResult[] = []
+    const wsFilter = `workspaceId = ${meiliQuote(workspaceId)}`
+    const projFilter = projectId ? `projectId = ${meiliQuote(projectId)}` : null
+    const taskScope = projectId
+      ? projFilter
+      : projectIds.length ? `projectId IN [${projectIds.map(meiliQuote).join(', ')}]` : null
 
     await Promise.all([
       types.includes('page') &&
@@ -52,7 +73,8 @@ export class SearchService {
             limit: perIndex,
             filter: [
               'isDeleted = false',
-              projectId ? `projectId = ${projectId}` : workspaceId ? `workspaceId = ${workspaceId}` : null,
+              wsFilter,
+              projFilter,
             ].filter(Boolean) as string[],
             attributesToCrop: ['textContent'],
             cropLength: 30,
@@ -77,15 +99,12 @@ export class SearchService {
           })
           .catch(() => null),
 
-      types.includes('task') &&
+      types.includes('task') && taskScope &&
         meili
           .index(INDEX_TASKS)
           .search(query, {
             limit: perIndex,
-            filter: [
-              'isDeleted = false',
-              projectId ? `projectId = ${projectId}` : null,
-            ].filter(Boolean) as string[],
+            filter: ['isDeleted = false', taskScope],
             attributesToHighlight: ['title'],
             highlightPreTag: '==',
             highlightPostTag: '==',
@@ -110,10 +129,7 @@ export class SearchService {
           .index(INDEX_NOTES)
           .search(query, {
             limit: perIndex,
-            filter: [
-              workspaceId ? `workspaceId = ${workspaceId}` : null,
-              projectId ? `projectId = ${projectId}` : null,
-            ].filter(Boolean) as string[],
+            filter: [wsFilter, projFilter].filter(Boolean) as string[],
             attributesToCrop: ['textContent'],
             cropLength: 30,
             attributesToHighlight: ['textContent'],

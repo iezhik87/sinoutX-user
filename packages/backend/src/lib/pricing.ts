@@ -15,7 +15,7 @@
 // old row keeps the price that actually applied.
 
 import type { PrismaClient } from '@prisma/client'
-import { getManagedAi, getManagedVision, getManagedEmbeddings, getManagedImage } from './managed.js'
+import { getManagedAi, getManagedCode, getManagedRouter, getManagedVision, getManagedEmbeddings, getManagedImage } from './managed.js'
 
 export interface ModelPrice {
   /** Fresh input, per 1M tokens. */
@@ -170,7 +170,7 @@ export async function primePricing(prisma: PrismaClient): Promise<void> {
 
 // ─── Prices of what is actually running ───────────────────────────────────────
 
-export type PricingSlotId = 'ai' | 'vision' | 'embeddings' | 'image'
+export type PricingSlotId = 'ai' | 'vision' | 'embeddings' | 'image' | 'code' | 'codeLight' | 'codeStrong' | 'codeRouter'
 
 export interface PricingSlot {
   slot: PricingSlotId
@@ -197,6 +197,7 @@ export function activePricingSlots(): PricingSlot[] {
   const prices = MODEL_PRICES()
   const images = IMAGE_PRICES()
   const ai = getManagedAi()
+  const code = getManagedCode()
   const vision = getManagedVision()
   const emb = getManagedEmbeddings()
   const img = getManagedImage()
@@ -211,6 +212,13 @@ export function activePricingSlots(): PricingSlot[] {
 
   return [
     tokens('ai', ai?.provider ?? null, ai?.model),
+    // Only when the agent has a model of its own; otherwise it IS the `ai` row.
+    ...(code?.slot === 'code' ? [tokens('code', code.provider, code.model)] : []),
+    ...(['light', 'strong'] as const).flatMap((tier) => {
+      const s = getManagedCode(tier)
+      return s ? [tokens(s.slot, s.provider, s.model)] : []
+    }),
+    ...(getManagedRouter() ? [tokens('codeRouter', getManagedRouter()!.provider, getManagedRouter()!.model)] : []),
     tokens('vision', vision?.provider ?? null, vision?.model),
     // The embeddings slot stores no provider name — only a base URL and a model.
     tokens('embeddings', null, emb?.model),

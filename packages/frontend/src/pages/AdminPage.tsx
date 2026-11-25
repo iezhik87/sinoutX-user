@@ -4,6 +4,9 @@ import { Users, Settings, Shield, Trash2, UserCheck, UserX, Key, Save, RefreshCw
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { api, moduleApi, filenameFromDisposition } from '@/api/client'
 import { ProviderConnect } from '@/components/settings/ProviderConnect'
+import { ModelFilterControls } from '@/components/settings/ModelFilterControls'
+import { emptyModelFilters, matchesModelFilters, compareModelPrice } from '@/lib/modelFilters'
+import { BENCHMARK_TASKS, taskBenchmark, compareBenchmark, type ModelBenchmark } from '@/lib/modelBenchmarks'
 import { Modal } from '@/components/common/Modal'
 import { useAuthStore } from '@/stores/authStore'
 import { Header } from '@/components/layout/Header'
@@ -155,6 +158,7 @@ type ModelsResponse = Record<string, ModelOpt[]> & {
 }
 
 export interface CatalogModel {
+  benchmark?: ModelBenchmark | null
   id: string
   name: string
   vendor: string
@@ -170,21 +174,26 @@ export interface CatalogModel {
   tags: string[]
 }
 interface ModelRating { stars: number; note?: string; ratedAt?: string }
-interface CatalogView { models: CatalogModel[]; ratings: Record<string, ModelRating> }
+interface CatalogView {
+  models: CatalogModel[]; ratings: Record<string, ModelRating>
+  benchmark?: { status: 'fresh' | 'stale' | 'unavailable'; release: string | null; publishedAt: string | null; fetchedAt: string | null; source: string | null }
+}
 
-interface ManagedSlotView { hasKey: boolean; provider?: string; model?: string; baseUrl?: string }
-interface ManagedView { ai: ManagedSlotView; image: ManagedSlotView; vision: ManagedSlotView; embeddings: ManagedSlotView }
-type ManagedPatch = Partial<Record<keyof ManagedView, { provider?: string; apiKey?: string; model?: string; baseUrl?: string }>>
+interface MaxPrice { prompt?: number; completion?: number }
+interface ManagedSlotView { hasKey: boolean; provider?: string; model?: string; baseUrl?: string; maxPrice?: MaxPrice | null; effectiveMaxPrice?: MaxPrice }
+interface ManagedView { ai: ManagedSlotView; image: ManagedSlotView; vision: ManagedSlotView; embeddings: ManagedSlotView; code: ManagedSlotView; codeLight: ManagedSlotView; codeStrong: ManagedSlotView; codeRouter: ManagedSlotView }
+type ManagedPatch = Partial<Record<keyof ManagedView, { provider?: string; apiKey?: string; model?: string; baseUrl?: string; maxPrice?: MaxPrice | null }>>
 
 const adminApi = {
   getStats: () => api.get<AdminStats>('/admin/stats').then((r) => r.data),
   getManaged: () => api.get<ManagedView>('/admin/managed').then((r) => r.data),
   updateManaged: (patch: ManagedPatch) => api.patch<ManagedView>('/admin/managed', patch).then((r) => r.data),
+  checkPriceCap: (slot: keyof ManagedView) => api.post<{ status: 'compatible' | 'blocked' | 'unknown' }>('/admin/managed/price-check', { slot }).then((r) => r.data),
   getModels: () => api.get<ModelsResponse>('/ai/settings/models').then((r) => r.data),
   getPricing: () => api.get<PricingView>('/admin/pricing').then((r) => r.data),
   updatePricing: (p: { marginPercent?: number; model?: { id: string; input: number; cachedInput: number; output: number }; image?: { id: string; perImage: number } }) =>
     api.patch<PricingView>('/admin/pricing', p).then((r) => r.data),
-  testProvider: (params: { provider: string; apiKey?: string; baseUrl?: string; model?: string; slot?: 'ai' | 'vision' }) =>
+  testProvider: (params: { provider: string; apiKey?: string; baseUrl?: string; model?: string; slot?: 'ai' | 'vision' | 'code' | 'codeLight' | 'codeStrong' | 'codeRouter' }) =>
     api.post<{ ok: boolean; error?: string; message?: string; models?: ModelOpt[] }>('/ai/settings/test', params).then((r) => r.data),
   testImage: (params: { provider: string; apiKey?: string; baseUrl?: string; model?: string; slot?: 'image' }) =>
     api.post<{ ok: boolean; error?: string; message?: string; models?: ModelOpt[] }>('/ai/settings/test-image', params).then((r) => r.data),
@@ -808,7 +817,7 @@ function EditUserModal({ user, currentRole, onClose }: { user: AdminUser; curren
  * so tomorrow's default reaches an instance that never touched the table.
  */
 interface PricingSlot {
-  slot: 'ai' | 'vision' | 'embeddings' | 'image'
+  slot: 'ai' | 'vision' | 'embeddings' | 'image' | 'code' | 'codeLight' | 'codeStrong' | 'codeRouter'
   provider: string | null
   model: string | null
   price: { input: number; cachedInput: number; output: number } | null
@@ -830,7 +839,8 @@ interface PricingView {
  */
 function PricingCard() {
   const qc = useQueryClient()
-  const pr = useT().admin.pricing
+  const t = useT()
+  const pr = t.admin.pricing
   const { data } = useQuery({ queryKey: ['admin-pricing'], queryFn: adminApi.getPricing })
   const [margin, setMargin] = useState<number | null>(null)
   const [saved, setSaved] = useState(false)
@@ -895,7 +905,10 @@ function PricingCard() {
             </thead>
             <tbody>
               {configured.map((s) => {
-                const label = s.slot === 'ai' ? pr.slotAi : s.slot === 'vision' ? pr.slotVision
+                const label = s.slot === 'ai' ? pr.slotAi : s.slot === 'code' ? `${pr.slotCode} · ${t.admin.managed.tierMedium}`
+                  : s.slot === 'codeLight' ? `${pr.slotCode} · ${t.admin.managed.tierLight}`
+                  : s.slot === 'codeStrong' ? `${pr.slotCode} · ${t.admin.managed.tierStrong}`
+                  : s.slot === 'codeRouter' ? t.admin.managed.slotRouter : s.slot === 'vision' ? pr.slotVision
                   : s.slot === 'embeddings' ? pr.slotEmbeddings : pr.slotImage
                 const unpriced = s.slot === 'image' ? s.perImage === null : s.price === null
                 return (
@@ -980,10 +993,61 @@ const KEYLESS = new Set(['pollinations', 'ollama'])
  * here is that the key belongs to the operator, so it is never returned — the
  * server reports whether one exists, and the field stays empty until re-entered.
  */
+function ManagedPriceCap({ slot, title, saved, save }: { slot: keyof ManagedView; title: string; saved?: ManagedSlotView; save: (maxPrice: MaxPrice | null) => Promise<void> }) {
+  const m = useT().admin.managed
+  const [prompt, setPrompt] = useState(String(saved?.maxPrice?.prompt ?? ''))
+  const [completion, setCompletion] = useState(String(saved?.maxPrice?.completion ?? ''))
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [status, setStatus] = useState<'compatible' | 'blocked' | 'unknown' | null>(null)
+  useEffect(() => {
+    setPrompt(String(saved?.maxPrice?.prompt ?? '')); setCompletion(String(saved?.maxPrice?.completion ?? '')); setStatus(null)
+  }, [saved?.maxPrice?.prompt, saved?.maxPrice?.completion, saved?.model])
+  const dirty = prompt !== String(saved?.maxPrice?.prompt ?? '') || completion !== String(saved?.maxPrice?.completion ?? '')
+  const saveLimits = async () => {
+    const values: MaxPrice = {}
+    for (const [key, text] of [['prompt', prompt], ['completion', completion]] as const) {
+      if (!text.trim()) continue
+      const value = Number(text)
+      if (!Number.isFinite(value) || value < 0) { setError(m.capInvalid); return }
+      values[key] = value
+    }
+    setBusy(true); setError(''); setStatus(null)
+    try { await save(Object.keys(values).length ? values : null) }
+    catch { setError(m.capSaveFailed) }
+    finally { setBusy(false) }
+  }
+  const check = async () => {
+    setBusy(true); setError('')
+    try { setStatus((await adminApi.checkPriceCap(slot)).status) }
+    catch { setStatus('unknown') }
+    finally { setBusy(false) }
+  }
+  return (
+    <div className="mt-2 border-t border-slate-800 pt-2 space-y-2">
+      <p className="text-xs text-slate-400">{m.capTitle}</p>
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="text-xs text-slate-500">{m.capPrompt}
+          <input aria-label={`${title}: ${m.capPrompt}`} type="number" min="0" step="any" className="input block w-36 mt-1" value={prompt} placeholder={String(saved?.effectiveMaxPrice?.prompt ?? '')} onChange={(e) => setPrompt(e.target.value)} />
+        </label>
+        <label className="text-xs text-slate-500">{m.capCompletion}
+          <input aria-label={`${title}: ${m.capCompletion}`} type="number" min="0" step="any" className="input block w-36 mt-1" value={completion} placeholder={String(saved?.effectiveMaxPrice?.completion ?? '')} onChange={(e) => setCompletion(e.target.value)} />
+        </label>
+        <button type="button" className="btn-ghost text-xs" disabled={busy || !dirty} onClick={saveLimits}>{m.capSave}</button>
+        <button type="button" className="btn-ghost text-xs" disabled={busy || dirty} onClick={check}>{busy ? '…' : m.capCheck}</button>
+      </div>
+      <p className="text-[11px] text-slate-500">{m.capHint}</p>
+      {error && <p role="alert" className="text-xs text-red-400">{error}</p>}
+      {status && <p role="status" className={cn('text-xs', status === 'compatible' ? 'text-emerald-400' : 'text-amber-400')}>{status === 'compatible' ? m.capCompatible : status === 'blocked' ? m.capBlocked : m.capUnknown}</p>}
+    </div>
+  )
+}
+
 function ManagedKeysCard() {
   const qc = useQueryClient()
   const m = useT().admin.managed
   const { data } = useQuery({ queryKey: ['admin-managed'], queryFn: adminApi.getManaged })
+  const { data: catalog } = useQuery({ queryKey: ['admin-catalog'], queryFn: () => adminApi.getCatalog() })
   // Same curated vision list the user's own BYOK slot offers — served from the
   // backend so the two screens can never drift apart.
   const { data: ocrProviders = [] } = useQuery({ queryKey: ['ocr-providers'], queryFn: moduleApi.ocrProviders })
@@ -1006,6 +1070,10 @@ function ManagedKeysCard() {
     const fresh = await adminApi.updateManaged({ [slot]: { provider: '', model: '', apiKey: '', baseUrl: '' } })
     qc.setQueryData(['admin-managed'], fresh)
     qc.invalidateQueries({ queryKey: ['ai-models'] })
+  }
+  const saveCap = async (slot: keyof ManagedView, maxPrice: MaxPrice | null) => {
+    const fresh = await adminApi.updateManaged({ [slot]: { maxPrice } })
+    qc.setQueryData(['admin-managed'], fresh)
   }
 
   // Connect = list the provider's models. LLM/vision/embeddings all answer the
@@ -1037,18 +1105,52 @@ function ManagedKeysCard() {
         <p className="text-xs text-slate-500 mt-1 max-w-lg">{m.subtitle}</p>
       </div>
 
-      <ProviderConnect title={m.slotAi} providers={MANAGED_LLM_PROVIDERS}
+      <div><ProviderConnect title={m.slotAi} providers={MANAGED_LLM_PROVIDERS}
+        modelCatalog={catalog?.models}
         current={{ hasKey: data.ai.hasKey, provider: data.ai.provider, model: data.ai.model, baseUrl: data.ai.baseUrl }}
         keyless={(p) => KEYLESS.has(p)} listModels={listChat}
         save={(x) => saveSlot('ai', x)} reset={() => resetSlot('ai')} />
+        {data.ai.provider === 'openrouter' && <ManagedPriceCap slot="ai" title={m.slotAi} saved={data.ai} save={(x) => saveCap('ai', x)} />}
+      </div>
+
+      <section className="space-y-3 rounded-xl border border-slate-700 p-4">
+        <h4 className="text-sm font-medium text-slate-200">{m.slotCode}</h4>
+        <p className="text-xs text-slate-500">{m.tiersHint}</p>
+        {([
+          ['codeLight', m.tierLight], ['code', m.tierMedium], ['codeStrong', m.tierStrong],
+        ] as const).map(([slot, title]) => (
+          <div key={slot} className="rounded-lg border border-slate-800 p-3 space-y-1">
+            <ProviderConnect title={title} providers={MANAGED_LLM_PROVIDERS}
+              modelCatalog={catalog?.models}
+              current={data[slot] ?? { hasKey: false }}
+              keyless={(p) => KEYLESS.has(p) || p === data.ai.provider}
+              listModels={(p) => adminApi.testProvider({ ...p, slot })}
+              save={(x) => saveSlot(slot, x)} reset={() => resetSlot(slot)} />
+            {slot === 'code' && <p className="text-[11px] text-slate-500">{m.slotCodeHint}</p>}
+            {(data[slot]?.provider === 'openrouter' || (slot === 'code' && !data.code.provider && data.ai.provider === 'openrouter')) && <ManagedPriceCap slot={slot} title={title} saved={data[slot]} save={(x) => saveCap(slot, x)} />}
+          </div>
+        ))}
+        <div className="rounded-lg border border-slate-800 p-3 space-y-2">
+          <ProviderConnect title={m.slotRouter} providers={MANAGED_LLM_PROVIDERS}
+            modelCatalog={catalog?.models}
+            current={data.codeRouter ?? { hasKey: false }}
+            keyless={(p) => KEYLESS.has(p) || p === data.ai.provider}
+            listModels={(p) => adminApi.testProvider({ ...p, slot: 'codeRouter' })}
+            save={(x) => saveSlot('codeRouter', x)} reset={() => resetSlot('codeRouter')} />
+          <p className="text-[11px] text-slate-500">{m.routerHint}</p>
+          {data.codeRouter?.provider === 'openrouter' && <ManagedPriceCap slot="codeRouter" title={m.slotRouter} saved={data.codeRouter} save={(x) => saveCap('codeRouter', x)} />}
+        </div>
+      </section>
 
       <ProviderConnect title={m.slotVision} providers={ocrProviders.map((p) => p.key)}
+        modelCatalog={catalog?.models}
         current={{ hasKey: data.vision.hasKey, provider: data.vision.provider, model: data.vision.model, baseUrl: data.vision.baseUrl }}
         staticModels={(pv) => ocrProviders.find((p) => p.key === pv)?.models ?? []}
         listModels={listVision} verify={verifyVision}
         save={(x) => saveSlot('vision', x)} reset={() => resetSlot('vision')} />
 
       <ProviderConnect title={m.slotImage} providers={MANAGED_IMAGE_PROVIDERS}
+        modelCatalog={catalog?.models}
         current={{ hasKey: data.image.hasKey, provider: data.image.provider, model: data.image.model, baseUrl: data.image.baseUrl }}
         keyless={(p) => KEYLESS.has(p)} listModels={listImage}
         save={(x) => saveSlot('image', x)} reset={() => resetSlot('image')} />
@@ -1064,7 +1166,7 @@ function ManagedKeysCard() {
 
 // ─── Model catalogue ──────────────────────────────────────────────────────────
 
-type SortKey = 'value' | 'rating' | 'cheap' | 'context' | 'new' | 'name'
+type SortKey = 'value' | 'rating' | 'ratingAsc' | 'quality' | 'qualityAsc' | 'cheap' | 'expensive' | 'inputCheap' | 'inputExpensive' | 'outputCheap' | 'outputExpensive' | 'context' | 'contextAsc' | 'new' | 'name' | 'nameDesc'
 /** «any» / «rated» / «unrated», or a minimum number of stars. */
 type RatingFilter = 'any' | 'rated' | 'unrated' | '5' | '4' | '3'
 
@@ -1104,7 +1206,7 @@ type CatalogT = ReturnType<typeof useT>['admin']['catalog']
 function tagLabel(key: string, c: CatalogT): string {
   const map: Record<string, string> = {
     text: c.tagText, vision: c.tagVision, audio: c.tagAudio, video: c.tagVideo,
-    tools: c.tagTools, reasoning: c.tagReasoning, coding: c.tagCoding,
+    tools: c.tagTools, reasoning: c.tagReasoning, coding: c.tagCoding, imagegen: c.tagImagegen,
   }
   return map[key] ?? key
 }
@@ -1169,6 +1271,23 @@ function ModelDetailModal({ model, stars, onRate, onClose, c }: {
           {model.created > 0 && row(c.added, new Date(model.created * 1000).toLocaleDateString())}
         </div>
 
+        {model.benchmark && <div className="space-y-2">
+          <div className="text-slate-300">LiveBench 2.0 · {c.benchmarkRelease}: {model.benchmark.release}</div>
+          {model.benchmark.publishedAt && <p className="text-[11px] text-slate-500">{c.benchmarkPublished}: {model.benchmark.publishedAt.slice(0, 10)}</p>}
+          <p className="text-[11px] text-slate-500">{c.benchmarkHint}</p>
+          {BENCHMARK_TASKS.map((task) => {
+            const result = taskBenchmark(model, task)
+            return <div key={task} className="border-b border-slate-800 py-1.5">
+              <div className="flex justify-between gap-2 text-slate-300"><span>{c.benchmarkTasks[task]}</span><span>{result ? result.score.toFixed(2) + ' / 100' : c.benchmarkUnscored}</span></div>
+              {result && <div className="text-[10px] text-slate-500 break-all mt-1">{c.benchmarkRun}: {result.run}</div>}
+            </div>
+          })}
+          <a href={model.benchmark.source} target="_blank" rel="noreferrer" className="text-primary-400 underline">{c.benchmarkSource}</a>
+          {' · '}<a href={model.benchmark.dataUrl} target="_blank" rel="noreferrer" className="text-primary-400 underline">CSV</a>
+          <p className="text-[10px] text-slate-500">{c.benchmarkFetched}: {model.benchmark.fetchedAt.slice(0, 10)}{model.benchmark.stale ? ` · ${c.benchmarkStale}` : ''}</p>
+          {!!model.benchmark.notes?.length && <details><summary className="cursor-pointer text-slate-400">{c.benchmarkNotes}</summary><ul className="list-disc pl-4 space-y-2 mt-2 text-slate-500">{model.benchmark.notes.map((note, i) => <li key={i}>{note}</li>)}</ul></details>}
+        </div>}
+
         <div>
           <div className="flex items-center justify-between gap-2 mb-1.5">
             <span className="text-slate-400">{c.about}</span>
@@ -1204,9 +1323,8 @@ function ModelCatalogCard() {
   const { data, isLoading, isError, error } = useQuery({ queryKey: ['admin-catalog'], queryFn: () => adminApi.getCatalog() })
   const [q, setQ] = useState('')
   const [vendor, setVendor] = useState('')
-  const [sort, setSort] = useState<SortKey>('value')
-  const [onlyVision, setOnlyVision] = useState(false)
-  const [onlyTools, setOnlyTools] = useState(false)
+  const [sort, setSort] = useState<SortKey>('cheap')
+  const [filters, setFilters] = useState(emptyModelFilters)
   const [rating, setRating] = useState<RatingFilter>('any')
 
   const rate = useMutation({
@@ -1228,8 +1346,7 @@ function ModelCatalogCard() {
     const filtered = models.filter((m) => {
       if (needle && !m.id.toLowerCase().includes(needle) && !m.name.toLowerCase().includes(needle)) return false
       if (vendor && m.vendor !== vendor) return false
-      if (onlyVision && !m.vision) return false
-      if (onlyTools && !m.tools) return false
+      if (!matchesModelFilters(m, filters)) return false
       const st = starsOf(m.id)
       if (rating === 'rated' && !st) return false
       if (rating === 'unrated' && st) return false
@@ -1246,21 +1363,32 @@ function ModelCatalogCard() {
       // number: Infinity − Infinity is NaN, and one NaN unsettles the whole sort.
       return price === 0 ? 1e9 * stars : stars / price
     }
-    const byPrice = (m: CatalogModel) => blendedPrice(m) ?? Number.POSITIVE_INFINITY
     return [...filtered].sort((a, b) => {
       if (sort === 'value') return val(b) - val(a)
+      if (sort === 'quality' || sort === 'qualityAsc') return compareBenchmark(a, b, filters.benchmarkTask, sort === 'qualityAsc')
       // Equal stars are broken by price, so the cheaper of two equals wins.
-      if (sort === 'rating') return (starsOf(b.id) - starsOf(a.id)) || (byPrice(a) - byPrice(b))
-      if (sort === 'cheap') return byPrice(a) - byPrice(b)
+      if (sort === 'rating' || sort === 'ratingAsc') return (sort === 'ratingAsc' ? starsOf(a.id) - starsOf(b.id) : starsOf(b.id) - starsOf(a.id)) || compareModelPrice(a, b, 'blended')
+      if (sort === 'cheap' || sort === 'expensive') return compareModelPrice(a, b, 'blended', sort === 'expensive')
+      if (sort === 'inputCheap' || sort === 'inputExpensive') return compareModelPrice(a, b, 'prompt', sort === 'inputExpensive')
+      if (sort === 'outputCheap' || sort === 'outputExpensive') return compareModelPrice(a, b, 'completion', sort === 'outputExpensive')
       if (sort === 'context') return b.contextLength - a.contextLength
+      if (sort === 'contextAsc') return a.contextLength - b.contextLength
       if (sort === 'new') return b.created - a.created
-      return a.name.localeCompare(b.name)
+      return sort === 'nameDesc' ? b.name.localeCompare(a.name) : a.name.localeCompare(b.name)
     })
-  }, [models, ratings, q, vendor, sort, onlyVision, onlyTools, rating])
+  }, [models, ratings, q, vendor, sort, filters, rating])
 
   const sel = 'bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200'
-  const chip = (on: boolean) => cn('px-2.5 py-1.5 rounded-lg text-xs border transition-colors',
-    on ? 'bg-primary-600/80 text-white border-primary-500' : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-slate-200')
+  const column = (label: string, ascending: SortKey, descending: SortKey, bestFirst = false) => {
+    const direction = sort === ascending ? 'ascending' : sort === descending ? 'descending' : 'none'
+    const first = bestFirst ? descending : ascending
+    return <th scope="col" aria-sort={direction} className="font-medium py-2 px-2 whitespace-nowrap">
+      <button type="button" className={cn('hover:text-slate-200 underline decoration-dotted underline-offset-4', direction !== 'none' && 'text-primary-400')}
+        onClick={() => setSort(sort === ascending ? descending : sort === descending ? ascending : first)}>
+        {label} {direction === 'ascending' ? '↑' : direction === 'descending' ? '↓' : '↕'}
+      </button>
+    </th>
+  }
 
   return (
     <div className="bg-surface-800 border border-slate-700 rounded-xl p-4 space-y-3">
@@ -1278,18 +1406,28 @@ function ModelCatalogCard() {
       <div className="flex flex-wrap items-center gap-2">
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={c.search}
           className={cn(sel, 'flex-1 min-w-[180px]')} />
-        <select value={vendor} onChange={(e) => setVendor(e.target.value)} className={cn(sel, 'appearance-none')}>
+        <select aria-label={c.vendor} value={vendor} onChange={(e) => setVendor(e.target.value)} className={cn(sel, 'appearance-none')}>
           <option value="">{c.allVendors}</option>
           {vendors.map((v) => <option key={v} value={v}>{v}</option>)}
         </select>
-        <select value={sort} onChange={(e) => setSort(e.target.value as SortKey)} className={cn(sel, 'appearance-none')}>
+        <label className="flex items-center gap-2 text-xs text-slate-400">{c.sortLabel}
+        <select aria-label={c.sortLabel} value={sort} onChange={(e) => setSort(e.target.value as SortKey)} className={sel}>
           <option value="value">{c.sortValue}</option>
           <option value="rating">{c.sortRating}</option>
+          <option value="ratingAsc">{c.sortRating} ↑</option>
+          <option value="quality">{c.sortQuality}</option>
+          <option value="qualityAsc">{c.sortQuality} ↑</option>
           <option value="cheap">{c.sortCheap}</option>
+          <option value="expensive">{c.sortExpensive}</option>
+          <option value="inputCheap">{c.sortInputCheap}</option><option value="inputExpensive">{c.sortInputExpensive}</option>
+          <option value="outputCheap">{c.sortOutputCheap}</option><option value="outputExpensive">{c.sortOutputExpensive}</option>
           <option value="context">{c.sortContext}</option>
+          <option value="contextAsc">{c.colContext} ↑</option>
           <option value="new">{c.sortNew}</option>
           <option value="name">{c.sortName}</option>
+          <option value="nameDesc">{c.sortName} ↓</option>
         </select>
+        </label>
         {/* One control for the rating: «rated / unrated» and a floor of stars are
             the same question, and two separate widgets could contradict each other. */}
         <select value={rating} onChange={(e) => setRating(e.target.value as RatingFilter)}
@@ -1301,9 +1439,17 @@ function ModelCatalogCard() {
           <option value="3">3★+</option>
           <option value="unrated">{c.ratingUnrated}</option>
         </select>
-        <button onClick={() => setOnlyVision((v) => !v)} className={chip(onlyVision)}>{c.onlyVision}</button>
-        <button onClick={() => setOnlyTools((v) => !v)} className={chip(onlyTools)}>{c.onlyTools}</button>
       </div>
+      <ModelFilterControls value={filters} onChange={setFilters} />
+      <p className="text-[11px] text-slate-500">{c.priceSortHint}</p>
+      <p className="text-[11px] text-slate-500">
+        {data?.benchmark?.source && <a href={data.benchmark.source} target="_blank" rel="noreferrer" className="text-primary-400 underline">LiveBench</a>}
+        {data?.benchmark?.release && ` · ${c.benchmarkRelease}: ${data.benchmark.release}`}
+        {data?.benchmark?.publishedAt && ` · ${c.benchmarkPublished}: ${data.benchmark.publishedAt.slice(0, 10)}`}
+        {data?.benchmark?.fetchedAt && ` · ${c.benchmarkFetched}: ${data.benchmark.fetchedAt.slice(0, 10)}`}
+        {data?.benchmark?.status === 'stale' && ` · ${c.benchmarkStale}`}
+        {data?.benchmark?.status === 'unavailable' && c.benchmarkUnavailable}
+      </p>
 
       {isLoading ? (
         <div className="py-8 flex justify-center"><Loader2 className="animate-spin text-slate-500" /></div>
@@ -1316,15 +1462,17 @@ function ModelCatalogCard() {
             <table className="w-full text-xs">
               <thead className="text-slate-500">
                 <tr className="border-b border-slate-800">
-                  <th className="text-left font-medium py-2 pr-3">{c.colModel}</th>
-                  <th className="text-right font-medium py-2 px-2 whitespace-nowrap">{c.colIn}</th>
-                  <th className="text-right font-medium py-2 px-2 whitespace-nowrap">{c.colOut}</th>
-                  <th className="text-right font-medium py-2 px-2">{c.colContext}</th>
+                  {column(c.colModel, 'name', 'nameDesc')}
+                  {column(c.colIn, 'inputCheap', 'inputExpensive')}
+                  {column(c.colOut, 'outputCheap', 'outputExpensive')}
+                  {column(c.colContext, 'contextAsc', 'context', true)}
                   <th className="text-left font-medium py-2 px-2">{c.colCan}</th>
-                  <th className="text-left font-medium py-2 pl-2 whitespace-nowrap">{c.colRating}</th>
+                  {column(`LiveBench · ${c.benchmarkTasks[filters.benchmarkTask]}`, 'qualityAsc', 'quality', true)}
+                  {column(c.colRating, 'ratingAsc', 'rating', true)}
                 </tr>
               </thead>
               <tbody>
+                {rows.length === 0 && <tr><td colSpan={7} className="py-6 text-center text-slate-500">{c.noMatches}</td></tr>}
                 {rows.slice(0, 200).map((m) => {
                   const stars = ratings[m.id]?.stars ?? 0
                   return (
@@ -1339,6 +1487,9 @@ function ModelCatalogCard() {
                       <td className="text-right px-2 tabular-nums text-slate-400 cursor-pointer" onClick={() => setDetail(m)}>{m.contextLength ? `${Math.round(m.contextLength / 1000)}k` : '—'}</td>
                       <td className="px-2 py-2 cursor-pointer" onClick={() => setDetail(m)}>
                         <TagChips tags={m.tags} c={c} />
+                      </td>
+                      <td className="px-2 py-2 text-right tabular-nums text-slate-300 cursor-pointer" onClick={() => setDetail(m)} title={taskBenchmark(m, filters.benchmarkTask)?.run ?? c.benchmarkUnscored}>
+                        {taskBenchmark(m, filters.benchmarkTask)?.score.toFixed(2) ?? '—'}
                       </td>
                       <td className="pl-2 whitespace-nowrap">
                         <Stars value={stars} t={c} onPick={(n) => rate.mutate({ id: m.id, stars: n })} />
@@ -2166,7 +2317,10 @@ interface UsageRow {
 }
 
 interface UsageData {
-  days: number
+  days: number | null
+  historyFrom: string | null
+  historyUntil: string | null
+  monthly: (Omit<UsageRow, 'userId' | 'email' | 'name'> & { month: string })[]
   marginPercent: number
   totals: { answers: number; costUsd: number; byokCostUsd: number; chargedUsd: number }
   byUser: UsageRow[]
@@ -2175,29 +2329,25 @@ interface UsageData {
 
 // Answers cost fractions of a cent, so the usual 2-decimal money format would
 // render every row as "$0.00". Four decimals until the numbers grow up.
-const usd = (n: number) => '$' + (n >= 1 ? n.toFixed(2) : n.toFixed(4))
+const usd = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })
 const num = (n: number) => n.toLocaleString('ru-RU')
 
 function UsageTab() {
   const t = useT()
   const u = t.admin.usage
-  const [data, setData] = useState<UsageData | null>(null)
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    api.get<UsageData>('/admin/usage')
-      .then((r) => setData(r.data))
-      .catch(() => {})
-      .finally(() => setLoading(false))
-  }, [])
-
-  if (loading) return <div className="flex justify-center py-10"><Loader2 size={20} className="animate-spin text-primary-500" /></div>
-  if (!data || data.byUser.length === 0) {
-    return <div className="text-sm text-slate-500 py-10 text-center">{u.empty}</div>
-  }
-
-  const totalIn = data.byUser.reduce((n, r) => n + r.inputTokens, 0)
-  const totalCached = data.byUser.reduce((n, r) => n + r.cachedInputTokens, 0)
+  const [period, setPeriod] = useState('all')
+  const [month, setMonth] = useState(new Date().toISOString().slice(0, 7))
+  const [from, setFrom] = useState(new Date().toISOString().slice(0, 7) + '-01')
+  const [to, setTo] = useState(new Date().toISOString().slice(0, 10))
+  const valid = period === 'month' ? !!month : period === 'range' ? !!from && !!to && from <= to : true
+  const params = { period, ...(period === 'month' ? { month } : {}), ...(period === 'range' ? { from, to } : {}) }
+  const { data, isLoading, isError, refetch } = useQuery({
+    queryKey: ['admin-usage', params],
+    queryFn: () => api.get<UsageData>('/admin/usage', { params }).then((r) => r.data),
+    enabled: valid,
+  })
+  const totalIn = data?.byUser.reduce((n, r) => n + r.inputTokens, 0) ?? 0
+  const totalCached = data?.byUser.reduce((n, r) => n + r.cachedInputTokens, 0) ?? 0
   const cacheShare = totalIn + totalCached > 0 ? Math.round((totalCached / (totalIn + totalCached)) * 100) : 0
 
   return (
@@ -2205,8 +2355,28 @@ function UsageTab() {
       <div>
         <h3 className="text-sm font-semibold text-slate-200">{u.title}</h3>
         <p className="text-xs text-slate-500 mt-1 max-w-2xl">{u.subtitle}</p>
+        <p className="text-xs text-slate-500 mt-1">{u.timezone}</p>
       </div>
-
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="text-xs text-slate-400">{u.period}
+          <select aria-label={u.period} value={period} onChange={(e) => setPeriod(e.target.value)} className="block mt-1 rounded-lg border border-slate-700 bg-surface-900 px-3 py-2 text-sm text-slate-200">
+            <option value="all">{u.allTime}</option><option value="month">{u.month}</option>
+            <option value="range">{u.dateRange}</option><option value="30d">{u.last30}</option>
+          </select>
+        </label>
+        {period === 'month' && <label className="text-xs text-slate-400">{u.month}<input type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="block mt-1 rounded-lg border border-slate-700 bg-surface-900 px-3 py-2 text-sm text-slate-200" /></label>}
+        {period === 'range' && <>
+          <label className="text-xs text-slate-400">{u.from}<input type="date" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} className="block mt-1 rounded-lg border border-slate-700 bg-surface-900 px-3 py-2 text-sm text-slate-200" /></label>
+          <label className="text-xs text-slate-400">{u.to}<input type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} className="block mt-1 rounded-lg border border-slate-700 bg-surface-900 px-3 py-2 text-sm text-slate-200" /></label>
+        </>}
+        <button type="button" onClick={() => void refetch()} disabled={!valid || isLoading} className="p-2 text-slate-400 hover:text-slate-200 disabled:opacity-40" aria-label={u.refresh}><RefreshCw size={16} /></button>
+      </div>
+      {!valid ? <p className="text-sm text-amber-400">{u.invalidPeriod}</p>
+        : isLoading ? <div className="flex justify-center py-10"><Loader2 size={20} className="animate-spin text-primary-500" /></div>
+        : isError ? <p role="alert" className="text-sm text-red-400">{u.loadError}</p>
+        : !data || !data.byUser.length ? <p className="text-sm text-slate-500 py-10 text-center">{u.empty}</p>
+        : <>
+      {data.historyFrom && <p className="text-xs text-slate-500">{u.historySince}: {data.historyFrom.slice(0, 10)}</p>}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div className="bg-surface-900 border border-slate-800 rounded-xl p-4">
           <div className="text-xs text-slate-500">{u.totalAnswers}</div>
@@ -2229,6 +2399,22 @@ function UsageTab() {
         {u.cached}: <span className="text-slate-300 tabular-nums">{cacheShare}%</span> — {u.cacheHint}
       </p>
 
+      <div>
+        <h4 className="text-sm font-semibold text-slate-300 mb-2">{u.monthly}</h4>
+        <div className="overflow-x-auto border border-slate-800 rounded-xl">
+          <table className="w-full text-xs tabular-nums">
+            <thead className="bg-surface-800 text-slate-500"><tr>
+              {[u.month, u.answers, u.calls, u.input, u.cached, u.output, u.totalCost, u.byokCost, u.charged].map((label, i) => <th key={label} className={`px-3 py-2 font-medium ${i ? 'text-right' : 'text-left'}`}>{label}</th>)}
+            </tr></thead>
+            <tbody>{data.monthly.map((row) => <tr key={row.month} className="border-t border-slate-800/70 text-slate-300">
+              <td className="px-3 py-2"><button type="button" className="text-primary-400 hover:underline" onClick={() => { setMonth(row.month); setPeriod('month') }}>{row.month}</button></td>
+              {[row.answers, row.calls, row.inputTokens, row.cachedInputTokens, row.outputTokens].map((n, i) => <td key={i} className="px-3 py-2 text-right">{num(n)}</td>)}
+              {[row.costUsd, row.byokCostUsd, row.chargedUsd].map((n, i) => <td key={i} className="px-3 py-2 text-right">{usd(n)}</td>)}
+            </tr>)}</tbody>
+          </table>
+        </div>
+      </div>
+
       <div className="overflow-x-auto border border-slate-800 rounded-xl">
         <table className="w-full text-sm">
           <thead className="bg-surface-800 text-xs text-slate-500">
@@ -2240,6 +2426,7 @@ function UsageTab() {
               <th className="text-right font-medium px-3 py-2.5">{u.cached}</th>
               <th className="text-right font-medium px-3 py-2.5">{u.output}</th>
               <th className="text-right font-medium px-3 py-2.5">{u.cost}</th>
+              <th className="text-right font-medium px-3 py-2.5">{u.byokCost}</th>
               <th className="text-right font-medium px-4 py-2.5">{u.charged}</th>
             </tr>
           </thead>
@@ -2253,6 +2440,7 @@ function UsageTab() {
                 <td className="px-3 py-2.5 text-right text-slate-500 tabular-nums">{num(r.cachedInputTokens)}</td>
                 <td className="px-3 py-2.5 text-right text-slate-400 tabular-nums">{num(r.outputTokens)}</td>
                 <td className="px-3 py-2.5 text-right text-slate-300 tabular-nums">{usd(r.costUsd)}</td>
+                <td className="px-3 py-2.5 text-right text-slate-400 tabular-nums">{usd(r.byokCostUsd)}</td>
                 <td className="px-4 py-2.5 text-right text-primary-400 tabular-nums">{r.chargedUsd > 0 ? usd(r.chargedUsd) : '—'}</td>
               </tr>
             ))}
@@ -2273,6 +2461,7 @@ function UsageTab() {
           ))}
         </div>
       </div>
+      </>}
     </div>
   )
 }

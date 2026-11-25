@@ -1,235 +1,123 @@
-# Deploying SinoutX to a server
+# Installing the personal self-hosted edition
+
+This repository is the single-user SinoutX edition. It uses your server and API
+keys. The first account owns the instance; further registration is closed.
+It has no admin panel, team sharing, cloud billing, marketing server or private
+browser laboratory. The optional public-search Chromium service is separate
+from that laboratory and is included.
 
 ## Requirements
-- Ubuntu/Debian server with Docker and Docker Compose
-- Nginx Proxy Manager (already running)
-- A domain pointed at the server's IP (e.g. `example.com` for the
-  landing page and `app.example.com` for the app)
 
----
+- Linux server with Docker Engine and Docker Compose v2.
+- At least 4 GB RAM for the base stack; more for optional Chromium, speech and
+  local AI services. Build the images with enough memory available.
+- A domain and a reverse proxy with TLS if exposing the app to the internet.
 
-## 1. Clone the repository
+## Install
 
-Create a Personal Access Token on GitHub:
-**Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token**
-Select the `repo` scope → copy the token.
+The repository is public: no GitHub token is needed.
 
 ```bash
-git clone https://YOUR_TOKEN@github.com/iezhik87/sinoutX.git /media/mediassd/sinout
-cd /media/mediassd/sinout
-chmod +x deploy.sh
-```
-
-> The token is entered once at clone time. `git pull` inside `deploy.sh`
-> reuses it from the saved repo URL.
-
----
-
-## 2. Create .env
-
-```bash
+git clone https://github.com/iezhik87/sinoutX-user.git
+cd sinoutX-user
 cp .env.example .env
 nano .env
 ```
 
-Fill in every value:
-
-```env
-# PostgreSQL
-DB_USER=sinout
-DB_PASSWORD=CHOOSE_A_STRONG_PASSWORD
-
-# Redis
-REDIS_PASSWORD=CHOOSE_A_STRONG_PASSWORD
-
-# Meilisearch
-MEILI_KEY=CHOOSE_A_KEY_MIN_16_CHARS
-
-# MinIO
-MINIO_USER=sinout
-MINIO_PASSWORD=CHOOSE_A_STRONG_PASSWORD
-
-# JWT (min 32 chars)
-JWT_SECRET=CHOOSE_A_LONG_RANDOM_KEY_MIN_32_CHARS
-
-# Encryption key for secrets at rest (AI provider keys, integration tokens).
-# Recommended for cloud/multi-tenant. Min 16 chars. openssl rand -base64 32
-ENCRYPTION_KEY=CHOOSE_A_RANDOM_KEY_MIN_16_CHARS
-
-# MCP Server
-MCP_API_KEY=CHOOSE_A_KEY
-
-# CORS and app URL
-CORS_ORIGIN=https://app.example.com
-APP_URL=https://app.example.com
-
-# SearXNG (can be left as-is)
-SEARXNG_SECRET=sinout_searxng_secret_key_2024
-
-# Optional default AI key — users bring their own (BYOK) in Settings
-# ANTHROPIC_API_KEY=sk-ant-...
-
-# Optional: in-app crypto billing (NOWPayments)
-# NOWPAYMENTS_API_KEY=your_api_key
-# NOWPAYMENTS_IPN_SECRET=your_ipn_secret
-# PRICE_TEAM_USD=149
-
-# SMTP for password reset / emails (optional)
-# SMTP_HOST=smtp.gmail.com
-# SMTP_PORT=587
-# SMTP_USER=your@gmail.com
-# SMTP_PASS=your_app_password
-# SMTP_FROM=SinoutX <your@gmail.com>
-```
-
-> **Password tip:** use a generator, e.g.:
-> ```bash
-> openssl rand -base64 32
-> ```
-
----
-
-## 3. Start the stack
+Keep `SINOUT_EDITION=solo` and `DEPLOYMENT_MODE=self-hosted`. Set your own values
+for `DB_PASSWORD`, `REDIS_PASSWORD`, `MEILI_KEY`, `MINIO_PASSWORD`, `JWT_SECRET`,
+`ENCRYPTION_KEY`, `MCP_API_KEY` and `SEARXNG_SECRET`; follow the minimum lengths in
+`.env.example`. Generate independent random values, for example:
 
 ```bash
-cd /media/mediassd/sinout
-docker compose up -d
+openssl rand -hex 32
 ```
 
-The first run takes 3–5 minutes — images are pulled, backend and
-frontend are built, and DB migrations are applied.
+Set `APP_URL` and `CORS_ORIGIN` to the address at which you will use the app.
+For a local HTTP installation this may be `http://localhost:8090`; for a public
+installation use your HTTPS domain, for example `https://notes.example.com`.
+Never commit `.env` or put provider keys in commands that will be shared.
 
-Check that everything started:
+Build and start:
+
 ```bash
+docker compose up -d --build
 docker compose ps
-```
-
-All services should be `running` or `healthy`. Check health:
-```bash
 curl http://localhost:8090/health
 ```
 
-Expected response:
-```json
-{"status":"ok","services":{"database":"ok","meilisearch":"ok","redis":"ok"}}
-```
+The first build/download can take several minutes. Backend startup applies the
+database migrations automatically. Open your configured URL, register the first
+account and connect your own AI provider in Settings. A second account cannot
+register in solo mode. The instance owner is not charged by SinoutX; providers
+charge for calls made using your keys.
 
----
+## Domain and TLS
 
-## 4. Configure Nginx Proxy Manager
+The app is exposed on **8090**. There is no landing page or port 8091 in this
+edition. Point your reverse proxy to the Docker host's port 8090, enable TLS and
+WebSocket support, and allow long-lived AI streaming responses. If the proxy
+runs in a container, use a reachable host address rather than that container's
+own `127.0.0.1`. Keep database, Redis, object storage and other internal services
+off public interfaces.
 
-The stack exposes two ports on the host:
-- **8090** — the app (React SPA + API)
-- **8091** — the marketing landing page
+## Search
 
-Create two Proxy Hosts in NPM (usually at `http://IP:81`):
-
-### Landing → `example.com`
-- **Domain Names:** `example.com`
-- **Scheme:** `http`
-- **Forward Hostname / IP:** `127.0.0.1`
-- **Forward Port:** `8091`
-- **SSL:** Request a new certificate, Force SSL ✓, HTTP/2 ✓
-
-### App → `app.example.com`
-- **Domain Names:** `app.example.com`
-- **Scheme:** `http`
-- **Forward Hostname / IP:** `127.0.0.1`
-- **Forward Port:** `8090`
-- **Websockets Support:** ✓ (required — collab server + AI chat SSE)
-- **SSL:** Request a new certificate, Force SSL ✓, HTTP/2 ✓
-
-After this the landing is at `https://example.com` and the app at
-`https://app.example.com`.
-
-### Landing videos are not in git
-
-`landing/videos/` is gitignored. The clips are re-rendered often, and every
-re-upload of a 5 MB file would live in the history forever — that is how this
-repo once grew to 95 MB. Ship them separately:
+SearXNG is included in the base stack. Optional Serper is configured using
+`SEARCH_API=serper` and `SEARCH_API_KEY` in `.env`. Check from the backend network:
 
 ```bash
-./scripts/sync-landing-videos.sh user@host:/path/to/sinout
+bash scripts/search-doctor.sh "погода Минск"
+# This makes one Serper call and consumes API quota:
+bash scripts/search-doctor.sh --api-only "погода Минск"
 ```
 
-nginx serves them straight from disk, so no restart is needed. After a
-re-render, bump `VIDEO_V` in `landing/index.html` and `landing/integrations.html`:
-the filenames never change, so a cached browser would otherwise splice byte
-ranges of the old file into the new one and report that the video is damaged.
-
----
-
-## 5. First sign-in
-
-Open `https://app.example.com` — the registration page appears.
-
-**The first registered user automatically becomes OWNER** (and is never
-limited by plan quotas).
-
-After the first user signs up, go to **Admin → Registration** and pick a
-mode:
-- **Invite-only** — registration by code only
-- **Closed** — nobody can register
-
----
-
-## 6. Updating later
-
-On the server a single command is enough:
+Browser search is an optional fallback, off by default. Enable it explicitly:
 
 ```bash
-cd /media/mediassd/sinout && ./deploy.sh
+bash scripts/enable-browser-search.sh fallback
+docker compose --profile browser-search up -d --no-deps --wait --wait-timeout 90 browser-search
+bash scripts/search-doctor.sh --browser-only "погода Минск"
 ```
 
-The script detects what changed (backend / frontend / config) and
-rebuilds only what's needed.
+The setup script generates a separate internal token and preserves provider
+keys. Search may still be blocked by the provider. This service does not solve
+CAPTCHAs or share login sessions. Its memory limit is 1 GB; allow extra RAM for
+it. Disable browser search by setting `BROWSER_SEARCH_MODE=off` in `.env` and
+recreating the backend; the container can be stopped separately.
 
-> If a force-pushed history ever makes `git pull` complain about
-> divergent branches, run `git reset --hard origin/main` (the server is
-> a deploy checkout — it has no local work to lose).
+## Updates and backups
 
----
-
-## Port layout
-
-| Service | External port | Purpose |
-|---------|--------------|---------|
-| nginx — app (Docker) | 8090 | App entry point → NPM |
-| nginx — landing (Docker) | 8091 | Landing page → NPM |
-| Everything else | closed | Docker-internal network only |
-
----
-
-## Useful commands
+Back up the database and uploaded files before updating. Keep `.env` and the
+configured data volumes. Do not reset or delete them as part of an update.
 
 ```bash
-# Follow backend logs
-docker logs sinout-backend-1 -f
-
-# Follow all service logs
-docker compose logs -f
-
-# Restart a single service
-docker compose restart backend
-
-# Stop everything
-docker compose down
-
-# Stop and delete data (CAUTION — wipes the database!)
-docker compose down -v
+cd /path/to/sinoutX-user
+bash deploy.sh
+docker compose ps
+curl http://localhost:8090/health
 ```
 
----
+`deploy.sh` pulls updates and rebuilds affected services; it does not enable
+optional profiles automatically. Migrations run at backend startup. If browser
+search is enabled, wait for its healthcheck before running diagnostics.
 
-## Backup
+Logs:
 
-Data lives in Docker volumes. You can back up straight from the app:
-**Settings → Backup → Download backup**
-
-Or via command line:
 ```bash
-docker run --rm \
-  -v sinout_postgres_data:/data \
-  -v $(pwd)/backup:/backup \
-  alpine tar czf /backup/postgres-$(date +%Y%m%d).tar.gz -C /data .
+docker compose logs --tail=80 backend
+docker compose logs --tail=80 frontend nginx
+docker compose --profile browser-search logs --tail=80 browser-search
 ```
+
+To rebuild the app manually after pulling:
+
+```bash
+git pull
+docker compose up -d --build --no-deps --wait --wait-timeout 120 backend frontend
+docker compose up -d --no-deps --force-recreate nginx
+```
+
+The common core includes the authenticated Code client APIs, model tiers and
+the price-limit checks. They do not require enabling the multi-user admin UI.
+See [README.md](README.md) for features, API keys, MCP and optional services.

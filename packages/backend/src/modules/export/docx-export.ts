@@ -5,7 +5,7 @@ import {
 
 import { screenshotMapEmbed } from './map-screenshot.js'
 
-async function fetchImageBuffer(src: string): Promise<Buffer | null> {
+export async function fetchImageBuffer(src: string): Promise<Buffer | null> {
   try {
     const url = src.startsWith('/') ? `http://localhost:3010${src}` : src
     const res = await fetch(url, { signal: AbortSignal.timeout(10_000) })

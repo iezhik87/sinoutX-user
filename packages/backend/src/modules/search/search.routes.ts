@@ -26,7 +26,9 @@ export async function searchRoutes(fastify: FastifyInstance, prisma: PrismaClien
     if (!resolvedWsId) return reply.status(400).send({ error: 'workspaceId or projectId required' })
     if (await denyIfNotMember(prisma, resolvedWsId, req.authUser!.id, reply, { allowViewer: true })) return
 
-    const results = await service.search(q, { workspaceId, projectId, types, limit })
+    // resolvedWsId, а не сырой workspaceId: членство проверено именно по нему, а projectId
+    // сервис сверит с проектами этого воркспейса.
+    const results = await service.search(q, { workspaceId: resolvedWsId, projectId, types, limit })
     return reply.send(results)
   })
 

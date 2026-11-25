@@ -1,4 +1,7 @@
 import { useState, useEffect } from 'react'
+import { ModelFilterControls } from './ModelFilterControls'
+import { emptyModelFilters, matchesModelFilters, compareModelPrice, type FilterableModel } from '@/lib/modelFilters'
+import { taskBenchmark, compareBenchmark } from '@/lib/modelBenchmarks'
 import { cn } from '@/lib/utils'
 import { useT } from '@/i18n/useT'
 import { Loader2, Check, RotateCcw, Pencil } from 'lucide-react'
@@ -39,6 +42,7 @@ export function ProviderConnect({
   verify,
   save,
   reset,
+  modelCatalog,
 }: {
   title: string
   providers: readonly string[]
@@ -53,8 +57,14 @@ export function ProviderConnect({
   verify?: (p: { provider: string; model: string; apiKey?: string; baseUrl?: string }) => Promise<{ ok: boolean; error?: string }>
   save: (p: { provider: string; model: string; apiKey?: string; baseUrl?: string }) => Promise<void>
   reset?: () => Promise<void>
+  /** OpenRouter metadata only: never substitute its prices for direct-provider prices. */
+  modelCatalog?: readonly FilterableModel[]
 }) {
   const t = useT().settings.connect
+  const c = useT().admin.catalog
+  const [filters, setFilters] = useState(emptyModelFilters)
+  const [search, setSearch] = useState('')
+  const [modelSort, setModelSort] = useState('name')
   // A key is what proves a HOSTED provider is set up. One that needs none —
   // the in-stack embedder, ollama, pollinations — is configured as soon as it
   // has a model; requiring a key kept its card permanently «unconfigured».
@@ -79,6 +89,14 @@ export function ProviderConnect({
   const storedKeyUsable = !!current.hasKey && provider === current.provider
   const haveKey = !needsKey || !!apiKey.trim() || storedKeyUsable
   const formOpen = !connected || editing
+  const canFilter = modelCatalog !== undefined && provider === 'openrouter'
+  const metadata = new Map(modelCatalog?.map((m) => [m.id, m]))
+  const info = (id: string): FilterableModel => metadata.get(id) ?? { id, tags: [], contextLength: 0, promptPer1M: null, completionPer1M: null }
+  const visibleModels = canFilter ? models.filter((m) => (!search.trim() || `${m.id} ${m.label}`.toLowerCase().includes(search.trim().toLowerCase())) && matchesModelFilters(info(m.id), filters)).sort((a, b) => {
+    if (modelSort === 'name') return a.label.localeCompare(b.label)
+    if (modelSort === 'quality') return compareBenchmark(info(a.id), info(b.id), filters.benchmarkTask)
+    return compareModelPrice(info(a.id), info(b.id), modelSort.startsWith('input') ? 'prompt' : modelSort.startsWith('output') ? 'completion' : 'blended', modelSort.endsWith('Desc'))
+  }) : models
 
   useEffect(() => {
     if (!formOpen || !provider || !haveKey) { setModels([]); return }
@@ -207,6 +225,21 @@ export function ProviderConnect({
       {/* The model list exists only once there is a key to fetch it with. */}
       {provider && haveKey && (
         <div className="space-y-2">
+          {canFilter && models.length > 0 && <>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <input aria-label={c.search} placeholder={c.search} value={search} onChange={(e) => setSearch(e.target.value)} className={input} />
+              <label className="text-xs text-slate-400">{c.sortLabel}
+              <select aria-label={c.sortLabel} value={modelSort} onChange={(e) => setModelSort(e.target.value)} className={input}>
+                <option value="name">{c.sortName}</option><option value="priceAsc">{c.sortCheap}</option><option value="priceDesc">{c.sortExpensive}</option>
+                <option value="quality">{c.sortQuality}</option>
+                <option value="inputAsc">{c.sortInputCheap}</option><option value="inputDesc">{c.sortInputExpensive}</option>
+                <option value="outputAsc">{c.sortOutputCheap}</option><option value="outputDesc">{c.sortOutputExpensive}</option>
+              </select>
+              </label>
+            </div>
+            <ModelFilterControls value={filters} onChange={setFilters} />
+            <p className="text-[11px] text-slate-500">{c.found}: {visibleModels.length} {c.of} {models.length}. {c.priceSortHint}</p>
+          </>}
           {loading ? (
             <div className="flex items-center gap-2 text-[11px] text-slate-500">
               <Loader2 size={12} className="animate-spin" /> {t.pickModel}
@@ -214,11 +247,19 @@ export function ProviderConnect({
           ) : models.length > 0 ? (
             <select value={model} onChange={(e) => setModel(e.target.value)} className={cn(input, 'appearance-none')}>
               <option value="">{t.pickModel}</option>
-              {models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+              {model && !visibleModels.some((m) => m.id === model) && <option value={model}>{model} · {c.outsideFilters}</option>}
+              {visibleModels.map((m) => <option key={m.id} value={m.id}>{m.label}{canFilter ? ` · ${c.colIn}: ${info(m.id).promptPer1M === null ? '—' : '$' + info(m.id).promptPer1M} · ${c.colOut}: ${info(m.id).completionPer1M === null ? '—' : '$' + info(m.id).completionPer1M} · LiveBench: ${taskBenchmark(info(m.id), filters.benchmarkTask)?.score.toFixed(2) ?? '—'}` : ''}</option>)}
             </select>
           ) : (
             <input value={model} onChange={(e) => setModel(e.target.value)} placeholder={t.model} className={cn(input, 'font-mono')} />
           )}
+          {canFilter && models.length > 0 && visibleModels.length === 0 && <p className="text-xs text-slate-500">{c.noMatches}</p>}
+          {canFilter && model && info(model).benchmark && <div className="text-[11px] text-slate-500 break-words">
+            <a href={info(model).benchmark!.source} target="_blank" rel="noreferrer" className="text-primary-400 underline">LiveBench</a>
+            {` · ${c.benchmarkRelease}: ${info(model).benchmark!.release} · ${c.benchmarkTasks[filters.benchmarkTask]}`}
+            {taskBenchmark(info(model), filters.benchmarkTask) && <p className="break-all">{c.benchmarkRun}: {taskBenchmark(info(model), filters.benchmarkTask)!.run}</p>}
+            {info(model).benchmark!.stale && <p>{c.benchmarkStale}</p>}
+          </div>}
           <button
             onClick={doSave}
             disabled={!model || saving || loading}

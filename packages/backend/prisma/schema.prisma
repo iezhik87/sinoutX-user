@@ -557,6 +557,7 @@ model Integration {
 enum IntegrationType {
   TELEGRAM
   VIBER
+  ROBOT
   SLACK
   DISCORD
   TWITTER
@@ -1071,7 +1072,7 @@ model AuditLog {
 // magnitude.
 model AiUsage {
   id                String   @id @default(cuid())
-  workspaceId       String   @map("workspace_id")
+  workspaceId       String?  @map("workspace_id")
   userId            String?  @map("user_id")
   provider          String
   model             String
@@ -1086,10 +1087,11 @@ model AiUsage {
   source            String   @default("chat") // chat | telegram | viber | skill | trigger
   createdAt         DateTime @default(now()) @map("created_at")
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId, createdAt(sort: Desc)])
   @@index([userId, createdAt(sort: Desc)])
+  @@index([createdAt(sort: Desc)])
   @@map("ai_usage")
 }
 

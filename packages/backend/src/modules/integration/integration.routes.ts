@@ -365,6 +365,65 @@ export function extractPhotos(text: string, max = 6): { text: string; photos: st
   return { text: out, photos }
 }
 
+export async function loadChannelHistory(
+  prisma: PrismaClient,
+  channel: string,
+  workspaceId: string,
+  chatKey: string,
+): Promise<ChatMessage[]> {
+  let history: ChatMessage[] = []
+  try {
+    // Prefer the DURABLE conversation as the source of truth: the old Redis window
+    // kept only the last 10 messages for 1h, so anything said earlier (or after an
+    // hour's pause) was invisible — the agent literally could not "look above".
+    // Load a wider recent slice from the AiConversation; streamChat still trims/
+    // summarizes if it gets long.
+    const convId = await redis.get(`${channel}_conv:${workspaceId}:${chatKey}`)
+    if (convId) {
+      // Load a WIDE recent slice: a data-entry session (dictating a draw / weigh-in)
+      // is hundreds of tiny turns, and at 30 the agent couldn't see its own data
+      // from a few minutes ago → it «lost the thread» and miscalculated. streamChat
+      // then trims by a character budget, so loading many small messages is cheap
+      // and safe; the budget caps what actually reaches the model.
+      const rows = await prisma.aiMessage.findMany({
+        where: { conversationId: convId, role: { in: ['user', 'assistant'] } },
+        orderBy: { createdAt: 'desc' }, take: 400,
+        select: { role: true, content: true },
+      })
+      history = rows.reverse().map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }))
+    }
+    if (!history.length) {
+      const raw = await redis.get(agentHistKey(channel, workspaceId, chatKey))
+      if (raw) history = JSON.parse(raw) as ChatMessage[]
+    }
+  } catch { /* ignore */ }
+  return history
+}
+
+export async function persistChannelExchange(
+  prisma: PrismaClient,
+  channel: string,
+  workspaceId: string,
+  chatKey: string,
+  text: string,
+  reply: string,
+): Promise<void> {
+  try {
+    const key = `${channel}_conv:${workspaceId}:${chatKey}`
+    let convId = await redis.get(key)
+    if (convId) { const ex = await prisma.aiConversation.findUnique({ where: { id: convId }, select: { id: true } }); if (!ex) convId = null }
+    if (!convId) {
+      const conv = await prisma.aiConversation.create({ data: { workspaceId, title: `${channel} ${chatKey}` } })
+      convId = conv.id
+      await redis.set(key, convId)
+    }
+    await prisma.aiConversation.update({
+      where: { id: convId },
+      data: { updatedAt: new Date(), messages: { create: [{ role: 'user', content: text.slice(0, 8000) }, { role: 'assistant', content: reply.slice(0, 8000) }] } },
+    })
+  } catch (e) { console.error(`[${channel}] persist conversation`, e) }
+}
+
 export async function runChannelAgent(
   prisma: PrismaClient,
   adapter: ChannelAdapter,
@@ -404,33 +463,7 @@ export async function runChannelAgent(
   }
 
   const histKey = agentHistKey(adapter.id, workspaceId, chatKey)
-  const convKey = `${adapter.id}_conv:${workspaceId}:${chatKey}`
-  let history: ChatMessage[] = []
-  try {
-    // Prefer the DURABLE conversation as the source of truth: the old Redis window
-    // kept only the last 10 messages for 1h, so anything said earlier (or after an
-    // hour's pause) was invisible — the agent literally could not "look above".
-    // Load a wider recent slice from the AiConversation; streamChat still trims/
-    // summarizes if it gets long.
-    const convId = await redis.get(convKey)
-    if (convId) {
-      // Load a WIDE recent slice: a data-entry session (dictating a draw / weigh-in)
-      // is hundreds of tiny turns, and at 30 the agent couldn't see its own data
-      // from a few minutes ago → it «lost the thread» and miscalculated. streamChat
-      // then trims by a character budget, so loading many small messages is cheap
-      // and safe; the budget caps what actually reaches the model.
-      const rows = await prisma.aiMessage.findMany({
-        where: { conversationId: convId, role: { in: ['user', 'assistant'] } },
-        orderBy: { createdAt: 'desc' }, take: 400,
-        select: { role: true, content: true },
-      })
-      history = rows.reverse().map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }))
-    }
-    if (!history.length) {
-      const raw = await redis.get(histKey)
-      if (raw) history = JSON.parse(raw) as ChatMessage[]
-    }
-  } catch { /* ignore */ }
+  const history = await loadChannelHistory(prisma, adapter.id, workspaceId, chatKey)
   const messages: ChatMessage[] = [...history, { role: 'user', content: text }]
 
   // Default project gives the model a place to work, but we do NOT scope-lock it
@@ -535,22 +568,7 @@ export async function runChannelAgent(
   // Persist the exchange as an AiConversation (durable history + feeds episodic
   // memory). Skipped for skill/trigger runs (persist=false) and for replies that
   // reveal Vault secrets (never store passwords in durable history).
-  if (persist && !revealedSecret) {
-    try {
-      const key = `${adapter.id}_conv:${workspaceId}:${chatKey}`
-      let convId = await redis.get(key)
-      if (convId) { const ex = await prisma.aiConversation.findUnique({ where: { id: convId }, select: { id: true } }); if (!ex) convId = null }
-      if (!convId) {
-        const conv = await prisma.aiConversation.create({ data: { workspaceId, title: `${adapter.id} ${chatKey}` } })
-        convId = conv.id
-        await redis.set(key, convId)
-      }
-      await prisma.aiConversation.update({
-        where: { id: convId },
-        data: { updatedAt: new Date(), messages: { create: [{ role: 'user', content: text.slice(0, 8000) }, { role: 'assistant', content: reply.slice(0, 8000) }] } },
-      })
-    } catch (e) { console.error(`[${adapter.id}] persist conversation`, e) }
-  }
+  if (persist && !revealedSecret) await persistChannelExchange(prisma, adapter.id, workspaceId, chatKey, text, reply)
 
   const buttons: ChannelButton[] | undefined = lastTask ? taskButtons(lastTask.id, userLanguage) : undefined
 
@@ -1017,6 +1035,8 @@ export async function integrationRoutes(app: FastifyInstance, prisma: PrismaClie
       if (type === 'TELEGRAM' && cfg.botToken) await tgApi(cfg.botToken as string, 'deleteWebhook', {})
       // Viber removes the webhook on an empty url — and only on `url` alone.
       if (type === 'VIBER' && cfg.token) await viberApi(cfg.token as string, 'set_webhook', { url: '' })
+      // У робота вместо вебхука ключ: отключённый робот не должен оставаться с доступом.
+      if (type === 'ROBOT' && cfg.apiKeyId) await prisma.apiKey.deleteMany({ where: { id: cfg.apiKeyId as string } })
     } catch { /* ignore */ }
   }
 

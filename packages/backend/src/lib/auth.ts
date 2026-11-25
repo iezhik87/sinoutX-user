@@ -15,7 +15,7 @@ export function verifyPassword(plain: string, hash: string): Promise<boolean> {
 
 // ─── API key helpers ──────────────────────────────────────────────────────────
 
-const API_KEY_PREFIX = 'sk_sinoutx_'
+export const API_KEY_PREFIX = 'sk_sinoutx_'
 
 export function generateApiKey(): { raw: string; prefix: string; hash: string } {
   const raw = `${API_KEY_PREFIX}${randomBytes(32).toString('hex')}`

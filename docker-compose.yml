@@ -146,6 +146,9 @@ services:
       SEARCH_API: ${SEARCH_API:-}
       SEARCH_API_KEY: ${SEARCH_API_KEY:-}
       SEARCH_CX: ${SEARCH_CX:-}
+      BROWSER_SEARCH_MODE: ${BROWSER_SEARCH_MODE:-off}
+      BROWSER_SEARCH_URL: ${BROWSER_SEARCH_URL:-http://browser-search:8090}
+      BROWSER_SEARCH_TOKEN: ${BROWSER_SEARCH_TOKEN:-}
       WHISPER_URL: http://whisper:8000/v1
       WHISPER_MODEL: ${WHISPER_MODEL:-Systran/faster-whisper-base}
       # Crypto billing (NOWPayments) — empty disables /billing/invoice (503)
@@ -265,6 +268,32 @@ services:
     cpus: 2.0
     security_opt:
       - no-new-privileges:true
+
+  # ═══ Optional browser search (separate from private lab sessions) ═══
+  browser-search:
+    profiles: [browser-search]
+    build:
+      context: ./search-browser
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: 8090
+      BROWSER_SEARCH_TOKEN: ${BROWSER_SEARCH_TOKEN:-}
+      BROWSER_SEARCH_ENGINES: ${BROWSER_SEARCH_ENGINES:-bing,google,duckduckgo}
+    networks: [sandbox_net]
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+    shm_size: 256m
+    # Internal only; no DB/provider keys, login sessions or published port.
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=3)"]
+      start_period: 30s
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   # ═══ MCP Server ═══
   mcp-server:

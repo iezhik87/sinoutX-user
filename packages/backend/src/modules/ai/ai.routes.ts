@@ -24,6 +24,30 @@ function looksLikeImage(buf: Buffer): boolean {
   return false
 }
 
+// /ai/stt принимает только речь с робота: 16 кГц, моно, 16 бит, до 15 с. При
+// таком формате длительность задаётся размером файла, поэтому хватает лимита
+// на размер: 15 с = 480 000 байт + заголовок с запасом на служебные блоки.
+const STT_MAX_BYTES = 480_000 + 1024
+const STT_TIMEOUT_MS = 90_000 // меньше proxy_read_timeout в nginx (120 с)
+
+function isSpeechWav(buf: Buffer): boolean {
+  if (buf.length < 44) return false
+  if (buf.toString('latin1', 0, 4) !== 'RIFF' || buf.toString('latin1', 8, 12) !== 'WAVE') return false
+  // Блоки RIFF идут подряд: 4 байта имя, 4 байта длина, тело с выравниванием до чётного.
+  for (let pos = 12; pos + 8 <= buf.length;) {
+    const size = buf.readUInt32LE(pos + 4)
+    if (buf.toString('latin1', pos, pos + 4) === 'fmt ') {
+      if (size < 16 || pos + 24 > buf.length) return false
+      const channels = buf.readUInt16LE(pos + 10)
+      const sampleRate = buf.readUInt32LE(pos + 12)
+      const bits = buf.readUInt16LE(pos + 22)
+      return channels === 1 && sampleRate === 16000 && bits === 16
+    }
+    pos += 8 + size + (size % 2)
+  }
+  return false
+}
+
 // Kling AI: supports both "accessKey:secretKey" (JWT) and single token formats
 function klingBearerToken(apiKey: string): string {
   const colonIdx = apiKey.indexOf(':')
@@ -787,6 +811,40 @@ JSON array:`
       fastify.log.error({ err: e }, 'AI generate-tasks failed')
       return reply.status(500).send({ error: 'AI request failed' })
     }
+  })
+
+  // POST /ai/stt?workspaceId=&language=ru — распознавание короткой фразы для шлюза
+  // робота: только свой whisper (без OpenAI и без разбора совещания, как в /ai/transcribe).
+  // Вход — multipart с WAV (16 кГц, моно, 16 бит, до 15 с), выход — { text }.
+  fastify.post('/ai/stt', async (req, reply) => {
+    const { workspaceId, language } = z.object({
+      workspaceId: z.string().min(1),
+      language: z.string().regex(/^[a-z]{2}$/).default('ru'),
+    }).parse(req.query)
+    if (await denyIfNotMember(prisma, workspaceId, req.authUser!.id, reply, { allowViewer: true })) return
+    if (!config.WHISPER_URL) return reply.status(503).send({ error: 'Speech recognition is not configured' })
+
+    const data = await req.file({ limits: { fileSize: STT_MAX_BYTES } })
+    if (!data) return reply.status(400).send({ error: 'No file provided' })
+    const buf = await data.toBuffer() // сверх лимита — ошибка 413 из @fastify/multipart
+    if (!isSpeechWav(buf)) return reply.status(400).send({ error: 'Expected WAV: 16 kHz, mono, 16-bit' })
+
+    const form = new FormData()
+    form.append('file', new Blob([buf as unknown as ArrayBuffer], { type: 'audio/wav' }), 'speech.wav')
+    form.append('model', config.WHISPER_MODEL)
+    form.append('language', language)
+    form.append('response_format', 'text')
+    const res = await fetch(`${config.WHISPER_URL.replace(/\/$/, '')}/audio/transcriptions`, {
+      method: 'POST', body: form, signal: AbortSignal.timeout(STT_TIMEOUT_MS),
+    }).catch((err) => {
+      fastify.log.error({ err }, 'whisper request failed')
+      return null
+    })
+    if (!res || !res.ok) {
+      if (res) fastify.log.error({ status: res.status }, 'whisper returned an error')
+      return reply.status(502).send({ error: 'Speech recognition failed' })
+    }
+    return reply.send({ text: (await res.text()).trim() })
   })
 
   // POST /ai/transcribe — transcribe audio/video file via OpenAI Whisper, then extract tasks/decisions

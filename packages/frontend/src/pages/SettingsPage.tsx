@@ -4,6 +4,7 @@ import { toast } from '@/stores/toastStore'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ProviderConnect } from '@/components/settings/ProviderConnect'
 import { PeopleTab } from '@/components/settings/PeopleTab'
+import { RobotCard } from '@/components/settings/RobotIntegration'
 import { useIsSolo } from '@/stores/instanceStore'
 import {
   Bot, Trash2, Download, Upload, Loader2, Plus, Check, X,
@@ -325,26 +326,29 @@ function IntegrationsTab({ workspaceId }: { workspaceId: string }) {
           <Loader2 size={20} className="animate-spin text-primary-500" />
         </div>
       ) : (
-        allTypes.map((type) => {
-          const existing = existingMap.get(type)
-          return (
-            <IntegrationCard
-              key={type}
-              type={type}
-              integration={existing}
-              workspaceId={workspaceId}
-              isEditing={editingType === type}
-              onStartEdit={() => setEditingType(type)}
-              onCancelEdit={() => setEditingType(null)}
-              onSaved={() => {
-                setEditingType(null)
-                qc.invalidateQueries({ queryKey: ['integrations', workspaceId] })
-              }}
-              onDisable={() => existing && disableMutation.mutate(existing.id)}
-              onDelete={() => existing && deleteMutation.mutate(existing.id)}
-            />
-          )
-        })
+        <>
+          {allTypes.map((type) => {
+            const existing = existingMap.get(type)
+            return (
+              <IntegrationCard
+                key={type}
+                type={type}
+                integration={existing}
+                workspaceId={workspaceId}
+                isEditing={editingType === type}
+                onStartEdit={() => setEditingType(type)}
+                onCancelEdit={() => setEditingType(null)}
+                onSaved={() => {
+                  setEditingType(null)
+                  qc.invalidateQueries({ queryKey: ['integrations', workspaceId] })
+                }}
+                onDisable={() => existing && disableMutation.mutate(existing.id)}
+                onDelete={() => existing && deleteMutation.mutate(existing.id)}
+              />
+            )
+          })}
+          <RobotCard workspaceId={workspaceId} />
+        </>
       )}
     </div>
   )

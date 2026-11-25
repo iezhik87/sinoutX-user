@@ -47,6 +47,9 @@ export interface CustomTool {
   kind?: 'http' | 'scheduled' | 'trigger'
   schedule?: { hour: number }   // 'scheduled': run daily at this local hour
   event?: string                // 'trigger': event type to react to (e.g. 'record.created')
+  /** 'trigger' on record.created: only records of these modules (e.g. ['finance']).
+   *  Empty = any module except the agents' memory. Checked before the agent runs. */
+  moduleIds?: string[]
   prompt?: string               // 'scheduled'/'trigger': what the agent does each run
   lastRunAt?: string
 }
@@ -101,6 +104,10 @@ function sanitize(t: Partial<CustomTool>, prev?: CustomTool): CustomTool | null 
     kind: t.kind === 'scheduled' ? 'scheduled' : t.kind === 'trigger' ? 'trigger' : 'http',
     schedule: t.kind === 'scheduled' ? { hour: Math.max(0, Math.min(23, Math.trunc(Number(t.schedule?.hour ?? prev?.schedule?.hour ?? 9)) || 9)) } : undefined,
     event: t.kind === 'trigger' ? String(t.event ?? prev?.event ?? '').slice(0, 60) : undefined,
+    moduleIds: t.kind === 'trigger'
+      ? (Array.isArray(t.moduleIds) ? t.moduleIds : prev?.moduleIds ?? [])
+          .map((m) => String(m).trim().toLowerCase().slice(0, 40)).filter(Boolean).slice(0, 10)
+      : undefined,
     prompt: (t.kind === 'scheduled' || t.kind === 'trigger') ? String(t.prompt ?? prev?.prompt ?? '').slice(0, 2000) : undefined,
     lastRunAt: t.lastRunAt ?? prev?.lastRunAt,
   }

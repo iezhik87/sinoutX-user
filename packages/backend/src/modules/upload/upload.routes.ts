@@ -7,6 +7,7 @@ import { denyIfNotMember, getProjectWorkspaceId } from '../../lib/requireAccess.
 import { isSafeWebhookUrl } from '../../lib/webhook.js'
 import { maybeWarnStorage } from '../../lib/storageAlert.js'
 import { toStorableImage } from '../../lib/images.js'
+import { isActiveMime } from '../../lib/mime.js'
 
 const MAX_FILE_SIZE = 100 * 1024 * 1024 // 100 MB
 
@@ -212,9 +213,12 @@ export async function uploadRoutes(app: FastifyInstance, prisma: PrismaClient) {
     const stream = await minio.getObject(BUCKET, attachment.storagePath)
 
     const mime = attachment.mimeType || ''
-    const isViewable = mime.startsWith('image/') || mime.startsWith('video/') || mime.startsWith('audio/') || mime.startsWith('text/') || mime === 'application/pdf'
+    // HTML/SVG/XML served inline from the API's own origin would run as the app.
+    const isViewable = !isActiveMime(mime) && (mime.startsWith('image/') || mime.startsWith('video/') || mime.startsWith('audio/') || mime.startsWith('text/') || mime === 'application/pdf')
     const disposition = isViewable ? 'inline' : 'attachment'
-    reply.header('Content-Type', mime)
+    reply.header('Content-Type', mime || 'application/octet-stream')
+    reply.header('X-Content-Type-Options', 'nosniff')
+    if (!isViewable) reply.header('Content-Security-Policy', 'sandbox')
     reply.header('Content-Disposition', `${disposition}; filename*=UTF-8''${encodeURIComponent(attachment.filename)}`)
     reply.header('Cache-Control', 'private, max-age=3600')
     return reply.send(stream)

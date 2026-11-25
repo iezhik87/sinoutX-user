@@ -10,7 +10,7 @@ import jwtPlugin from '@fastify/jwt'
 import { PrismaClient } from '@prisma/client'
 import { config } from './config/index.js'
 import { errorHandler } from './middleware/errorHandler.js'
-import { createAuthMiddleware } from './middleware/authenticate.js'
+import { createAuthMiddleware, requestApiKey } from './middleware/authenticate.js'
 import { isFrozen, primeFrozenCache } from './lib/frozen.js'
 import { primeBillingMode, isBillingEnabled } from './lib/billingMode.js'
 import { isSoloEdition, isLabEnabled } from './lib/edition.js'
@@ -34,6 +34,11 @@ import { noteRoutes } from './modules/note/note.routes.js'
 import { realtimeRoutes } from './modules/realtime/realtime.routes.js'
 import { uploadRoutes } from './modules/upload/upload.routes.js'
 import { integrationRoutes } from './modules/integration/integration.routes.js'
+import { robotRoutes } from './modules/integration/robot.routes.js'
+import { llmRoutes } from './modules/llm/llm.routes.js'
+import { webSearchRoutes } from './modules/llm/search.routes.js'
+import { visionRoutes } from './modules/llm/vision.routes.js'
+import { codeObjectRoutes } from './modules/llm/objects.routes.js'
 import { authRoutes } from './modules/auth/auth.routes.js'
 import { exportRoutes } from './modules/export/export.routes.js'
 import { pageVersionRoutes } from './modules/page/page-version.routes.js'
@@ -93,10 +98,10 @@ async function bootstrap() {
     // single agent's batch/recall burst can 429 everyone. API keys get a higher
     // ceiling since recall scans many records per logical call.
     keyGenerator: (req) => {
-      const apiKey = req.headers['x-api-key'] as string | undefined
+      const apiKey = requestApiKey(req.headers)
       return apiKey ? `k:${apiKey}` : (req.ip ?? 'anon')
     },
-    max: (req) => ((req.headers['x-api-key'] as string | undefined) ? 2000 : 300),
+    max: (req) => (requestApiKey(req.headers) ? 2000 : 300),
   })
 
   // ── WebSocket + multipart + JWT ───────────────────────────
@@ -276,6 +281,11 @@ async function bootstrap() {
       api.register((r) => noteRoutes(r, prisma))
       api.register((r) => uploadRoutes(r, prisma))
       api.register((r) => integrationRoutes(r, prisma))
+      api.register((r) => robotRoutes(r, prisma))
+      api.register((r) => llmRoutes(r, prisma))
+      api.register((r) => webSearchRoutes(r, prisma))
+      api.register((r) => visionRoutes(r, prisma))
+      api.register((r) => codeObjectRoutes(r, prisma))
       api.register((r) => exportRoutes(r, prisma))
       api.register((r) => templateRoutes(r, prisma))
       api.register((r) => backupRoutes(r, prisma))

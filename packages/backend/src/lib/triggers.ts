@@ -16,6 +16,19 @@ import { outboundChannels } from '../modules/integration/channels/index.js'
 // to avoid running the agent on every keystroke-batch.
 const TRIGGERABLE = new Set(['record.created', 'task.created', 'task.updated', 'page.created', 'note.created'])
 
+/**
+ * Modules whose records never wake a trigger that did not name them. «Память» is
+ * the agents' own notebook — Синт, Claude, SinoutX Code write facts there all the
+ * time — not a registry the user fills in, so a «new record» there is not news.
+ */
+const QUIET_MODULES = new Set(['memory'])
+
+/** Does a `record.created` trigger care about a record of this module? */
+export function recordTriggerApplies(moduleIds: string[] | undefined, recordModule: string | null): boolean {
+  if (moduleIds?.length) return !!recordModule && moduleIds.includes(recordModule)
+  return !recordModule || !QUIET_MODULES.has(recordModule)
+}
+
 async function handleEvent(prisma: PrismaClient, raw: string) {
   let ev: Record<string, unknown>
   try { ev = JSON.parse(raw) } catch { return }
@@ -23,8 +36,22 @@ async function handleEvent(prisma: PrismaClient, raw: string) {
   const workspaceId = ev.workspaceId as string | undefined
   if (!type || !workspaceId || !TRIGGERABLE.has(type)) return
 
-  const skills = (await getCustomTools(workspaceId, prisma)).filter((t) => t.kind === 'trigger' && t.enabled && t.event === type && t.prompt)
+  let skills = (await getCustomTools(workspaceId, prisma)).filter((t) => t.kind === 'trigger' && t.enabled && t.event === type && t.prompt)
   if (!skills.length) return
+
+  // Which module a new record belongs to is decided HERE, before the agent runs.
+  // Leaving it to the model meant a finance trigger woke on every write anywhere,
+  // spent an answer reading the record, and messaged the user «SKIP — not mine».
+  let recordModule: string | null = null
+  if (type === 'record.created' && ev.collectionId) {
+    const col = await prisma.collection.findUnique({
+      where: { id: String(ev.collectionId) },
+      select: { moduleId: true, project: { select: { moduleId: true } } },
+    }).catch(() => null)
+    recordModule = col?.moduleId ?? col?.project.moduleId ?? null
+    skills = skills.filter((sk) => recordTriggerApplies(sk.moduleIds, recordModule))
+    if (!skills.length) return
+  }
 
   const adapters = await outboundChannels(prisma, workspaceId)
   // The answer fans out to every messenger, so the toolset must obey the weakest

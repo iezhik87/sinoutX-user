@@ -108,6 +108,14 @@ export function CustomToolsManager() {
 }
 
 const TRIGGER_EVENTS = ['record.created', 'task.created', 'task.updated', 'page.created', 'note.created']
+// Modules whose records a record.created trigger may be limited to (ids as in the manifests).
+const TRIGGER_MODULES = [
+  { id: 'finance', en: 'Finance', ru: 'Финансы', be: 'Фінансы' },
+  { id: 'medical-record', en: 'Medical Record', ru: 'Медкарта', be: 'Медкарта' },
+  { id: 'auto', en: 'Vehicles', ru: 'Авто', be: 'Аўто' },
+  { id: 'personal-growth', en: 'Personal growth', ru: 'Личный рост', be: 'Асабісты рост' },
+  { id: 'memory', en: 'Memory', ru: 'Память', be: 'Памяць' },
+]
 
 // Editor for the assistant's automation skills: scheduled (daily at an hour) or
 // event-triggered (fires on a workspace event).
@@ -143,7 +151,26 @@ function AutomationSkillModal({ initial, L, onClose, onSave, saving }: {
                 {TRIGGER_EVENTS.map((e) => <option key={e} value={e}>{eventLabel(e)}</option>)}
               </select>
             </div>
-          ) : (
+          ) : null}
+          {isTrigger && (tool.event ?? 'record.created') === 'record.created' && (
+            <div className="space-y-1">
+              <span className="text-xs text-slate-400">{L('Only records of', 'Только записи модулей', 'Толькі запісы модуляў')}:</span>
+              <div className="flex flex-wrap gap-1.5">
+                {TRIGGER_MODULES.map((m) => {
+                  const on = (tool.moduleIds ?? []).includes(m.id)
+                  return (
+                    <button key={m.id} type="button"
+                      onClick={() => up({ moduleIds: on ? (tool.moduleIds ?? []).filter((x) => x !== m.id) : [...(tool.moduleIds ?? []), m.id] })}
+                      className={on ? 'text-xs px-2 py-0.5 rounded-md border border-primary-500 bg-primary-500/15 text-primary-300' : 'text-xs px-2 py-0.5 rounded-md border border-slate-700 text-slate-400 hover:text-slate-200'}>
+                      {L(m.en, m.ru, m.be)}
+                    </button>
+                  )
+                })}
+              </div>
+              <p className="text-[11px] text-slate-600">{L('None selected — any module except Memory.', 'Ничего не выбрано — любой модуль, кроме «Памяти».', 'Нічога не выбрана — любы модуль, акрамя «Памяці».')}</p>
+            </div>
+          )}
+          {!isTrigger && (
             <div className="flex items-center gap-2">
               <span className="text-xs text-slate-400">{L('Every day at', 'Каждый день в', 'Кожны дзень у')}:</span>
               <select value={tool.schedule?.hour ?? 9} onChange={(e) => up({ schedule: { hour: Number(e.target.value) } })} className="bg-surface-950 border border-slate-700 rounded-md px-2 py-1 text-sm text-slate-200">

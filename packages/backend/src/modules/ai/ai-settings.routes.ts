@@ -7,7 +7,7 @@ import { embed } from '../../lib/embeddings.js'
 import { listVisionModels, runExtraction } from '../../lib/modules/vision.js'
 import { listEmbeddingModels } from '../../lib/modelCatalog.js'
 import { config } from '../../config/index.js'
-import { getManagedAi, getManagedVision, getManagedImage, getManagedEmbeddings, managedSummary } from '../../lib/managed.js'
+import { getManagedAi, getManagedKey, getManagedVision, getManagedImage, getManagedEmbeddings, managedSummary } from '../../lib/managed.js'
 import { getCustomTools, saveCustomTools, maskCustomTool, executeCustomTool, SKILL_BUILDER_SYSTEM, buildAssemblyUserMessage, parseAssembled, type CustomTool } from './ai.customtools.js'
 import { TOOL_CATALOG } from './ai.tools.js'
 import { denyIfNotMember, denyIfNotAdmin } from '../../lib/requireAccess.js'
@@ -287,7 +287,7 @@ export async function aiSettingsRoutes(app: FastifyInstance, prisma: PrismaClien
       apiKey:   z.string().optional(),
       baseUrl:  z.string().optional(),
       model:    z.string().optional(),
-      slot:     z.enum(['ai', 'vision']).optional(),
+      slot:     z.enum(['ai', 'vision', 'code', 'codeLight', 'codeStrong', 'codeRouter']).optional(),
     }).parse(req.body)
 
     const { provider, baseUrl, model } = body
@@ -305,8 +305,13 @@ export async function aiSettingsRoutes(app: FastifyInstance, prisma: PrismaClien
     // "keep testing the already-saved one" — without this, changing only the
     // model forces re-pasting a working key just to see the model list again.
     if (!workspaceId && !apiKey && body.slot) {
-      const managed = body.slot === 'vision' ? getManagedVision() : getManagedAi()
-      if (managed?.provider === provider) apiKey = managed.apiKey
+      if (req.authUser?.role !== 'OWNER' && req.authUser?.role !== 'ADMIN') return reply.status(403).send({ error: 'Admin access required' })
+      if (body.slot === 'code' || body.slot === 'codeLight' || body.slot === 'codeStrong' || body.slot === 'codeRouter') {
+        apiKey = getManagedKey(body.slot, provider)
+      } else {
+        const managed = body.slot === 'vision' ? getManagedVision() : getManagedAi()
+        if (managed?.provider === provider) apiKey = managed.apiKey
+      }
     }
 
     try {

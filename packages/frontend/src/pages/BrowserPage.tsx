@@ -2,7 +2,7 @@ import { useState, useRef, useCallback } from 'react'
 import { Search, RefreshCw, X, ExternalLink, Globe, ChevronRight } from 'lucide-react'
 import { useT } from '@/i18n/useT'
 
-const SEARCH_BASE = '/search'
+const SEARCH_BASE = '/search/'
 
 export function BrowserPage() {
   const t = useT()
@@ -19,7 +19,7 @@ export function BrowserPage() {
   function submit(e: React.FormEvent) {
     e.preventDefault()
     if (!query.trim()) return
-    navigate(`${SEARCH_BASE}?q=${encodeURIComponent(query.trim())}`)
+    navigate(`${SEARCH_BASE}search?q=${encodeURIComponent(query.trim())}`)
   }
 
   const onLoad = useCallback(() => setLoading(false), [])

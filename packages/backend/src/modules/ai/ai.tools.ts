@@ -31,6 +31,7 @@ export const TOOL_CATALOG: ToolMeta[] = [
   { name: 'export_project',         category: 'workspace', description: 'Экспортировать проект в PDF или DOCX (в Telegram файл придёт прямо в чат)',     description_en: 'Export a project to PDF or DOCX (in Telegram the file is sent to the chat)' },
   { name: 'edit_file',              category: 'workspace', description: 'Исправить сохранённый файл заменой фрагментов, не пересобирая целиком',        description_en: 'Fix a stored file by replacing fragments, without rebuilding it whole' },
   { name: 'save_file',              category: 'workspace', description: 'Создать текстовый файл и отдать его человеку (в мессенджере — сразу в чат)',   description_en: 'Create a text file and hand it to the user (sent straight to the chat in a messenger)' },
+  { name: 'create_presentation',    category: 'workspace', description: 'Собрать презентацию PowerPoint (.pptx) из проекта или с нуля, с картинками; файл сохраняется в Файлы', description_en: 'Build a PowerPoint (.pptx) presentation from a project or from scratch, with images; saved to Files' },
   { name: 'send_attachment',        category: 'workspace', description: 'Отправить в чат уже загруженный файл из воркспейса (до 50 МБ)',            description_en: 'Send an already uploaded workspace file to the chat (up to 50 MB)' },
   { name: 'export_page',            category: 'workspace', description: 'Экспортировать одну страницу в PDF или DOCX; в мессенджере файл придёт в чат',  description_en: 'Export a single page to PDF or DOCX; in a messenger the file is sent to the chat' },
   { name: 'export_records',         category: 'workspace', description: 'Выгрузить записи реестра в Excel (.xlsx); в мессенджере файл придёт в чат',   description_en: 'Export registry records to Excel (.xlsx); in a messenger the file is sent to the chat' },
@@ -411,6 +412,34 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
         projectId: { type: 'string', description: 'Проект. По умолчанию — текущий.' },
       },
       required: ['filename', 'content'],
+    },
+  },
+  {
+    name: 'create_presentation',
+    description: 'Собрать готовую презентацию PowerPoint (.pptx) одним файлом и сохранить её в файлы (в мессенджере файл сразу приходит в чат). Порядок: если тема связана с проектом — сначала прочитай его материал (list_pages/get_page, list_sources) и строй слайды из него; если материала нет — сам придумай концепцию: сколько слайдов, что на каждом, тексты. Картинки: если в проекте есть подходящие изображения — передай их ссылку в imageUrl; если нет — вызови generate_image для нужных слайдов и передай полученный url. Не отправляй человека собирать слайды вручную.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Название презентации (титульный слайд и имя файла)' },
+        subtitle: { type: 'string', description: 'Подзаголовок титульного слайда' },
+        slides: {
+          type: 'array',
+          description: 'Слайды после титульного, по порядку (1–40)',
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string', description: 'Заголовок слайда' },
+              bullets: { type: 'array', items: { type: 'string' }, description: 'Пункты списка (3–6 коротких)' },
+              text: { type: 'string', description: 'Сплошной текст, если пункты не нужны' },
+              imageUrl: { type: 'string', description: 'Ссылка на картинку: из файлов проекта или url из generate_image' },
+              notes: { type: 'string', description: 'Заметки докладчика' },
+            },
+            required: ['title'],
+          },
+        },
+        projectId: { type: 'string', description: 'Проект. По умолчанию — текущий.' },
+      },
+      required: ['title', 'slides'],
     },
   },
   {
@@ -1145,6 +1174,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
         name: { type: 'string', description: 'Короткое имя скила' },
         hour: { type: 'number', description: 'Для скила ПО РАСПИСАНИЮ: час 0–23 (локальное время)' },
         event: { type: 'string', enum: ['record.created', 'task.created', 'task.updated', 'page.created', 'note.created'], description: 'Для скила ПО СОБЫТИЮ: тип события (record.created — новая запись в реестре, напр. замер/трата; task.created — новая задача; и т.д.)' },
+        modules: { type: 'array', items: { type: 'string', enum: ['finance', 'medical-record', 'auto', 'personal-growth', 'memory', 'vault'] }, description: 'Для event=record.created: записи каких модулей будят скил (напр. ["finance"] — только счета/операции/бюджет; ["medical-record"] — только медкарта). Указывай ВСЕГДА, когда скил про конкретный модуль: иначе он просыпается на каждую запись в любом реестре. Записи модуля «Память» без явного "memory" не будят никогда.' },
         prompt: { type: 'string', description: 'Что делать при срабатывании (напр. «если это замер давления и систолическое >140 — предупреди меня»)' },
       },
       required: ['name', 'prompt'],

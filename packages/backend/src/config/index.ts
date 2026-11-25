@@ -46,8 +46,8 @@ const envSchema = z.object({
   // request — without a cap the same answer costs the user 2-4x more on an
   // unlucky day, for no visible reason. Providers above the cap are skipped.
   // Zero disables the cap and takes whatever routing offers.
-  OPENROUTER_MAX_PROMPT_USD: z.coerce.number().default(0.25),
-  OPENROUTER_MAX_COMPLETION_USD: z.coerce.number().default(0.7),
+  OPENROUTER_MAX_PROMPT_USD: z.coerce.number().finite().nonnegative().default(0.25),
+  OPENROUTER_MAX_COMPLETION_USD: z.coerce.number().finite().nonnegative().default(0.7),
 
   // ─── Wallet ─────────────────────────────────────────────────────────────────
   // Grant on signup. Zero by default: a hundred signups at $0.50 is a bill the
@@ -87,6 +87,10 @@ const envSchema = z.object({
   SEARCH_API_KEY: z.string().optional(),
   // Только для google_cse: идентификатор «поисковой системы» (cx).
   SEARCH_CX: z.string().optional(),
+  // Optional isolated Chromium search source; opt-in, leaves the API path intact.
+  BROWSER_SEARCH_MODE: z.preprocess((v) => v === '' ? undefined : v, z.enum(['off', 'fallback', 'primary']).default('off')),
+  BROWSER_SEARCH_URL: z.string().url().default('http://browser-search:8090'),
+  BROWSER_SEARCH_TOKEN: z.string().default(''),
   // OpenAI-compatible local transcription endpoint (faster-whisper-server).
   // When set, Telegram voice messages are transcribed here instead of OpenAI.
   WHISPER_URL: z.string().url().optional(),

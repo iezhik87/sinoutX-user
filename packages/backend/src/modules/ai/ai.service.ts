@@ -5,6 +5,7 @@ import { config } from '../../config/index.js'
 import { uploadFile, getPublicUrl, minio, BUCKET } from '../../lib/storage.js'
 import { canUploadFile } from '../../lib/plans.js'
 import { meili, INDEX_PAGES, INDEX_TASKS, INDEX_NOTES, extractText } from '../../lib/meilisearch.js'
+import { SearchService, meiliQuote } from '../search/search.service.js'
 import { TOOL_DEFINITIONS, toOpenAITools } from './ai.tools.js'
 import { getCustomTools, saveCustomTools, toAnthropicTool, executeCustomTool, parseAssembled, type CustomTool } from './ai.customtools.js'
 import { type EmbeddingsConfig, indexRecord, recallRecords, recordText } from '../../lib/embeddings.js'
@@ -14,6 +15,9 @@ import { publish, redis } from '../../lib/redis.js'
 import { encryptSecret, decryptSecret } from '../../lib/crypto.js'
 import { getCapabilities, CAP } from '../../lib/plans.js'
 import { getManagedAi } from '../../lib/managed.js'
+import { browserSearch } from '../../lib/browserSearch.js'
+import { openRouterPriceCap, isPriceCapRejection, PriceCapError } from '../../lib/openRouterPolicy.js'
+export { openRouterPriceCap } from '../../lib/openRouterPolicy.js'
 import { managedEmbeddingsFor, managedVisionFor } from '../../lib/managedAccess.js'
 import { runExtraction, type OcrConfig } from '../../lib/modules/vision.js'
 import { emptyUsage, addUsage, parseOpenAIUsage, recordUsage, type TokenUsage } from '../../lib/usage.js'
@@ -227,7 +231,9 @@ export interface ChatContext {
   /** Which messenger the answer goes to, and what that channel can do.
    *  `canDelete: false` (Viber) removes get_secret from the toolset entirely —
    *  a password we cannot un-send must never reach the chat. */
-  channel?: { id: 'telegram' | 'viber'; canDelete: boolean }
+  channel?: { id: 'telegram' | 'viber' | 'robot'; canDelete: boolean }
+  /** Настройки голосового канала робота: ответ будет произнесён вслух. */
+  voice?: { answerLength: 'short' | 'normal' | 'detailed'; instructions: string }
   /** Assistant persona (name + tone) chosen by the user. Injected as a light
    * "stay in character" block; never overrides task accuracy. */
   persona?: string
@@ -436,7 +442,19 @@ type WebHit = { title: string; url: string; snippet: string }
  * Поставщики возвращают разную форму — приводим к одной здесь, чтобы выше по
  * коду разницы не существовало.
  */
-async function apiSearch(query: string, limit: number): Promise<WebHit[]> {
+/**
+ * Страна из настройки «Регион поиска». Значения там в двух видах: «by-be»
+ * (страна-язык, как у SearXNG) и «ru-RU» (язык-СТРАНА). Заглавные буквы
+ * означают страну, иначе страна идёт первой. Пусто — поиск по всему миру.
+ */
+export function regionCountry(region?: string): string | undefined {
+  const parts = (region ?? '').split(/[-_]/).filter(Boolean)
+  if (!parts.length) return undefined
+  const country = parts.length > 1 && /^[A-Z]{2}$/.test(parts[1]) ? parts[1] : parts[0]
+  return /^[a-z]{2}$/i.test(country) ? country.toLowerCase() : undefined
+}
+
+async function apiSearch(query: string, limit: number, locale: { country?: string; language?: string } = {}): Promise<WebHit[]> {
   const key = config.SEARCH_API_KEY
   if (!config.SEARCH_API || !key) return []
   const n = Math.min(limit, 10)
@@ -453,6 +471,8 @@ async function apiSearch(query: string, limit: number): Promise<WebHit[]> {
       u.searchParams.set('cx', config.SEARCH_CX)
       u.searchParams.set('q', query)
       u.searchParams.set('num', String(n))
+      if (locale.country) u.searchParams.set('gl', locale.country)
+      if (locale.language) u.searchParams.set('hl', locale.language)
       const r = await fetch(u, { signal: timeout })
       if (!r.ok) throw new Error(`google_cse ${r.status}: ${(await r.text()).slice(0, 200)}`)
       const d = await r.json() as { items?: Array<{ title?: string; link?: string; snippet?: string }> }
@@ -471,7 +491,13 @@ async function apiSearch(query: string, limit: number): Promise<WebHit[]> {
       const r = await fetch('https://google.serper.dev/search', {
         method: 'POST',
         headers: { 'X-API-KEY': key, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ q: query, num: n }),
+        // Без gl Google отвечает как для США, и местные результаты теряются,
+        // если город не назван в самом запросе.
+        body: JSON.stringify({
+          q: query, num: n,
+          ...(locale.country ? { gl: locale.country } : {}),
+          ...(locale.language ? { hl: locale.language } : {}),
+        }),
         signal: timeout,
       })
       if (!r.ok) throw new Error(`serper ${r.status}: ${(await r.text()).slice(0, 200)}`)
@@ -1070,11 +1096,16 @@ export async function completeManaged(system: string, user: string): Promise<str
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
     // Runs on OUR key, so it gets the same price ceiling as the assistant.
-    body: JSON.stringify({ model, temperature: 0.2, max_tokens: 2048, ...openRouterPriceCap(baseUrl, true), messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }),
+    body: JSON.stringify({ model, temperature: 0.2, max_tokens: 2048, ...openRouterPriceCap(baseUrl, true, managed.maxPrice), messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }),
     signal: AbortSignal.timeout(60_000),
   })
-  if (!res.ok) throw new Error(`Provider error ${res.status}: ${(await res.text()).slice(0, 200)}`)
-  const json = await res.json() as { choices?: { message?: { content?: string } }[] }
+  if (!res.ok) {
+    const error = await res.text()
+    if (isPriceCapRejection(error)) throw new PriceCapError(model, managed.maxPrice)
+    throw new Error(`Provider error ${res.status}: ${error.slice(0, 200)}`)
+  }
+  const json = await res.json() as { choices?: { message?: { content?: string } }[]; error?: unknown }
+  if (json.error && isPriceCapRejection(JSON.stringify(json.error))) throw new PriceCapError(model, managed.maxPrice)
   return json.choices?.[0]?.message?.content ?? ''
 }
 
@@ -2071,7 +2102,17 @@ ${templateBlock}`
   // Messengers render the reply as PLAIN TEXT (no markdown tables/headers).
   // Telegram accepts a little HTML, Viber none at all — tell the agent to write
   // for a chat, not a document.
-  const telegramBlock = (context.channel || context.telegram)
+  const voiceLength = {
+    short: isRu ? 'одной-тремя фразами' : 'in one to three sentences',
+    normal: isRu ? 'несколькими фразами' : 'in a few sentences',
+    detailed: isRu ? 'подробно, но связной речью' : 'in detail, but as flowing speech',
+  }[context.voice?.answerLength ?? 'short']
+  const voiceWishes = context.voice?.instructions.trim()
+  const telegramBlock = context.channel?.id === 'robot'
+    ? `\n\n${isRu
+        ? `🔊 РОБОТ: это голосовой разговор через настольного робота, твой ответ будет произнесён вслух. Отвечай ${voiceLength}, разговорным языком, без списков, разметки, ссылок и эмодзи. Запрос получен распознаванием речи и может содержать ошибки. Прежде чем что-то удалять или менять, переспроси.${voiceWishes ? ` Пожелания пользователя к ответам: ${voiceWishes}` : ''}`
+        : `🔊 ROBOT: this is a voice conversation through a desktop robot, your reply will be spoken aloud. Answer ${voiceLength}, conversationally, with no lists, markup, links or emoji. The request comes from speech recognition and may contain errors. Before deleting or changing anything, ask again.${voiceWishes ? ` The user's wishes for replies: ${voiceWishes}` : ''}`}`
+    : (context.channel || context.telegram)
     ? `\n\n${isRu
         ? `📱 TELEGRAM: твой ответ идёт в Telegram как ОБЫЧНЫЙ ТЕКСТ — markdown НЕ рендерится. НЕ используй таблицы, заголовки (#/##), жирный (**) и сложную разметку — они расплывутся и покажутся как символы. Пиши как в чате: короткие абзацы, простые списки через «• », разделители «—», уместные эмодзи. Данные/числа подавай списком, НЕ таблицей. Коротко и по делу.`
         : `📱 TELEGRAM: your reply is sent as PLAIN TEXT — markdown is NOT rendered. Do NOT use tables, headers (#/##), bold (**) or complex formatting — they break and show as raw symbols. Write like a chat: short paragraphs, simple "• " bullet lists, "—" separators, fitting emoji. Present data/numbers as a list, NOT a table. Keep it short.`}`
@@ -2130,14 +2171,6 @@ interface OAIStreamChunk {
  * every response now, and the `usage: { include: true }` that used to request it
  * is deprecated and does nothing.
  */
-function openRouterPriceCap(baseUrl: string, withCap: boolean): Record<string, unknown> {
-  if (!withCap || !/openrouter\.ai/i.test(baseUrl)) return {}
-  const maxPrice: Record<string, number> = {}
-  if (config.OPENROUTER_MAX_PROMPT_USD > 0) maxPrice.prompt = config.OPENROUTER_MAX_PROMPT_USD
-  if (config.OPENROUTER_MAX_COMPLETION_USD > 0) maxPrice.completion = config.OPENROUTER_MAX_COMPLETION_USD
-  return Object.keys(maxPrice).length > 0 ? { provider: { max_price: maxPrice } } : {}
-}
-
 async function* streamOpenAICompatible(
   baseUrl: string,
   apiKey: string,
@@ -2151,7 +2184,8 @@ async function* streamOpenAICompatible(
   // servers (some Ollama builds, custom gateways) reject the unknown field —
   // so a 400 that names it is retried once without asking. Guessing which
   // providers support it from a hard-coded list would rot with every release.
-  const send = (withUsage: boolean, withCap: boolean) => fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+  const maxPrice = settings.provider === 'sinoutx' ? getManagedAi()?.maxPrice : undefined
+  const send = (withUsage: boolean) => fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -2168,25 +2202,20 @@ async function* streamOpenAICompatible(
       ...(withUsage ? { stream_options: { include_usage: true } } : {}),
       // The cap rides on the managed key only — `sinoutx` is the provider whose
       // bill is ours.
-      ...openRouterPriceCap(baseUrl, withCap && settings.provider === 'sinoutx'),
+      ...openRouterPriceCap(baseUrl, settings.provider === 'sinoutx', maxPrice),
       temperature: settings.temperature,
       max_tokens: settings.maxTokens,
     }),
     signal: AbortSignal.timeout(300_000), // 5 min max per request round
   })
 
-  let response = await send(true, true)
+  let response = await send(true)
 
   if (!response.ok) {
     const err = await response.text()
+    if (isPriceCapRejection(err)) throw new PriceCapError(model, maxPrice)
     if (response.status === 400 && /stream_options|include_usage/i.test(err)) {
-      response = await send(false, true)
-    } else if (/max_price|no (allowed|available) provider/i.test(err)) {
-      // The ceiling left OpenRouter nothing to route to. An answer at an
-      // unplanned price beats no answer, so retry uncapped — and say so, because
-      // a model that lands here every time needs its cap raised, not this retry.
-      console.warn(`[ai] price cap left no provider for ${model}; retrying without it`)
-      response = await send(true, false)
+      response = await send(false)
     } else {
       // Include status code so formatApiError can match it
       throw new Error(`${response.status}: ${err.slice(0, 400)}`)
@@ -2195,6 +2224,7 @@ async function* streamOpenAICompatible(
 
   if (!response.ok) {
     const err = await response.text()
+    if (isPriceCapRejection(err)) throw new PriceCapError(model, maxPrice)
     throw new Error(`${response.status}: ${err.slice(0, 400)}`)
   }
 
@@ -2245,6 +2275,7 @@ async function* streamOpenAICompatible(
       } catch { continue }
 
       if (chunk.error) {
+        if (isPriceCapRejection(JSON.stringify(chunk.error))) throw new PriceCapError(model, maxPrice)
         throw new Error(chunk.error.message ?? JSON.stringify(chunk.error))
       }
 
@@ -2616,6 +2647,19 @@ async function reconcileMemory(
     const supersede = idx.map((i) => hits[Number(i)]?.recordId).filter((x): x is string => !!x)
     return { action, supersede }
   } catch { return { action: 'add', supersede: [] } }
+}
+
+/**
+ * The assistant's own web search, for callers outside the chat (SinoutX Code's
+ * `/search/web`). Same chain — provider key, SearXNG, DuckDuckGo — same answer.
+ */
+export async function webSearch(
+  query: string,
+  limit: number,
+  opts: { searchRegion?: string; userLanguage?: 'ru' | 'en' | 'be'; userId?: string; workspaceId?: string },
+  prisma: PrismaClient,
+): Promise<{ results?: Array<{ title?: string; url?: string; snippet?: string }>; error?: string; searchUnavailable?: boolean; source?: string }> {
+  return executeTool('web_search', { query, limit }, prisma, opts as ChatContext) as Promise<never>
 }
 
 async function executeTool(
@@ -3342,6 +3386,77 @@ async function executeTool(
       return { ok: true, attachmentId: att.id, filename, sent: false, message: `Файл «${filename}» сохранён в файлы.` }
     }
 
+    case 'create_presentation': {
+      const title = String(input.title ?? '').trim()
+      const slides = Array.isArray(input.slides) ? (input.slides as Record<string, unknown>[]) : []
+      if (!title) return { error: 'Укажи название презентации (title).' }
+      if (!slides.length) return { error: 'Нет слайдов: передай slides — заголовок и пункты/текст для каждого.' }
+      if (slides.length > 40) return { error: 'Слишком много слайдов: не больше 40.' }
+
+      const workspaceId = (context?.lockWorkspaceId ?? context?.workspaceId) as string | undefined
+      if (!workspaceId) return { error: 'Не удалось определить пространство.' }
+
+      const { buildPresentationBuffer } = await import('../export/pptx-export.js')
+      let buffer: Buffer
+      try {
+        buffer = await buildPresentationBuffer({
+          title,
+          subtitle: input.subtitle ? String(input.subtitle) : undefined,
+          slides: slides.map((s) => ({
+            title: String(s.title ?? '').trim() || '—',
+            bullets: Array.isArray(s.bullets) ? s.bullets.map(String) : undefined,
+            text: s.text ? String(s.text) : undefined,
+            imageUrl: s.imageUrl ? String(s.imageUrl) : undefined,
+            notes: s.notes ? String(s.notes) : undefined,
+          })),
+        })
+      } catch (e) {
+        return { error: 'Не удалось собрать презентацию: ' + (e instanceof Error ? e.message : String(e)).slice(0, 150) }
+      }
+
+      const MAX = 50 * 1024 * 1024
+      if (buffer.byteLength > MAX) {
+        return { error: `Презентация слишком велика: ${Math.round(buffer.byteLength / 1024 / 1024)} МБ. Предел — 50 МБ, уменьши число картинок.` }
+      }
+      const quota = await canUploadFile(prisma, workspaceId, buffer.byteLength)
+      if (!quota.ok) {
+        return { error: `Место закончилось: занято ${quota.usedMb} из ${quota.limitMb} МБ. Освободите место или купите пакет.` }
+      }
+
+      const filename = title.replace(/[^0-9A-Za-zА-Яа-яЁё._ ()-]+/gu, '_').slice(0, 110) + '.pptx'
+      const mime = 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+      const key = `${workspaceId}/${randomUUID()}.pptx`
+      try {
+        await uploadFile(key, buffer, mime, buffer.byteLength)
+      } catch (e) {
+        return { error: 'Не удалось записать файл в хранилище: ' + (e instanceof Error ? e.message : String(e)).slice(0, 150) }
+      }
+
+      const projectId = (input.projectId as string | undefined) ?? context?.projectId ?? null
+      const att = await prisma.attachment.create({
+        data: {
+          workspaceId,
+          projectId,
+          filename,
+          description: `Презентация: ${slides.length + 1} слайдов`,
+          mimeType: mime,
+          size: buffer.byteLength,
+          storagePath: key,
+          isImportant: false,
+          metadata: { source: 'agent' },
+        },
+      })
+
+      const total = slides.length + 1
+      if (context?.sendFile) {
+        const sent = await context.sendFile({ buffer, filename, mime }, `📎 ${filename}`)
+        return sent
+          ? { ok: true, attachmentId: att.id, filename, slides: total, sent: true, message: `Презентация «${filename}» (${total} слайдов) отправлена в чат и сохранена в файлы.` }
+          : { ok: true, attachmentId: att.id, filename, slides: total, sent: false, message: `Презентация «${filename}» сохранена, но отправить в чат не удалось — откройте её в приложении.` }
+      }
+      return { ok: true, attachmentId: att.id, filename, slides: total, sent: false, message: `Презентация «${filename}» (${total} слайдов) сохранена в файлы.` }
+    }
+
     case 'send_attachment': {
       const attachmentId = String(input.attachmentId ?? '')
       if (!attachmentId) return { error: 'Укажи attachmentId файла (найди его через list_attachments или поиск).' }
@@ -3862,6 +3977,14 @@ async function executeTool(
       const lang  = (input.language as string) ?? 'all'
       const region = context?.searchRegion
       try {
+        const tryBrowser = async () => {
+          const found = await browserSearch(query, limit, { language: context?.userLanguage ?? (lang === 'all' ? 'en' : lang.split('-')[0]), country: regionCountry(region), userId: context?.userId, workspaceId: context?.lockWorkspaceId ?? context?.workspaceId })
+          return found?.results.length ? { query, ...found, count: found.results.length, source: 'browser_search' } : null
+        }
+        if (config.BROWSER_SEARCH_MODE === 'primary') {
+          const found = await tryBrowser()
+          if (found) return found
+        }
         // ── SearXNG (self-hosted, preferred) ───────────────────────
         // A datacenter IP gets blocked by Google/Bing often, so SearXNG can
         // answer 200 with an EMPTY result set and a list of unresponsive engines.
@@ -3874,7 +3997,7 @@ async function executeTool(
         // владелец платит за ключ и должен узнать, что тот не сработал.
         if (config.SEARCH_API && config.SEARCH_API_KEY) {
           try {
-            const hits = await apiSearch(query, limit)
+            const hits = await apiSearch(query, limit, { country: regionCountry(region), language: context?.userLanguage })
             if (hits.length) return { query, results: hits, count: hits.length, source: config.SEARCH_API }
             console.warn('[web_search] api returned nothing', config.SEARCH_API, query.slice(0, 60))
           } catch (e) {
@@ -3953,6 +4076,11 @@ async function executeTool(
             console.error('[web_search] searxng error', e instanceof Error ? e.message : e)
             // fall through to fallback
           }
+        }
+
+        if (config.BROWSER_SEARCH_MODE === 'fallback') {
+          const found = await tryBrowser()
+          if (found) return found
         }
 
         // ── Запасной 1: обычная выдача DuckDuckGo ───────────────────
@@ -4489,8 +4617,17 @@ async function executeTool(
     // ── Layer 4: Knowledge base ─────────────────────────────────────────────
     case 'search_workspace': {
       const query       = input.query as string
-      const workspaceId = input.workspaceId as string
+      // Воркспейс — граница доступа. Берём его из замка сессии, а не доверяем модели:
+      // без него фильтр заметок пропадал и поиск шёл по всем воркспейсам.
+      const workspaceId = (context?.lockWorkspaceId ?? input.workspaceId ?? context?.workspaceId) as string | undefined
+      if (!workspaceId) return { error: 'Не удалось определить пространство для поиска.' }
+      const wsQ         = meiliQuote(workspaceId)
+      const projectIds  = await new SearchService(prisma).workspaceProjectIds(workspaceId)
       const projectId   = input.projectId as string | undefined
+      // projectId приходит от модели: чужой проект (не из этого воркспейса) не ищем.
+      if (projectId && !projectIds.includes(projectId)) return { query, results: [], total: 0 }
+      const projQ       = projectId ? meiliQuote(projectId) : null
+      const taskScope   = projQ ? `projectId = ${projQ}` : projectIds.length ? `projectId IN [${projectIds.map(meiliQuote).join(', ')}]` : null
       const types       = (input.types as string[] | undefined) ?? ['page', 'task', 'note']
       const limit       = Math.min((input.limit as number) ?? 15, 30)
       const perIndex    = Math.ceil(limit / types.length)
@@ -4500,15 +4637,15 @@ async function executeTool(
         types.includes('page') &&
           meili.index(INDEX_PAGES).search(query, {
             limit: perIndex,
-            filter: ['isDeleted = false', projectId ? `projectId = ${projectId}` : `workspaceId = ${workspaceId}`].filter(Boolean) as string[],
+            filter: ['isDeleted = false', `workspaceId = ${wsQ}`, projQ ? `projectId = ${projQ}` : null].filter(Boolean) as string[],
           }).then((r) => {
             for (const h of r.hits) results.push({ type: 'page', id: h.id, title: h.title, projectId: h.projectId, updatedAt: h.updatedAt })
           }).catch(() => null),
 
-        types.includes('task') &&
+        types.includes('task') && taskScope &&
           meili.index(INDEX_TASKS).search(query, {
             limit: perIndex,
-            filter: ['isDeleted = false', projectId ? `projectId = ${projectId}` : null].filter(Boolean) as string[],
+            filter: ['isDeleted = false', taskScope],
           }).then((r) => {
             for (const h of r.hits) results.push({ type: 'task', id: h.id, title: h.title, status: h.status, priority: h.priority, projectId: h.projectId })
           }).catch(() => null),
@@ -4516,7 +4653,7 @@ async function executeTool(
         types.includes('note') &&
           meili.index(INDEX_NOTES).search(query, {
             limit: perIndex,
-            filter: [workspaceId ? `workspaceId = ${workspaceId}` : null, projectId ? `projectId = ${projectId}` : null].filter(Boolean) as string[],
+            filter: [`workspaceId = ${wsQ}`, projQ ? `projectId = ${projQ}` : null].filter(Boolean) as string[],
           }).then((r) => {
             for (const h of r.hits) results.push({ type: 'note', id: h.id, snippet: ((h.textContent as string) ?? '').slice(0, 120), workspaceId: h.workspaceId })
           }).catch(() => null),
@@ -4527,13 +4664,14 @@ async function executeTool(
 
     case 'find_related_pages': {
       const topic       = input.topic as string
-      const workspaceId = input.workspaceId as string
+      const workspaceId = (context?.lockWorkspaceId ?? input.workspaceId ?? context?.workspaceId) as string | undefined
+      if (!workspaceId) return { error: 'Не удалось определить пространство для поиска.' }
       const excludeId   = input.excludePageId as string | undefined
       const limit       = Math.min((input.limit as number) ?? 8, 20)
       try {
         const r = await meili.index(INDEX_PAGES).search(topic, {
           limit: limit + (excludeId ? 1 : 0),
-          filter: [`isDeleted = false`, `workspaceId = ${workspaceId}`],
+          filter: [`isDeleted = false`, `workspaceId = ${meiliQuote(workspaceId)}`],
         })
         const pages = r.hits
           .filter((h) => h.id !== excludeId)
@@ -4735,7 +4873,7 @@ async function executeTool(
 
       // 1. Parallel: web search + Wikipedia
       const [searchResult, wikiResult] = await Promise.allSettled([
-        executeTool('web_search', { query: topic, limit: pageCount + 2 }, prisma),
+        executeTool('web_search', { query: topic, limit: pageCount + 2 }, prisma, context),
         executeTool('search_wikipedia', { query: topic, limit: 3 }, prisma),
       ])
       report.web = searchResult.status === 'fulfilled' ? searchResult.value : null
@@ -5440,7 +5578,10 @@ async function executeTool(
       }
       let skill: CustomTool
       if (evt && TRIGGER_EVENTS.includes(evt)) {
-        skill = { ...base, description: `Триггер на ${evt}: ${skName}`, kind: 'trigger', event: evt }
+        const moduleIds = evt === 'record.created' && Array.isArray(input.modules)
+          ? (input.modules as unknown[]).map((m) => String(m).trim().toLowerCase()).filter(Boolean).slice(0, 10)
+          : []
+        skill = { ...base, description: `Триггер на ${evt}${moduleIds.length ? ` (${moduleIds.join(', ')})` : ''}: ${skName}`, kind: 'trigger', event: evt, moduleIds }
       } else {
         const hour = Math.max(0, Math.min(23, Math.trunc(Number(input.hour ?? 9)) || 9))
         skill = { ...base, description: `Скил по расписанию (ежедневно ${hour}:00): ${skName}`, kind: 'scheduled', schedule: { hour } }
@@ -5452,7 +5593,7 @@ async function executeTool(
       const norm = (s: string) => s.trim().toLowerCase()
       const dup = tools.find((t) => (t.kind === 'scheduled' || t.kind === 'trigger') && norm(t.name) === norm(skName))
       if (dup) {
-        const updated: CustomTool = { ...dup, name: skName, prompt: skPrompt, description: skill.description, kind: skill.kind, schedule: skill.schedule, event: skill.event, enabled: true }
+        const updated: CustomTool = { ...dup, name: skName, prompt: skPrompt, description: skill.description, kind: skill.kind, schedule: skill.schedule, event: skill.event, moduleIds: skill.moduleIds, enabled: true }
         await saveCustomTools(context.workspaceId, prisma, tools.map((t) => (t.id === dup.id ? updated : t)))
         return { success: true, updated: true, skillId: dup.id, name: skName, kind: skill.kind, note: `Скил «${skName}» уже был — ОБНОВИЛ его, дубль не создавал.` }
       }
@@ -6395,7 +6536,7 @@ export async function runAgentHeadless(messages: ChatMessage[], context: ChatCon
   return out.trim()
 }
 
-function providerBaseUrl(provider: AISettings['provider']): string {
+export function providerBaseUrl(provider: AISettings['provider']): string {
   switch (provider) {
     case 'openai':      return 'https://api.openai.com/v1'
     case 'openrouter':  return 'https://openrouter.ai/api/v1'
@@ -6416,6 +6557,7 @@ function providerBaseUrl(provider: AISettings['provider']): string {
 // ─── API error formatter ──────────────────────────────────────────────────────
 
 function formatApiError(err: unknown): string {
+  if (err instanceof PriceCapError) return err.message
   const raw = err instanceof Error ? err.message : String(err)
 
   // Try to extract inner message from JSON error body (e.g. Ollama / OpenAI format)
@@ -6787,6 +6929,10 @@ async function* streamOpenAI(
     // is worth an automatic retry rather than making the user re-type.
     const lowerMsg = msg.toLowerCase()
     const isGeoBlock = lowerMsg.includes('country') && (lowerMsg.includes('region') || lowerMsg.includes('territory') || lowerMsg.includes('not supported'))
+    if (err instanceof PriceCapError) {
+      yield `data: ${JSON.stringify({ type: 'error', text: err.message, code: err.code, retryable: false })}\n\n`
+      return
+    }
     const isRetryable = msg.includes('input stream') || msg.includes('stream error') || msg.includes('ECONNRESET') || msg.includes('socket hang up') || msg.includes('fetch failed') || isGeoBlock
     if (isRetryable) {
       // Retry up to 3 times with increasing delay
@@ -6844,10 +6990,11 @@ async function* streamOpenAI(
           break
         } catch (e) {
           retryErr = e
+          if (e instanceof PriceCapError) break
         }
       }
       if (retryErr) {
-        yield `data: ${JSON.stringify({ type: 'error', text: formatApiError(retryErr) })}\n\n`
+        yield `data: ${JSON.stringify({ type: 'error', text: formatApiError(retryErr), ...(retryErr instanceof PriceCapError ? { code: retryErr.code, retryable: false } : {}) })}\n\n`
         return
       }
     } else {

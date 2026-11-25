@@ -2,6 +2,9 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 
 COPY package.json ./
+# package.json pins Rollup: 4.68.6 rejects ordinary React code on Alpine/musl
+# (https://github.com/rollup/rollup/issues/6670). Keep the exact pin for this
+# standalone install too; the workspace lockfile is outside this build context.
 # Retry once: esbuild postinstall can hit a transient ETXTBSY on overlayfs.
 RUN npm install --no-audit --no-fund || (sleep 3 && npm install --no-audit --no-fund)
 
